@@ -1,0 +1,13 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: ServiceEntry
+metadata:
+  name: node1-int
+spec:
+  hosts:
+  - k8s-worker1.node.consul
+  ports:
+  - number: 8500
+    name: consul
+    protocol: HTTP
+  resolution: NONE
+  location: MESH_INTERNAL

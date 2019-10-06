@@ -1,0 +1,53 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: ServiceEntry
+metadata:
+  name: sjc
+spec:
+  hosts:
+  - gateway.sjc.nextensio.net
+  ports:
+  - number: 80
+    name: http-port-sjc
+    protocol: HTTP
+  - number: 443
+    name: http-port-sjc-for-tls-origination
+    protocol: HTTP
+  resolution: DNS
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: direct-sjc-through-egress-gateway
+spec:
+  hosts:
+  - gateway.sjc.nextensio.net
+  gateways:
+  - default/nextensio-egressgateway
+  http:
+  - match:
+    - port: 80
+    route:
+    - destination:
+        host: gateway.sjc.nextensio.net
+        port:
+          number: 443
+      weight: 100
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: sjc-ext
+spec:
+  host: gateway.sjc.nextensio.net
+  trafficPolicy:
+    loadBalancer:
+      simple: ROUND_ROBIN
+    portLevelSettings:
+    - port:
+        number: 443
+      tls:
+        mode: MUTUAL
+        caCertificates: /etc/istio/sjc-credentials/cacert
+        clientCertificate: /etc/istio/sjc-credentials/cert
+        privateKey: /etc/istio/sjc-credentials/key
+        sni: gateway.sjc.nextensio.net

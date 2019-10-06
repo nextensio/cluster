@@ -1,0 +1,10 @@
+   {
+     "ID": "c362-video-aaa-com-80-default",
+     "Name": "c362-video-aaa-com-80-default",
+     "Address": "192.168.149.135",
+     "Meta": {
+       "cluster": "2",
+       "gw": "ric.gateway.nextensio.net",
+       "service": "c362-video-aaa-com-80-default"
+     }
+   }

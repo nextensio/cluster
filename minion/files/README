@@ -1,0 +1,18 @@
+docker build -t davigupta/minion:0.65 .
+
+docker run -it --net host \
+           -e MY_NODE_NAME='k8s-worker1' \
+           -e MY_POD_NAME='tom.com' \
+           -e MY_POD_NAMESPACE='default' \
+           -e MY_POD_IP='127.0.0.1' \
+           -e MY_POD_CLUSTER='sjc' \
+           -e MY_DNS='157.230.160.64' \
+           -e MY_SIM_TEST='T' \
+           davigupta/minion:0.65
+
+==== 
+
+**** testing ****
+
+shorty.py --domain --name gateway.sjc.nextensio.net --to_name service-2 --service service-1 --port 443 --ssl --token --services "service-1"
+shorty.py --domain --name gateway.sjc.nextensio.net --to_name service-1 --service service-2 --port 443 --ssl --token --services "service-2"

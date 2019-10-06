@@ -1,0 +1,64 @@
+#
+# Author: Davi Gupta (davigupta@gmail.com)
+# Copyright 2019
+#
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: tom-connect-gw-vs
+spec:
+  hosts:
+  - "gateway.sjc.nextensio.net"
+  gateways:
+  - nextensio-ingressgateway
+  http:
+  - match:
+    - headers:
+       x-nextensio-connect: 
+         prefix: "tom.com"
+    route:
+    - destination:
+        host: 
+          tom-com-out
+        port:
+          number: 8002
+    websocketUpgrade: true
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: tom-ingress
+spec:
+  host: tom-com-in
+  subsets:
+  - name: tom
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: tom-egress
+spec:
+  host: tom-com-out
+  subsets:
+  - name: tom
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: tom-for-gw-vs
+spec:
+  hosts:
+  - "gateway.sjc.nextensio.net"
+  gateways:
+  - nextensio-ingressgateway
+  http:
+  - match:
+    - headers:
+       x-nextensio-for: 
+         prefix: "tom.com"
+    route:
+    - destination:
+        host: 
+          tom-com-in
+        port:
+          number: 80

@@ -1,0 +1,10 @@
+   {
+     "ID": "a361-11-0-0-0-default",
+     "Name": "a361-11-0-0-0-default",
+     "Address": "192.168.241.205",
+     "Meta": {
+       "cluster": "2",
+       "gw": "ric.gateway.nextensio.net",
+       "service": "a361-11-0-0-0-default"
+     }
+   }

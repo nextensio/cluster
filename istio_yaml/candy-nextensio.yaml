@@ -1,0 +1,64 @@
+#
+# Author: Davi Gupta (davigupta@gmail.com)
+# Copyright 2019
+#
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: candy-connect-gw-vs
+spec:
+  hosts:
+  - "gateway.sjc.nextensio.net"
+  gateways:
+  - nextensio-ingressgateway
+  http:
+  - match:
+    - headers:
+       x-nextensio-connect: 
+         prefix: "candy.com"
+    route:
+    - destination:
+        host: 
+          candy-com-out
+        port:
+          number: 8002
+    websocketUpgrade: true
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: candy-ingress
+spec:
+  host: candy-com-in
+  subsets:
+  - name: candy
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: candy-egress
+spec:
+  host: candy-com-out
+  subsets:
+  - name: candy
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: candy-for-gw-vs
+spec:
+  hosts:
+  - "gateway.sjc.nextensio.net"
+  gateways:
+  - nextensio-ingressgateway
+  http:
+  - match:
+    - headers:
+       x-nextensio-for: 
+         prefix: "candy.com"
+    route:
+    - destination:
+        host: 
+          candy-com-in
+        port:
+          number: 80

@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: tivo-com-in
+  namespace: blue
+  labels:
+    app: tivo
+spec:
+  ports:
+  - port: 80
+    name: tivo-inside
+  selector:
+    app: tivo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tivo-com-out
+  namespace: blue
+  labels:
+    app: tivo
+spec:
+  ports:
+  - port: 8002
+    name: tivo-outside
+  selector:
+    app: tivo
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: tivo
+  namespace: blue
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: tivo
+        version: v1
+        cluster: "ric"
+        role: minion
+    spec:
+      containers:
+      - name: minion
+        image: davigupta/minion:0.60
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+        - containerPort: 8002
+        env:
+        - name: MY_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: MY_POD_NAME
+          value: "tivo-com"
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: MY_POD_CLUSTER
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['cluster']
+        - name: MY_DNS
+          value: "10.100.209.238"
+      terminationGracePeriodSeconds: 60
+      imagePullSecrets:
+      - name: regcred
+---

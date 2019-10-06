@@ -1,0 +1,196 @@
+URL: https://istio.io/docs/examples/bookinfo/
+
+                          ./+o+-       ubuntu@k8s-master
+                  yyyyy- -yyyyyy+      OS: Ubuntu 18.04 bionic
+               ://+//////-yyyyyyo      Kernel: x86_64 Linux 4.15.0-43-generic
+           .++ .:/++++++/-.+sss/`      Uptime: 6d 3h 42m
+         .:++o:  /++++++++/:--:/-      Packages: 533
+        o:+o+:++.`..```.-/oo+++++/     Shell: bash 4.4.19
+       .:+o:+o/.          `+sssoo+/    CPU: Intel Xeon Gold 6140 @ 2x 2.295GHz
+  .++/+:+oo+o:`             /sssooo.   GPU:
+ /+++//+:`oo+o               /::--:.   RAM: 1146MiB / 3944MiB
+ \+/+o+++`o++o               ++////.
+  .++.o+++oo+:`             /dddhhh.
+       .+.o+oo:.          `oddhhhh+
+        \+.++o+o``-````.:ohdhhhhh+
+         `:o+++ `ohhhhhhhhyo++os:
+           .o:`.syhhhhhhh/.oo++o`
+               /osyyyyyyo++ooo+++/
+                   ````` +oo+++o\:
+                          `oo++.
+
+Note1: If you choose to public ip for node communication then you can skip Step6 and substitute public ip wherever private ip is mentioned. Also you can skip adding IPALLOC_RANGE in weave.yaml.
+Note2: If your ssh connection hangs time-to-time, use ssh -o IPQoS=0 user@service.com
+
+Step1>
+   Create a account on https://cloud.digitalocean.com/login
+
+Step2>
+   Get three VMs with following resources
+   * master: 2 core, 4GB
+   * worker1: 1 core, 3GB
+   * worker2: 1 core, 3GB
+   Have two interfaces, public facing and private facing.
+
+Step3>
+   Configure ssh and firewall as needed 
+
+Step4>
+   Install kubernettes in all 3 VMs
+       curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+       echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee -a /etc/apt/sources.list.d/kubernetes.list
+       sudo apt-get update
+       sudo apt-get install -y docker.io kubelet kubeadm kubectl
+
+Step5>
+    Configure kubernetes master
+        /* kubeadm reset --- to clear older cluster */
+        sudo kubeadm init --ignore-preflight-errors=all --pod-network-cidr <select subnet for internal KUBE_SUBNET> --apiserver-advertise-address <master-node ip private>
+        mkdir ~/.kube
+        sudo cp -i /etc/kubernetes/admin.conf ~/.kube/config
+        sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+Step6>
+    For all master and worker nodes
+    sudo vi /etc/default/kubelet
+>>>>
+KUBELET_EXTRA_ARGS="--node-ip=<nodes private ip>"
+<<<<
+    sudo service kubelet restart
+
+Step7>
+    Install CNI (weave)
+       curl "https://cloud.weave.works/k8s/v1.10/net.yaml" > ~/weave.yaml
+            ADD IPALLOC_RANGE matching cidr above <KUBE SUBNET> in weave.yaml
+>>>>
+           - name: weave
+              command:
+                - /home/weave/launch.sh
+              env:
+                - name: HOSTNAME
+                  valueFrom:
+                    fieldRef:
+                      apiVersion: v1
+                      fieldPath: spec.nodeName
+                - name: IPALLOC_RANGE
+                  value: <KUBE SUBNET>
+
+<<<<
+     kubectl apply -f weave.yaml
+
+Step8>
+     Wait for core-dns and master node ready and weave interface present
+=====
+ubuntu@k8s-master:~$ kubectl get nodes | grep master
+k8s-master    Ready    master   6d2h   v1.13.2
+ubuntu@k8s-master:~$ kubectl get pods -n kube-system | grep core
+coredns-86c58d9df4-9kh4b             1/1     Running   0          6d2h
+coredns-86c58d9df4-rqpkz             1/1     Running   0          6d2h
+ubuntu@k8s-master:~$ ifconfig weave
+weave: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1376
+        inet 11.0.0.1  netmask 255.255.0.0  broadcast 11.0.255.255
+        inet6 fe80::74ac:7bff:feac:3935  prefixlen 64  scopeid 0x20<link>
+        ether 76:ac:7b:ac:39:35  txqueuelen 1000  (Ethernet)
+        RX packets 2087780  bytes 213989120 (213.9 MB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 2183492  bytes 675619947 (675.6 MB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+=====
+
+Step9>
+     Configure worker nodes
+             while installing kubeadm on master it will print the token and cmd to join the master
+         sudo kubeadm join --ignore-preflight-errors=all  --token <token> master_node_ip:6443
+#
+# sudo kubeadm token create --print-join-command 
+#
+
+Step10>
+     Check weave interface in worker nodes
+
+Step11>
+     Check worker nodes in master
+ubuntu@k8s-master:~$ kubectl get node
+NAME          STATUS   ROLES    AGE    VERSION
+k8s-master    Ready    master   6d2h   v1.13.2
+k8s-worker1   Ready    worker   6d2h   v1.13.2
+k8s-worker2   Ready    worker   6d2h   v1.13.2
+
+Step12>
+     Set up the roles if necessary
+     sudo kubectl label node k8s-worker1 node-role.kubernetes.io/worker=worker
+     sudo kubectl label node k8s-worker2 node-role.kubernetes.io/worker=worker
+
+Step13>
+    Install istio on master node
+       sudo snap install helm --classic
+       curl -L https://git.io/getLatestIstio | sh -
+       kubectl apply -f ~/istio-1.0.5/install/kubernetes/helm/helm-service-account.yaml
+       helm init --service-account tiller
+       kubectl apply -f ~/istio-1.0.5/install/kubernetes/istio-demo.yaml
+
+Step14>
+    Wait for istio up and running (on master node)
+====
+master:~$ kubectl get pod -n istio-system
+NAME                                      READY   STATUS      RESTARTS   AGE
+grafana-59b8896965-jwwld                  1/1     Running     0          5d20h
+istio-citadel-856f994c58-2t6w4            1/1     Running     0          5d20h
+istio-cleanup-secrets-hm4qd               0/1     Completed   0          5d20h
+istio-egressgateway-5649fcf57-vppjh       1/1     Running     0          5d20h
+istio-galley-7665f65c9c-grf9g             1/1     Running     0          5d20h
+istio-grafana-post-install-k2fr9          0/1     Completed   0          5d20h
+istio-ingressgateway-8587bfb4c4-5dhrb     1/1     Running     0          5d15h
+istio-pilot-698959c67b-6zjg8              2/2     Running     0          5d20h
+istio-policy-6fcb6d655f-mr2cw             2/2     Running     0          5d20h
+istio-security-post-install-r58rd         0/1     Completed   0          5d20h
+istio-sidecar-injector-768c79f7bf-2t6fj   1/1     Running     0          5d20h
+istio-telemetry-664d896cf5-rwqln          2/2     Running     0          5d20h
+istio-tracing-6b994895fd-bgd8b            1/1     Running     0          5d20h
+prometheus-76b7745b64-bd5vv               1/1     Running     0          5d20h
+servicegraph-5c4485945b-6xk44             1/1     Running     0          5d20h
+=====
+
+Step15>
+    Set the external ip for ingressgateway
+        kubectl edit svc istio-ingressgateway -n istio-system
+>>>>
+spec:
+  clusterIP: 10.106.4.250
+  externalIPs:
+  - <master node public ip>
+<<<<
+
+Step16>
+    Enable sidecar injection in default namespace
+        kubectl get namespace -L istio-injection
+        kubectl label namespace default istio-injection=enabled
+
+Step17>
+    Install bookinfo application
+        cd ~/istio-1.0.5/
+        kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml
+        kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml
+
+Step18>
+    Wait for bookinfo application is up and running
+====
+ubuntu@k8s-master:~$ kubectl get pod
+NAME                              READY   STATUS    RESTARTS   AGE
+details-v1-68c7c8666d-l8b5d       2/2     Running   0          5d20h
+productpage-v1-54d799c966-jp2g7   2/2     Running   0          5d20h
+ratings-v1-8558d4458d-t7xlj       2/2     Running   0          5d20h
+reviews-v1-cb8655c75-8qfbh        2/2     Running   0          5d20h
+reviews-v2-7fc9bb6dcf-pfdgl       2/2     Running   0          5d20h
+reviews-v3-c995979bc-b8dj6        2/2     Running   0          5d20h
+====
+
+Step19>
+    Check bookinfo application
+       export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].nodePort}')
+       export SECURE_INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}')
+       export INGRESS_HOST=$(kubectl get po -l istio=ingressgateway -n istio-system -o jsonpath='{.items[0].status.hostIP}')
+       export GATEWAY_URL=$INGRESS_HOST:$INGRESS_PORT
+
+       curl -o /dev/null -s -w "%{http_code}\n" http://${GATEWAY_URL}/productpage
+       200

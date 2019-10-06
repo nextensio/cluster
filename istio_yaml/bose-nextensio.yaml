@@ -1,0 +1,59 @@
+#
+# Author: Davi Gupta (bosegupta@gmail.com)
+# Copyright 2019
+#
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: bose-gw-svc
+  namespace: aaa
+spec:
+  hosts:
+  - "gateway.ric.nextensio.net"
+  exportTo: ["*"]
+  gateways:
+  - default/nextensio-ingressgateway
+  http:
+  - match:
+    - headers:
+       x-nextensio-for: 
+         prefix: "connector-2"
+    route:
+    - destination:
+        host: 
+          bose-com-in
+        port:
+          number: 80
+  - match:
+    - headers:
+       x-nextensio-connect: 
+         prefix: "connector-2"
+    route:
+    - destination:
+        host: 
+          bose-com-out
+        port:
+          number: 8002
+    websocketUpgrade: true
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: bose-ingress
+  namespace: aaa
+spec:
+  host: bose-com-in
+  exportTo: ["."]
+  subsets:
+  - name: bose
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: bose-egress
+  namespace: aaa
+spec:
+  host: bose-com-out
+  exportTo: ["."]
+  subsets:
+  - name: bose

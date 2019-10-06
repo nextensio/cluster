@@ -1,0 +1,10 @@
+   {
+     "ID": "tom-com-default",
+     "Name": "tom-com-default",
+     "Address": "10.50.128.22",
+     "Meta": {
+       "cluster": "1",
+       "gw": "sjc.gateway.nextensio.net",
+       "service": "tom-com-default"
+     }
+   }

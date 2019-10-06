@@ -1,0 +1,96 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: kismis-gateway
+spec:
+  selector:
+    istio: ingressgateway # use istio default controller
+  servers:
+  - port:
+      number: 80
+      name: http-bookinfo
+      protocol: HTTP
+    hosts:
+    - "bookinfo.kismis.org"
+  - port:
+      number: 443
+      name: https-bookinfo
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      serverCertificate: /etc/istio/ingressgateway-bookinfo-certs/tls.crt
+      privateKey: /etc/istio/ingressgateway-bookinfo-certs/tls.key
+    hosts:
+    - "bookinfo.kismis.org"
+  - port:
+      number: 443
+      name: https-grafana
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      serverCertificate: /etc/istio/ingressgateway-grafana-certs/tls.crt
+      privateKey: /etc/istio/ingressgateway-grafana-certs/tls.key
+    hosts:
+    - "grafana.kismis.org"
+  - port:
+      number: 443
+      name: https-prometheus
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      serverCertificate: /etc/istio/ingressgateway-prometheus-certs/tls.crt
+      privateKey: /etc/istio/ingressgateway-prometheus-certs/tls.key
+    hosts:
+    - "prometheus.kismis.org"
+  - port:
+      number: 443
+      name: https-jaeger
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      serverCertificate: /etc/istio/ingressgateway-jaeger-certs/tls.crt
+      privateKey: /etc/istio/ingressgateway-jaeger-certs/tls.key
+    hosts:
+    - "jaeger.kismis.org"
+  - port:
+      number: 443
+      name: https-consul
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      serverCertificate: /etc/istio/ingressgateway-consul-certs/tls.crt
+      privateKey: /etc/istio/ingressgateway-consul-certs/tls.key
+    hosts:
+    - "consul.kismis.org"
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      serverCertificate: /etc/istio/ingressgateway-certs/tls.crt
+      privateKey: /etc/istio/ingressgateway-certs/tls.key
+    hosts:
+    - "k8s-master.kismis.org"
+  - port:
+      number: 443
+      name: https-kiali
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      serverCertificate: /etc/istio/ingressgateway-consul-certs/tls.crt
+      privateKey: /etc/istio/ingressgateway-consul-certs/tls.key
+    hosts:
+    - "kiali.kismis.org"
+  - port:
+      number: 80
+      name: http-kismis
+      protocol: HTTP
+    hosts:
+    - "k8s-master.kismis.org"
+  - port:
+      number: 80
+      name: http-websocket
+      protocol: HTTP
+    hosts:
+    - "websocket.kismis.org"

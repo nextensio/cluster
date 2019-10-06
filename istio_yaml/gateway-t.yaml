@@ -1,0 +1,44 @@
+#
+# Author: Davi Gupta (davigupta@gmail.com)
+# Copyright 2019
+#
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: nextensio-ingressgateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 443
+      name: https-nextensio-ingress
+      protocol: HTTPS
+    tls:
+      mode: MUTUAL
+      serverCertificate: /etc/istio/ingressgateway-sjc-nextensio-certs/tls.crt
+      privateKey: /etc/istio/ingressgateway-sjc-nextensio-certs/tls.key
+      caCertificates: /etc/istio/ingressgateway-sjc-nextensio-ca-certs/ca-chain.cert.pem
+    hosts:
+    - "gateway.sjc.nextensio.net"
+  - port:
+      number: 80
+      name: http-nextensio-ingress
+      protocol: HTTP
+    hosts:
+    - "gateway.sjc.nextensio.net"
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: nextensio-egressgateway
+spec:
+  selector:
+    istio: egressgateway
+  servers:
+  - port:
+      number: 80
+      name: http-ric
+      protocol: HTTP
+    hosts:
+    - gateway.ric.nextensio.net

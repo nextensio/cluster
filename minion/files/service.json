@@ -1,0 +1,9 @@
+{
+  "ID": "candy-com-default",
+  "Name": "candy-com-default",
+  "Address": "10.50.128.5",
+  "Meta": {
+    "cluster": "sjc",
+    "pod": "candy.com.default"
+  }
+}

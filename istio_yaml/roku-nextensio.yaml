@@ -1,0 +1,69 @@
+#
+# Author: Davi Gupta (rokugupta@gmail.com)
+# Copyright 2019
+#
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: roku-gw-svc
+  namespace: blue
+spec:
+  hosts:
+  - "gateway.ric.nextensio.net"
+  exportTo: ["*"]
+  gateways:
+  - default/nextensio-ingressgateway
+  http:
+  - match:
+    - headers:
+       x-nextensio-for: 
+         regex: .+\.kismis\.org
+    route:
+    - destination:
+        host: 
+          roku-com-in
+        port:
+          number: 80
+  - match:
+    - headers:
+       x-nextensio-for: 
+         prefix: "connector-1"
+    route:
+    - destination:
+        host: 
+          roku-com-in
+        port:
+          number: 80
+  - match:
+    - headers:
+       x-nextensio-connect: 
+         prefix: "connector-1"
+    route:
+    - destination:
+        host: 
+          roku-com-out
+        port:
+          number: 8002
+    websocketUpgrade: true
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: roku-ingress
+  namespace: blue
+spec:
+  host: roku-com-in
+  exportTo: ["."]
+  subsets:
+  - name: roku
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: roku-egress
+  namespace: blue
+spec:
+  host: roku-com-out
+  exportTo: ["."]
+  subsets:
+  - name: roku

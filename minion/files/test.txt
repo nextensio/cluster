@@ -1,0 +1,71 @@
+./minion.py -t
+.test/shorty.py --port 8001
+.test/shorty.py --port 8002
+====
+./minion.py
+.test/front.py
+.test/reverse.py
+==
+./minion.py -t -c
+==
+export MY_NODE_NAME='k8s-worker1'
+export MY_POD_NAME='tom.com'
+export MY_POD_NAMESPACE='default'
+export MY_POD_IP='127.0.0.1'
+export MY_POD_CLUSTER='sjc'
+export MY_DNS='157.230.160.64'
+./minion.py -t --consul_dns --register
+==
+./shorty.py --domain --name "localhost" --to_name "a361.11.0.0.1" --port 8002 --service "localhost"
+
+====
+
+./shorty.py --domain --name gateway.ric.nextensio.net --to_name tom.com --service c362-video-aaa-com-80 --port 443 --ssl --ca gateway.ric.nextensio.net.ca-chain.cert.pem --key gateway.ric.nextensio.net.key.pem --cert gateway.ric.nextensio.net.cert.pem
+
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name c362-video-aaa-com-80 --service tom.com --port 443 --ssl
+
+====
+
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name candy.com --service tom.com --port 443 --ssl --token
+
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name tom.com --service candy.com --port 443 --ssl --token
+
+====
+
+./minion.py --ip 192.168.1.33 -t
+./minion.py --ip 192.168.1.113 -t
+
+./shorty.py --ip 192.168.1.113 --to_ip 192.168.1.33
+./shorty.py --ip 192.168.1.33 --to_ip 192.168.1.113
+
+====
+
+roku <-> sony
+
+./shorty.py --domain --name gateway.ric.nextensio.net --to_name agent-1 --service connector-1 --port 443 --ssl --ca gateway.ric.nextensio.net.ca-chain.cert.pem --key gateway.ric.nextensio.net.key.pem --cert gateway.ric.nextensio.net.cert.pem --services "connector-1"
+
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name connector-1 --service agent-1 --port 443 --ssl --services "agent-1"
+
+====
+
+bose <-> bunny
+
+./shorty.py --domain --name gateway.ric.nextensio.net --to_name agent-2 --service connector-2 --port 443 --ssl --ca gateway.ric.nextensio.net.ca-chain.cert.pem --key gateway.ric.nextensio.net.key.pem --cert gateway.ric.nextensio.net.cert.pem --services connector-2
+
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name connector-2 --service agent-2 --port 443 --ssl --services "agent-2"
+
+====
+
+jerry <-> mickey
+
+./shorty.py --domain --name gateway.ric.nextensio.net --to_name agent-3 --service connector-3 --port 443 --ssl --ca gateway.ric.nextensio.net.ca-chain.cert.pem --key gateway.ric.nextensio.net.key.pem --cert gateway.ric.nextensio.net.cert.pem --services connector-3
+
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name connector-3 --service agent-3 --port 443 --ssl --services "agent-3"
+
+====
+
+jyoti <-> davi
+
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name agent-4 --service connector-4 --port 443 --ssl --services "connector-4"
+
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name connector-4 --service agent-4 --port 443 --ssl --services "agent-4"

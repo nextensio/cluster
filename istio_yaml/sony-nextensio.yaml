@@ -1,0 +1,56 @@
+#
+# Author: Davi Gupta (sonygupta@gmail.com)
+# Copyright 2019
+#
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: sony-gw-svc
+  namespace: blue
+spec:
+  hosts:
+  - "gateway.sjc.nextensio.net"
+  gateways:
+  - nextensio-ingressgateway
+  http:
+  - match:
+    - headers:
+       x-nextensio-for: 
+         prefix: "agent-1"
+    route:
+    - destination:
+        host: 
+          sony-com-in
+        port:
+          number: 80
+  - match:
+    - headers:
+       x-nextensio-connect: 
+         prefix: "agent-1"
+    route:
+    - destination:
+        host: 
+          sony-com-out
+        port:
+          number: 8002
+    websocketUpgrade: true
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: sony-ingress
+  namespace: blue
+spec:
+  host: sony-com-in
+  subsets:
+  - name: sony
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: sony-egress
+  namespace: blue
+spec:
+  host: sony-com-out
+  subsets:
+  - name: sony

@@ -1,0 +1,92 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: ServiceEntry
+metadata:
+  name: ric
+spec:
+  hosts:
+  - gateway.ric.nextensio.net
+  ports:
+  - number: 80
+    name: http-port-ric
+    protocol: HTTP
+  - number: 443
+    name: http-port-ric-for-tls-origination
+    protocol: HTTP
+  resolution: DNS
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: egressgateway-for-ric
+spec:
+  host: istio-egressgateway.istio-system.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: ROUND_ROBIN
+    portLevelSettings:
+    - port:
+        number: 80
+      tls:
+        mode: DISABLE
+  subsets:
+  - name: ric
+    trafficPolicy:
+      loadBalancer:
+        simple: ROUND_ROBIN
+      portLevelSettings:
+      - port:
+          number: 80
+        tls:
+          mode: DISABLE
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: direct-ric-through-egress-gateway
+spec:
+  hosts:
+  - gateway.ric.nextensio.net
+  gateways:
+  - nextensio-egressgateway
+  - mesh
+  http:
+  - match:
+    - gateways:
+      - mesh
+      port: 80
+    route:
+    - destination:
+        host: istio-egressgateway.istio-system.svc.cluster.local
+        subset: ric
+        port:
+          number: 80
+      weight: 100
+  - match:
+    - gateways:
+      - nextensio-egressgateway
+      port: 80
+    route:
+    - destination:
+        host: gateway.ric.nextensio.net
+        port:
+          number: 443
+      weight: 100
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: ric-ext
+spec:
+  host: gateway.ric.nextensio.net
+  trafficPolicy:
+    loadBalancer:
+      simple: ROUND_ROBIN
+    portLevelSettings:
+    - port:
+        number: 443
+      tls:
+        mode: MUTUAL
+        clientCertificate: /etc/istio/ric-credentials/cert
+        privateKey: /etc/istio/ric-credentials/key
+        caCertificates: /etc/istio/ric-credentials/cacert
+        sni: gateway.ric.nextensio.net
