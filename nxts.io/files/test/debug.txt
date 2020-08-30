@@ -1,0 +1,27 @@
+[2019-03-06 11:24:09.607][18][debug][http] external/envoy/source/common/http/conn_manager_impl.cc:190] [C3404] new stream
+[2019-03-06 11:24:09.607][18][debug][filter] src/envoy/http/mixer/filter.cc:60] Called Mixer::Filter : Filter
+[2019-03-06 11:24:09.607][18][debug][filter] src/envoy/http/mixer/filter.cc:204] Called Mixer::Filter : setDecoderFilterCallbacks
+[2019-03-06 11:24:09.607][18][debug][http] external/envoy/source/common/http/conn_manager_impl.cc:490] [C3404][S13829246614786855944] request headers 
+complete (end_stream=false):
+':authority', 'ingress.mesh.nextensio.net,abc-minion.nextensio.net'
+':path', '/'
+':method', 'GET'
+'x-nextensio-codec', 'text'
+'user-agent', 'Python/3.6 websockets/3.4'
+'upgrade', 'WebSocket'
+'connection', 'Upgrade'
+'sec-websocket-key', 'YmrA3Niet+zYCN/WaZ3vOA=='
+'sec-websocket-version', '13'
+...
+[2019-03-06 11:24:09.607][18][debug][filter] src/envoy/http/mixer/filter.cc:211] Called Mixer::Filter : check complete OK
+[2019-03-06 11:24:09.607][18][debug][router] external/envoy/source/common/router/router.cc:211] [C3404][S13829246614786855944] no cluster match for UR
+L '/'
+...
+[2019-03-06 11:24:09.607][18][debug][http] external/envoy/source/common/http/conn_manager_impl.cc:1083] [C3404][S13829246614786855944] encoding header
+s via codec (end_stream=true):
+':status', '404'
+'date', 'Wed, 06 Mar 2019 11:24:09 GMT'
+'server', 'envoy'
+'connection', 'close'
+...
+

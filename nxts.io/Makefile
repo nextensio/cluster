@@ -1,4 +1,4 @@
-VERSION=0.69
+VERSION=1.00
 NAME=minion
 USER=davigupta
 image=$(shell docker images $(USER)/$(NAME):$(VERSION) -q)

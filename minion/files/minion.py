@@ -324,6 +324,11 @@ async def route_http_pak(pak, counter):
         log.info(complete_rt)
         fwd['dest'] = complete_rt
         myr, myw = await asyncio.open_connection(complete_rt, IN_PORT)
+        #
+        # Needs to be debugged why this sleep is needed. Without that TCP
+        # connection is not getting established
+        #
+        time.sleep(0.1)
         writer[rt] = myw;
         writer[rt].is_closed = False
         reader[rt] = myr;

@@ -1,0 +1,8 @@
+
+sudo apt-get update
+sudo apt-get install golang-go
+
+export GOPATH=$HOME/work/go
+
+go get -u go.uber.org/zap
+go get -u github.com/miekg/dns
