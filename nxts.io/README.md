@@ -2,7 +2,7 @@
 Humble workers
 
 # Running test for a particular module
-cd nxts.io/minion/http/parse
+cd nxts.io/minion.io/http/parse
 go test -v
 
 # Running a program
