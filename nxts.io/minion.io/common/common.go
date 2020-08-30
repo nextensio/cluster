@@ -13,6 +13,7 @@ const (
     RemotePrePrefix = "gateway."
     RemotePostPrefix = ".nextensio.net"
     TcpBuffSize = 65536
+    Period = 1000
 )
 
 // Structure for storing various parameters for this program
