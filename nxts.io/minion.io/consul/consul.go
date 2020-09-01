@@ -42,11 +42,8 @@ func RegisterConsul (service [common.MaxService]string, sugar *zap.SugaredLogger
     var dns common.Entry
     json.Unmarshal([]byte(entryJson), &dns)
 
-    sugar.Debugw("json", "ID:", dns.ID)
-    sugar.Debugw("json", "Name:", dns.Name)
-    sugar.Debugw("json", "Address:", dns.Address)
-    sugar.Debugw("json", "Meta.Cluster:", dns.Meta.Cluster)
-    sugar.Debugw("json", "Meta.Pod:", dns.Meta.Pod)
+    dns.Address = common.MyInfo.PodIp
+    dns.Meta.Cluster = common.MyInfo.Id
 
     var url string
     var data string
@@ -61,26 +58,29 @@ func RegisterConsul (service [common.MaxService]string, sugar *zap.SugaredLogger
         url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + common.MyInfo.Namespace
         sugar.Debugf("%s", url)
         data = common.MyInfo.Id
-        r, _ = http.NewRequest("POST", url + "/cluster", strings.NewReader(data))
+        r, _ = http.NewRequest("PUT", url + "/cluster", strings.NewReader(data))
         _, e = myClient.Do(r)
         if e != nil {
             sugar.Errorw("http", "err", e)
         }
         data = strings.Replace(common.MyInfo.Pod, ".", "-", -1)
-        r, _ = http.NewRequest("POST", url + "/pod", strings.NewReader(data))
+        r, _ = http.NewRequest("PUT", url + "/pod", strings.NewReader(data))
         _, e = myClient.Do(r)
         if e != nil {
             sugar.Errorw("http", "err", e)
         }
+        dns.Meta.Pod = data
         dns.ID = h + "-" + common.MyInfo.Namespace
         dns.Name = h + "-" + common.MyInfo.Namespace
-        dns.Address = common.MyInfo.PodIp
-        dns.Meta.Cluster = common.MyInfo.Id
-        dns.Meta.Pod = data
+        sugar.Debugw("json", "Meta.Pod:", dns.Meta.Pod)
+        sugar.Debugw("json", "ID:", dns.ID)
+        sugar.Debugw("json", "Name:", dns.Name)
+        sugar.Debugw("json", "Address:", dns.Address)
+        sugar.Debugw("json", "Meta.Cluster:", dns.Meta.Cluster)
         url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/agent/service/register"
         sugar.Debugf("%s", url)
         js, _ = json.Marshal(dns)
-        r, _ = http.NewRequest("POST", url, bytes.NewReader(js))
+        r, _ = http.NewRequest("PUT", url, bytes.NewReader(js))
         r.Header.Add("Content-Type", "application/json")
         r.Header.Add("Accpet-Charset", "UTF-8")
         _, e = myClient.Do(r)
@@ -128,7 +128,7 @@ func DeRegisterConsul (service [common.MaxService]string, sugar *zap.SugaredLogg
         }
         url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + h + "-" + common.MyInfo.Namespace
         sugar.Debugf("%s", url)
-        r, _ = http.NewRequest("POST", url, nil)
+        r, _ = http.NewRequest("PUT", url, nil)
         _, e = myClient.Do(r)
         if e != nil {
             sugar.Errorw("http", "err", e)
