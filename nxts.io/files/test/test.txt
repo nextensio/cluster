@@ -26,9 +26,13 @@ export MY_DNS='157.230.160.64'
 
 ====
 
-./shorty.py --domain --name gateway.sjc.nextensio.net --to_name candy.com --service tom.com --port 443 --ssl --token
+tom <-> candy
 
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name candy.com --service tom.com --port 443 --ssl --token
 ./shorty.py --domain --name gateway.sjc.nextensio.net --to_name tom.com --service candy.com --port 443 --ssl --token
+
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name connector-10 --service agent-10 --port 443 --ssl --services "agent-10"
+./shorty.py --domain --name gateway.sjc.nextensio.net --to_name agent-10 --service connector-10 --port 443 --ssl --services "connector-10"
 
 ====
 
@@ -69,3 +73,8 @@ jyoti <-> davi
 ./shorty.py --domain --name gateway.sjc.nextensio.net --to_name agent-4 --service connector-4 --port 443 --ssl --services "connector-4"
 
 ./shorty.py --domain --name gateway.sjc.nextensio.net --to_name connector-4 --service agent-4 --port 443 --ssl --services "agent-4"
+
+===
+
+./shorty.py --domain --name gateway.ric.nextensio.net --to_name connector-11 --service agent-11 --port 443 --ssl --services "agent-11" --ca gateway.ric.nextensio.net.ca-chain.cert.pem --key gateway.ric.nextensio.net.key.pem --cert gateway.ric.nextensio.net.cert.pem
+./shorty.py --domain --name gateway.ric.nextensio.net --to_name agent-11 --service connector-11 --port 443 --ssl --services "connector-11" --ca gateway.ric.nextensio.net.ca-chain.cert.pem --key gateway.ric.nextensio.net.key.pem --cert gateway.ric.nextensio.net.cert.pem
