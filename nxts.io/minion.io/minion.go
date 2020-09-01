@@ -16,13 +16,10 @@ package main
 
 import (
     "go.uber.org/zap"
-    "minion.io/common"
     "minion.io/args"
     "minion.io/env"
-    "minion.io/consul"
+    "minion.io/http"
 )
-
-var services [common.MaxService]string
 
 func main() {
     //logger, _ := zap.NewProduction()
@@ -31,6 +28,5 @@ func main() {
     sugar := logger.Sugar()
     args.ArgHandler(sugar)
     env.EnvHandler(sugar)
-    consul.RegisterConsul(services, sugar)
-    consul.DeRegisterConsul(services, sugar)
+    http.HttpStart(sugar)
 }

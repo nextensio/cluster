@@ -1,7 +1,244 @@
 /*
  * http.go: Handle incoming http request
- * 
+ *
  * Davi Gupta, davigupta@gmail.com, Jun 2019
  */
 
 package http
+
+import (
+    "fmt" 
+    "bytes"
+    "time"
+    "strings"
+    "bufio"
+    "io/ioutil"
+    "net"
+    "net/http"
+    "strconv"
+    "github.com/gorilla/websocket"
+    "go.uber.org/zap"
+    "minion.io/common"
+    "minion.io/consul"
+)
+
+var upgrader = websocket.Upgrader{
+    ReadBufferSize: common.MaxMessageSize,
+    WriteBufferSize: common.MaxMessageSize,
+}
+
+var (
+    space = []byte{' '}
+)
+
+type Client struct {
+    track *Tracker
+    conn *websocket.Conn
+    send chan []byte
+    codec string
+    name [common.MaxService]string
+}
+
+var ServiceLeft map[string]*Client
+
+func (c *Client) txHandler(s *zap.SugaredLogger) {
+    ticker := time.NewTicker(common.PingPeriod)
+    defer func() {
+        ticker.Stop()
+        c.conn.Close()
+    }()
+
+    for {
+        select {
+        case <- ticker.C:
+            fmt.Println("send ping message")
+            c.conn.SetWriteDeadline(time.Now().Add(common.WriteWait))
+            if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+                return
+            }
+        case msg, ok := <-c.send:
+            c.conn.SetWriteDeadline(time.Now().Add(common.WriteWait))
+            if !ok {
+                c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+                return
+            }
+            w, err := c.conn.NextWriter(websocket.BinaryMessage)
+            if err != nil {
+                return
+            }
+            w.Write(msg)
+
+            n := len(c.send)
+            for i := 0; i < n; i++ {
+                w.Write(<-c.send)
+            }
+            if err:= w.Close(); err != nil {
+                return
+            }
+        }
+    }
+}
+
+func isIpv4Net (host string) bool {
+    return net.ParseIP(host) != nil
+}
+
+func (c *Client) rxHandler(s *zap.SugaredLogger) {
+    var fwd common.Fwd
+
+    defer func() {
+        c.track.unregister <- c
+        c.conn.Close()
+        for i := 0; i < len(c.name); i++ {
+            ServiceLeft[c.name[i]] = nil
+            delete(ServiceLeft, c.name[i])
+        }
+        fmt.Println(ServiceLeft)
+    }()
+
+    c.conn.SetReadLimit(common.MaxMessageSize)
+    c.conn.SetReadDeadline(time.Now().Add(common.PongWait))
+    c.conn.SetPongHandler(func(string) error { c.conn.SetReadDeadline(time.Now().Add(common.PongWait)); return nil})
+
+    // Read client info and send welcome
+    messageType, p, e := c.conn.ReadMessage()
+    if e != nil {
+        s.Errorw("http", "err", e)
+    }
+    fmt.Println(messageType)
+    fmt.Println(string(p))
+    words := bytes.Split(p, space)
+    if bytes.Equal(words[0], []byte("NCTR")) || bytes.Equal(words[0], []byte("NAGT")) {
+        e = c.conn.WriteMessage(messageType, bytes.Join([][]byte{[]byte("Hello"), words[0]}, space))
+        if e != nil {
+            s.Errorw("http", "err", e)
+        }
+    }
+    // Register services to consul
+    for i := 1; i < len(words); i++ {
+        c.name[i - 1] = string(words[i])
+        ServiceLeft[string(words[i])] = c
+    }
+
+    // Read the packet and forward
+    for {
+        messageType, p, e = c.conn.ReadMessage()
+        if e != nil {
+            if websocket.IsUnexpectedCloseError(e, websocket.CloseGoingAway) {
+                s.Errorw("http", "err", e)
+            }
+            break
+        }
+        fmt.Println(messageType)
+        // forward the packet
+        // get the destination to foward to
+        reader := bufio.NewReader(strings.NewReader(string(p)))
+        r, e := http.ReadRequest(reader)
+        if e != nil {
+            s.Errorw("http", "err", e)
+        }
+        fmt.Println(r.Header)
+        body, _ := ioutil.ReadAll(r.Body)
+        fmt.Println(string(body))
+        dest := r.Header.Get("x-nextensio-for")
+        fmt.Println(dest)
+        destinfo := strings.Split(dest, ":")
+        host := destinfo[0]
+        if isIpv4Net(host) {
+            fwd.Dest = host
+            fwd.DestType = common.LocalDest
+        } else {
+            host = strings.ReplaceAll(host, ".", "-")
+            consul_key := strings.Join([]string{host, common.MyInfo.Namespace}, "")
+            fmt.Println(consul_key)
+            // do consul lookup
+            fwd, _ = consul.ConsulDnsLookup(consul_key, s)
+        }
+        if fwd.DestType == common.SelfDest {
+            left := ServiceLeft[fwd.Dest]
+            if left != nil {
+                left.send <- p
+            } else {
+                fmt.Println("packet drop")
+            }
+        } else {
+            if fwd.DestType == common.RemoteDest {
+                // rewrite HOST part in GET
+            }
+
+            // open a TCP connection if not opened
+            /*
+            right := tcp.ServiceRight[dn]
+            if right == nil {
+                c.track.conn <- fwd.Dest
+                ok, right <- c.track.conn_ok
+            } else {
+                ok := right.ok
+            }
+            if ok {
+                right.send <- p
+            }
+            */
+        }
+    }
+}
+
+func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
+                s *zap.SugaredLogger) {
+    //TODO : Fix handling of Origin
+    upgrader.CheckOrigin = func(r *http.Request) bool { 
+       if r.Header.Get("Origin") != "http://"+r.Host {
+           return true
+       } else  {
+           return true
+       }
+    }
+
+    codec := r.Header.Get("x-nextensio-codec")
+    s.Debugw("http", "codec", codec)
+    //TODO: Check for supported codec
+
+    ws, e := upgrader.Upgrade(w, r, nil)
+    if e != nil {
+        s.Errorw("http", "err", e)
+        return
+    }
+
+    s.Debug("Client connected")
+
+    // add the connection for the bookeeping
+    client := &Client{track: t, conn: ws, send: make(chan []byte, 256), codec: codec}
+    client.track.register <- client
+
+    go client.txHandler(s)
+    go client.rxHandler(s)
+}
+
+// Register for websocket handler
+func setupRoutes(t *Tracker, s *zap.SugaredLogger) {
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        wsEndpoint(t, w, r, s)
+    })
+}
+
+// Initialise name lookup DB available on websocket side
+func clientInit() {
+    ServiceLeft = make(map[string]*Client)
+}
+
+// Start http server
+func HttpStart(s *zap.SugaredLogger) error {
+    track := newTracker()
+    go track.run()
+    clientInit()
+    setupRoutes(track, s)
+    portStr := strconv.Itoa(common.MyInfo.Iport)
+    addr := strings.Join([]string{common.MyInfo.ListenIp, portStr}, ":")
+    s.Debug(string(addr))
+    e := http.ListenAndServe(addr, nil)
+    if e != nil {
+        s.Errorw("http", "err", e)
+    }
+
+    return e
+}

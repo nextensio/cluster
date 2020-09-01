@@ -192,10 +192,15 @@ func ConsulHttpLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e 
     tmp, _ = base64.StdEncoding.DecodeString(kvs[1].Value)
     fwd.Pod = string(tmp)
     if fwd.Id == common.MyInfo.Id {
-        fwd.Local = true
-        fwd.Dest = fwd.Pod + "-in." + common.MyInfo.Namespace + common.LocalSuffix
+        if fwd.Pod == common.MyInfo.Pod {
+            fwd.DestType = common.SelfDest
+            fwd.Dest = name
+        } else {
+            fwd.DestType = common.LocalDest
+            fwd.Dest = fwd.Pod + "-in." + common.MyInfo.Namespace + common.LocalSuffix
+        }
     } else {
-        fwd.Local = false
+        fwd.DestType = common.RemoteDest
         fwd.Dest = common.RemotePrePrefix + fwd.Id + common.RemotePostPrefix
     }
 
@@ -255,7 +260,7 @@ func ConsulDnsLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e e
                 }
                 return hfwd, nil
             } else {
-                fwd.Local = false
+                fwd.DestType = common.RemoteDest
                 fwd.Dest = common.RemotePrePrefix + s[2] + common.RemotePostPrefix
                 fwd.Pod = ""
                 return fwd, nil

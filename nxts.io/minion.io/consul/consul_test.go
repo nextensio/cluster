@@ -57,7 +57,7 @@ func TestConsulDnsLookupOne(t *testing.T) {
 
     fwd, _ := ConsulDnsLookup(serviceNameNS, sugar)
    
-    if fwd.Local != true {
+    if fwd.DestType != common.LocalDest {
         t.Error("expected local but not local")
     }
 
@@ -72,7 +72,7 @@ func TestConsulDnsLookupTwo(t *testing.T) {
     common.MyInfo.Id = "ric"
     fwd, _ := ConsulDnsLookup(serviceNameNS, sugar)
    
-    if fwd.Local == true {
+    if fwd.DestType != common.RemoteDest {
         t.Error("expected remote but local")
     }
 

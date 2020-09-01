@@ -6,6 +6,10 @@
 
 package common
 
+import (
+    "time"
+)
+
 // Constants used by this program
 const (
     MaxService = 32
@@ -13,7 +17,14 @@ const (
     RemotePrePrefix = "gateway."
     RemotePostPrefix = ".nextensio.net"
     TcpBuffSize = 65536
+    WriteWait = 10 * time.Second
+    PongWait = 60 * time.Second
+    PingPeriod = (PongWait * 9)/10
+    MaxMessageSize = 64*1024
     Period = 1000
+    SelfDest = 1
+    LocalDest = 2
+    RemoteDest = 3
 )
 
 // Structure for storing various parameters for this program
@@ -73,7 +84,7 @@ type Kv struct {
 
 // Structure for storing forwarding result
 type Fwd struct {
-    Local bool
+    DestType int
     Pod string
     Id string
     Dest string
