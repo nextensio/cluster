@@ -4,10 +4,9 @@
  * Davi Gupta, davigupta@gmail.com, Jun 2019
  */
 
-package http
+package router
 
 import (
-    "fmt" 
     "bytes"
     "time"
     "strings"
@@ -51,7 +50,7 @@ func (c *Client) txHandler(s *zap.SugaredLogger) {
     for {
         select {
         case <- ticker.C:
-            fmt.Println("send ping message")
+            s.Debug("http: send ping message")
             c.conn.SetWriteDeadline(time.Now().Add(common.WriteWait))
             if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
                 return
@@ -93,7 +92,7 @@ func (c *Client) rxHandler(s *zap.SugaredLogger) {
             ServiceLeft[c.name[i]] = nil
             delete(ServiceLeft, c.name[i])
         }
-        fmt.Println(ServiceLeft)
+        s.Debugw("http", "services", ServiceLeft)
     }()
 
     c.conn.SetReadLimit(common.MaxMessageSize)
@@ -105,8 +104,8 @@ func (c *Client) rxHandler(s *zap.SugaredLogger) {
     if e != nil {
         s.Errorw("http", "err", e)
     }
-    fmt.Println(messageType)
-    fmt.Println(string(p))
+    s.Debugw("http", "type", messageType)
+    s.Debugw("http", "type", string(p))
     words := bytes.Split(p, space)
     if bytes.Equal(words[0], []byte("NCTR")) || bytes.Equal(words[0], []byte("NAGT")) {
         e = c.conn.WriteMessage(messageType, bytes.Join([][]byte{[]byte("Hello"), words[0]}, space))
@@ -129,7 +128,7 @@ func (c *Client) rxHandler(s *zap.SugaredLogger) {
             }
             break
         }
-        fmt.Println(messageType)
+        s.Debugw("http", "type", messageType)
         // forward the packet
         // get the destination to foward to
         reader := bufio.NewReader(strings.NewReader(string(p)))
@@ -137,11 +136,11 @@ func (c *Client) rxHandler(s *zap.SugaredLogger) {
         if e != nil {
             s.Errorw("http", "err", e)
         }
-        fmt.Println(r.Header)
+        s.Debugw("http", "header", r.Header)
         body, _ := ioutil.ReadAll(r.Body)
-        fmt.Println(string(body))
+        s.Debugw("http", "type", string(body))
         dest := r.Header.Get("x-nextensio-for")
-        fmt.Println(dest)
+        s.Debugw("http", "dest", dest)
         destinfo := strings.Split(dest, ":")
         host := destinfo[0]
         if isIpv4Net(host) {
@@ -150,7 +149,7 @@ func (c *Client) rxHandler(s *zap.SugaredLogger) {
         } else {
             host = strings.ReplaceAll(host, ".", "-")
             consul_key := strings.Join([]string{host, common.MyInfo.Namespace}, "")
-            fmt.Println(consul_key)
+            s.Debugw("http", "key", consul_key)
             // do consul lookup
             fwd, _ = consul.ConsulDnsLookup(consul_key, s)
         }
@@ -159,7 +158,7 @@ func (c *Client) rxHandler(s *zap.SugaredLogger) {
             if left != nil {
                 left.send <- p
             } else {
-                fmt.Println("packet drop")
+                s.Debug("http: packet drop")
             }
         } else {
             if fwd.DestType == common.RemoteDest {
@@ -204,7 +203,7 @@ func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
         return
     }
 
-    s.Debug("Client connected")
+    s.Debug("http: Client connected")
 
     // add the connection for the bookeeping
     client := &Client{track: t, conn: ws, send: make(chan []byte, 256), codec: codec}
@@ -234,7 +233,7 @@ func HttpStart(s *zap.SugaredLogger) error {
     setupRoutes(track, s)
     portStr := strconv.Itoa(common.MyInfo.Iport)
     addr := strings.Join([]string{common.MyInfo.ListenIp, portStr}, ":")
-    s.Debug(string(addr))
+    s.Debug("http", string(addr))
     e := http.ListenAndServe(addr, nil)
     if e != nil {
         s.Errorw("http", "err", e)

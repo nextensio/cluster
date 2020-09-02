@@ -4,7 +4,7 @@
  * Davi Gupta, davigupta@gmail.com, Jun 2019
  */
 
-package http
+package router
 
 import (
     "go.uber.org/zap"
@@ -20,13 +20,14 @@ func TestExecutedHalf(t *testing.T) {
     var data []byte
     data = []byte(s1)
     var l1, l2 int
-    l1 = Execute(data, len(data), sugar)
-    if IsBodyComplete() == true {
+    state := InitCtx()
+    l1 = Execute(state, data, len(data), sugar)
+    if IsBodyComplete(state) == true {
         t.Error("parsing failure")
     }
     data = []byte(s2)
-    l2 = Execute(data, len(data), sugar)
-    if IsBodyComplete() != true {
+    l2 = Execute(state, data, len(data), sugar)
+    if IsBodyComplete(state) != true {
         t.Error("parsing failure")
     }
     if l1 + l2 != len(s1) + len(s2) {
@@ -42,8 +43,9 @@ func TestExecuteOne(t *testing.T) {
     var data []byte
     data = []byte(s)
     var l int
-    l = Execute(data, len(s), sugar)
-    if IsBodyComplete() != true {
+    state := InitCtx()
+    l = Execute(state, data, len(s), sugar)
+    if IsBodyComplete(state) != true {
         t.Error("parsing failure")
     }
     if l != len(s) {
@@ -59,13 +61,14 @@ func TestExecuteTwo(t *testing.T) {
     var data []byte
     data = []byte(s)
     var l1, l2 int
-    l1 = Execute(data, len(data), sugar)
-    if IsBodyComplete() != true {
+    state := InitCtx()
+    l1 = Execute(state, data, len(data), sugar)
+    if IsBodyComplete(state) != true {
         t.Error("parsing failure")
     }
     data = data[l1:]
-    l2 = Execute(data, len(data), sugar)
-    if IsBodyComplete() != true {
+    l2 = Execute(state, data, len(data), sugar)
+    if IsBodyComplete(state) != true {
         t.Error("parsing failure")
     }
     if l1+l2 != len(s) {
@@ -81,21 +84,22 @@ func TestExecuteTwoAndHalf(t *testing.T) {
     var data []byte
     data = []byte(s)
     var l1, l2, l3 int
-    l1 = Execute(data, len(data), sugar)
-    if IsBodyComplete() != true {
+    state := InitCtx()
+    l1 = Execute(state, data, len(data), sugar)
+    if IsBodyComplete(state) != true {
         t.Error("parsing failure")
     }
     data = data[l1:]
-    l2 = Execute(data, len(data), sugar)
-    if IsBodyComplete() != true {
+    l2 = Execute(state, data, len(data), sugar)
+    if IsBodyComplete(state) != true {
         t.Error("parsing failure")
     }
     if l1+l2 >= len(s) {
         t.Error("parsed length not correct")
     }
     data = data[l2:]
-    l3 = Execute(data, len(data), sugar)
-    if IsBodyComplete() == true {
+    l3 = Execute(state, data, len(data), sugar)
+    if IsBodyComplete(state) == true {
         t.Error("parsing failure")
     }
     if l3 >= len(s) {
@@ -112,26 +116,27 @@ func TestExecuteHalfAndTwo(t *testing.T) {
     var data []byte
     data = []byte(s1)
     var l1, l2, l3, l4 int
-    l1 = Execute(data, len(data), sugar)
+    state := InitCtx()
+    l1 = Execute(state, data, len(data), sugar)
     if l1 != len(s1) {
         t.Error("parsed length not correct")
     }
-    if IsBodyComplete() == true {
+    if IsBodyComplete(state) == true {
         t.Error("parsing failure")
     }
     data = []byte(s2)
-    l2 = Execute(data, len(data), sugar)
-    if IsBodyComplete() != true {
+    l2 = Execute(state, data, len(data), sugar)
+    if IsBodyComplete(state) != true {
         t.Error("parsing failure")
     }
     data = data[l2:]
-    l3 = Execute(data, len(data), sugar)
-    if IsBodyComplete() != true {
+    l3 = Execute(state, data, len(data), sugar)
+    if IsBodyComplete(state) != true {
         t.Error("parsing failure")
     }
     data = data[l3:]
-    l4 = Execute(data, len(data), sugar)
-    if IsBodyComplete() != true {
+    l4 = Execute(state, data, len(data), sugar)
+    if IsBodyComplete(state) != true {
         t.Error("parsing failure")
     }
     if l1+l2+l3+l4 != len(s1) + len(s2) {

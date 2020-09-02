@@ -5,7 +5,7 @@
  * Davi Gupta, davigupta@gmail.com, Jun 2019
  */
 
-package http
+package router
 
 import (
     "bytes"
@@ -15,7 +15,7 @@ import (
     "go.uber.org/zap"
 )
 
-var state struct {
+type State struct {
     header []byte
     body []byte
     buf []byte
@@ -27,7 +27,7 @@ var state struct {
     partial_body bool
 }
 
-func stateInit() {
+func stateInit(state *State) {
     state.header = state.header[:0]
     state.body = state.body[:0]
     state.buf = state.buf[:0]
@@ -39,27 +39,33 @@ func stateInit() {
     state.partial_body = false
 }
 
-func GetHeaders() (s string) {
-    return string(state.header)
+func GetHeaders(state *State) []byte {
+    return state.header
 }
 
-func GetBody() (s string) {
-    return string(state.body)
+func GetBody(state *State) []byte {
+    return state.body
 }
 
-func GetParseLen() (l int) {
+func GetParseLen(state *State) int {
     return state.plen
 }
 
-func IsHeaderComplete() (a bool) {
+func IsHeaderComplete(state *State) bool {
     return state.header_complete
 }
 
-func IsBodyComplete() (a bool) {
+func IsBodyComplete(state *State) bool {
     return state.body_complete
 }
 
-func parseHeader(sugar *zap.SugaredLogger) (b bool) {
+func InitCtx() *State {
+    var ctx = &State{}
+    stateInit(ctx)
+    return ctx
+}
+
+func parseHeader(state *State, sugar *zap.SugaredLogger) bool {
     idx := bytes.Index(state.buf, []byte("\r\n\r\n"))
     if idx < 0 {
         return false
@@ -79,7 +85,7 @@ func parseHeader(sugar *zap.SugaredLogger) (b bool) {
     return true
 }
 
-func parseBody(sugar *zap.SugaredLogger) (b bool) {
+func parseBody(state *State, sugar *zap.SugaredLogger) bool {
     if state.clen <= len(state.buf) {
         state.body = append(state.body, state.buf[:state.clen]...)
         state.body_complete = true
@@ -95,9 +101,9 @@ func parseBody(sugar *zap.SugaredLogger) (b bool) {
  * Parses only 1 complete HTTP/1.1 packet and returns. Caller calls it again
  * to parse another HTTP/1.1 packet either in same buffer or new buffer
  */
-func Execute(data []byte, length int, sugar *zap.SugaredLogger) (l int) {
+func Execute(state *State, data []byte, length int, sugar *zap.SugaredLogger) int {
     if state.body_complete == true {
-        stateInit()
+        stateInit(state)
     }
     if len(data) <= 0 {
         return length
@@ -106,13 +112,13 @@ func Execute(data []byte, length int, sugar *zap.SugaredLogger) (l int) {
         switch {
             case state.header_complete != true:
                 state.buf = append(state.buf, data...)
-                t1 := parseHeader(sugar)
+                t1 := parseHeader(state, sugar)
                 if t1 == false {
                     state.cursor += length
                     return length
                 }
             case state.body_complete != true:
-                t2 := parseBody(sugar)
+                t2 := parseBody(state, sugar)
                 if t2 == false {
                     state.cursor += length
                     return length

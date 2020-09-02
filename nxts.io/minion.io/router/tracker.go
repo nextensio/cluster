@@ -3,7 +3,7 @@
  *
  * Davi Gupta, davigupta@gmail.com, Sep 2020
  */
-package http
+package router
 
 import (
     "fmt"
