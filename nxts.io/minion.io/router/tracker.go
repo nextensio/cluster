@@ -6,7 +6,7 @@
 package router
 
 import (
-    "fmt"
+    "go.uber.org/zap"
 )
 
 type Tracker struct {
@@ -23,14 +23,14 @@ func newTracker() *Tracker {
     }
 }
 
-func (t *Tracker) run() {
+func (t *Tracker) run(s *zap.SugaredLogger) {
     for {
         select {
         case client := <- t.register:
-            fmt.Println("registering client")
+            s.Debug("tracker: registering client")
             t.clients[client] = true
         case client := <- t.unregister:
-            fmt.Println("unregistering client")
+            s.Debug("tracker: unregistering client")
             if _, ok := t.clients[client]; ok {
                 delete(t.clients, client)
                 close(client.send)

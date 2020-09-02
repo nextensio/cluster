@@ -228,7 +228,7 @@ func clientInit() {
 // Start http server
 func HttpStart(s *zap.SugaredLogger) error {
     track := newTracker()
-    go track.run()
+    go track.run(s)
     clientInit()
     setupRoutes(track, s)
     portStr := strconv.Itoa(common.MyInfo.Iport)
