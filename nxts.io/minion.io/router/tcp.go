@@ -74,7 +74,7 @@ func httpForLeft(pak []byte, s *zap.SugaredLogger) {
     destinfo := strings.Split(dest, ":")
     host := destinfo[0]
     host = strings.ReplaceAll(host, ".", "-")
-    left := ServiceLeft[host]
+    left := LookupLeftService(host)
     if left != nil {
         left.send <- pak
     } else {

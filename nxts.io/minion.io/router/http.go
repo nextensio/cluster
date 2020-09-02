@@ -30,17 +30,16 @@ var (
     space = []byte{' '}
 )
 
-type Client struct {
+type WsClient struct {
     track *Tracker
     conn *websocket.Conn
     send chan []byte
     codec string
     name [common.MaxService]string
+    num int
 }
 
-var ServiceLeft map[string]*Client
-
-func (c *Client) txHandler(s *zap.SugaredLogger) {
+func (c *WsClient) txHandler(s *zap.SugaredLogger) {
     ticker := time.NewTicker(common.PingPeriod)
     defer func() {
         ticker.Stop()
@@ -82,17 +81,13 @@ func isIpv4Net (host string) bool {
     return net.ParseIP(host) != nil
 }
 
-func (c *Client) rxHandler(s *zap.SugaredLogger) {
+func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
     var fwd common.Fwd
 
     defer func() {
+        c.track.del <- c 
         c.track.unregister <- c
         c.conn.Close()
-        for i := 0; i < len(c.name); i++ {
-            ServiceLeft[c.name[i]] = nil
-            delete(ServiceLeft, c.name[i])
-        }
-        s.Debugw("http", "services", ServiceLeft)
     }()
 
     c.conn.SetReadLimit(common.MaxMessageSize)
@@ -116,8 +111,9 @@ func (c *Client) rxHandler(s *zap.SugaredLogger) {
     // Register services to consul
     for i := 1; i < len(words); i++ {
         c.name[i - 1] = string(words[i])
-        ServiceLeft[string(words[i])] = c
     }
+    c.num = len(words) - 1
+    c.track.add <- c
 
     // Read the packet and forward
     for {
@@ -154,7 +150,7 @@ func (c *Client) rxHandler(s *zap.SugaredLogger) {
             fwd, _ = consul.ConsulDnsLookup(consul_key, s)
         }
         if fwd.DestType == common.SelfDest {
-            left := ServiceLeft[fwd.Dest]
+            left := LookupLeftService(fwd.Dest)
             if left != nil {
                 left.send <- p
             } else {
@@ -167,7 +163,7 @@ func (c *Client) rxHandler(s *zap.SugaredLogger) {
 
             // open a TCP connection if not opened
             /*
-            right := tcp.ServiceRight[dn]
+            right := LookupRightService[dn]
             if right == nil {
                 c.track.conn <- fwd.Dest
                 ok, right <- c.track.conn_ok
@@ -206,7 +202,7 @@ func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
     s.Debug("http: Client connected")
 
     // add the connection for the bookeeping
-    client := &Client{track: t, conn: ws, send: make(chan []byte, 256), codec: codec}
+    client := &WsClient{track: t, conn: ws, send: make(chan []byte, 256), codec: codec}
     client.track.register <- client
 
     go client.txHandler(s)
@@ -220,16 +216,10 @@ func setupRoutes(t *Tracker, s *zap.SugaredLogger) {
     })
 }
 
-// Initialise name lookup DB available on websocket side
-func clientInit() {
-    ServiceLeft = make(map[string]*Client)
-}
-
 // Start http server
 func HttpStart(s *zap.SugaredLogger) error {
     track := newTracker()
     go track.run(s)
-    clientInit()
     setupRoutes(track, s)
     portStr := strconv.Itoa(common.MyInfo.Oport)
     addr := strings.Join([]string{common.MyInfo.ListenIp, portStr}, ":")
