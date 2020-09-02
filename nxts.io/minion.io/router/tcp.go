@@ -108,7 +108,7 @@ func handleHttpRequest(handle *sconn, s *zap.SugaredLogger) {
 
 func TcpServer(s *zap.SugaredLogger) error {
     // Listen for incoming connections
-    portStr := strconv.Itoa(common.MyInfo.Oport)
+    portStr := strconv.Itoa(common.MyInfo.Iport)
     addr := strings.Join([]string{common.MyInfo.ListenIp, portStr}, ":")
     l, e := net.Listen("tcp", addr)
     if e != nil {
@@ -118,7 +118,7 @@ func TcpServer(s *zap.SugaredLogger) error {
 
     // Close the listener when the application closes
     defer l.Close()
-    s.Infow("TCP", addr)
+    s.Infow("tcp:", "addr", addr)
     for {
         // Listen for an incoming connection
         conn, e := l.Accept()

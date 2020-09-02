@@ -105,7 +105,7 @@ func (c *Client) rxHandler(s *zap.SugaredLogger) {
         s.Errorw("http", "err", e)
     }
     s.Debugw("http", "type", messageType)
-    s.Debugw("http", "type", string(p))
+    s.Debugw("http", "body", string(p))
     words := bytes.Split(p, space)
     if bytes.Equal(words[0], []byte("NCTR")) || bytes.Equal(words[0], []byte("NAGT")) {
         e = c.conn.WriteMessage(messageType, bytes.Join([][]byte{[]byte("Hello"), words[0]}, space))
@@ -231,7 +231,7 @@ func HttpStart(s *zap.SugaredLogger) error {
     go track.run(s)
     clientInit()
     setupRoutes(track, s)
-    portStr := strconv.Itoa(common.MyInfo.Iport)
+    portStr := strconv.Itoa(common.MyInfo.Oport)
     addr := strings.Join([]string{common.MyInfo.ListenIp, portStr}, ":")
     s.Debug("http", string(addr))
     e := http.ListenAndServe(addr, nil)

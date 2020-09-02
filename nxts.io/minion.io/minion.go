@@ -28,5 +28,8 @@ func main() {
     sugar := logger.Sugar()
     args.ArgHandler(sugar)
     env.EnvHandler(sugar)
-    router.HttpStart(sugar)
+    go router.HttpStart(sugar)
+    go router.TcpServer(sugar)
+    for {
+    }
 }
