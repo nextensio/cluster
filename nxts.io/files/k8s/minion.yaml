@@ -1,7 +1,11 @@
+#
+# Author: Davi Gupta (davigupta@gmail.com)
+# Copyright 2019
+#
 apiVersion: v1
 kind: Service
 metadata:
-  name: abc-in-minion
+  name: abc-com-in
   labels:
     app: minion
 spec:
@@ -14,7 +18,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: abc-out-minion
+  name: abc-com-out
   labels:
     app: minion
 spec:
@@ -23,6 +27,59 @@ spec:
     name: outside
   selector:
     app: minion
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: abc-gw-svc
+spec:
+  hosts:
+  - "gateway.sjc.nextensio.net"
+  gateways:
+  - nextensio-ingressgateway
+  http:
+  - match:
+    - headers:
+       x-nextensio-for:
+         prefix: "agent-10"
+    route:
+    - destination:
+        host:
+          abc-com-in
+        port:
+          number: 8001
+  - match:
+    - headers:
+       x-nextensio-connect:
+         prefix: "agent-10"
+    route:
+    - destination:
+        host:
+          abc-com-out
+        port:
+          number: 8002
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: abc-ingress
+spec:
+  host: abc-com-in
+  subsets:
+  - name: abc
+    labels:
+      version: v1
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: abc-egress
+spec:
+  host: abc-com-out
+  subsets:
+  - name: abc
+    labels:
+      version: v1
 ---
 apiVersion: extensions/v1beta1
 kind: Deployment
@@ -40,7 +97,7 @@ spec:
     spec:
       containers:
       - name: minion
-        image: davigupta/minion:0.59
+        image: davigupta/minion:1.00
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8001
