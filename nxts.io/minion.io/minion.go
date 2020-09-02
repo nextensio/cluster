@@ -18,7 +18,7 @@ import (
     "go.uber.org/zap"
     "minion.io/args"
     "minion.io/env"
-    "minion.io/http"
+    "minion.io/router"
 )
 
 func main() {
@@ -28,5 +28,5 @@ func main() {
     sugar := logger.Sugar()
     args.ArgHandler(sugar)
     env.EnvHandler(sugar)
-    http.HttpStart(sugar)
+    router.HttpStart(sugar)
 }
