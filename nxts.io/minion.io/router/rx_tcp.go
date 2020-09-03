@@ -104,8 +104,6 @@ func TcpServer(t *TcpRxTracker, s *zap.SugaredLogger) error {
         
         go client.handleHttpRequest(s)
     }
-
-    return nil
 }
 
 func TcpRxStart(s *zap.SugaredLogger) {

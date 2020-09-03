@@ -265,7 +265,6 @@ func ConsulDnsLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e e
                 fwd.Pod = ""
                 return fwd, nil
             }
-            break
         }
     }
 
