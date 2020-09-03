@@ -11,8 +11,8 @@ variables:
 # repository in /go/src/gitlab.com/namespace/project
 # Thus, making a symbolic link corrects this.
 before_script:
-  - mkdir -p $GOPATH/src/minion.io
-  - ln -svf $CI_PROJECT_DIR/nxts.io/minion.io $GOPATH/src
+  - mkdir -p $GOPATH/src
+  - ln -svf $CI_PROJECT_DIR/nxts.io/minion.io $GOPATH/src/
   - cd $GOPATH/src/minion.io
 
 stages:
