@@ -11,36 +11,47 @@ import (
     "minion.io/consul"
 )
 
-type WsTracker struct {
-    clients map[*WsClient]bool
+type Tracker struct {
+    ws map[*WsClient]bool
     register chan *WsClient
     unregister chan *WsClient
     add chan *WsClient
     del chan *WsClient
+    connect chan string
+    conn chan *TcpClConn
+    tcpTx map[*TcpClConn]bool
+    close chan *TcpClConn
 }
 
 type TcpRxTracker struct {
-    clients map[*TcpSeConn]bool
+    tcpRx map[*TcpSeConn]bool
     register chan *TcpSeConn
     unregister chan *TcpSeConn
 }
 
 var serviceLeft map[string]*WsClient
+var destRight map[string]*TcpClConn
 var mL sync.RWMutex
+var mR sync.RWMutex
 
 // Initialise name lookup DB available on websocket side
 func clientInit() {
     serviceLeft = make(map[string]*WsClient)
+    destRight = make(map[string]*TcpClConn)
 }
 
-func NewWsTracker() *WsTracker {
+func NewTracker() *Tracker {
     clientInit()
-    return &WsTracker {
+    return &Tracker {
         register: make(chan *WsClient),
         unregister: make(chan *WsClient),
-        clients: make(map[*WsClient]bool),
+        ws: make(map[*WsClient]bool),
         add: make(chan *WsClient),
         del: make(chan *WsClient),
+        tcpTx: make(map[*TcpClConn]bool),
+        close: make(chan *TcpClConn),
+        connect: make(chan string),
+        conn: make(chan *TcpClConn),
     }
 }
 
@@ -66,6 +77,20 @@ func delService(c *WsClient, s *zap.SugaredLogger) {
     consul.DeRegisterConsul(c.name, s)
 }
 
+func addDest(c *TcpClConn, s *zap.SugaredLogger) {
+    mR.Lock()
+    destRight[c.name] = c
+    mR.Unlock()
+    s.Debugf("tracker: dest %v", destRight)
+}
+
+func delDest(c *TcpClConn, s *zap.SugaredLogger) {
+    mR.Lock()
+    delete(destRight, c.name)
+    mR.Unlock()
+    s.Debugf("tracker: dest %v", destRight)
+}
+
 func LookupLeftService(name string) *WsClient {
     mL.RLock()
     v := serviceLeft[name]
@@ -73,20 +98,23 @@ func LookupLeftService(name string) *WsClient {
     return v
 }
 
-func LookupRightService(name string) *WsClient {
-    return nil
+func LookupRightDest(name string) *TcpClConn {
+    mR.RLock()
+    v := destRight[name]
+    mR.RUnlock()
+    return v
 }
 
-func (t *WsTracker) run(s *zap.SugaredLogger) {
+func (t *Tracker) run(s *zap.SugaredLogger) {
     for {
         select {
         case client := <- t.register:
             s.Debug("tracker: registering client")
-            t.clients[client] = true
+            t.ws[client] = true
         case client := <- t.unregister:
             s.Debug("tracker: unregistering client")
-            if _, ok := t.clients[client]; ok {
-                delete(t.clients, client)
+            if _, ok := t.ws[client]; ok {
+                delete(t.ws, client)
                 close(client.send)
             }
         case client := <- t.add:
@@ -95,6 +123,21 @@ func (t *WsTracker) run(s *zap.SugaredLogger) {
         case client := <- t.del:
             s.Debug("tracker: deregistering services")
             delService(client, s)
+        case name := <- t.connect:
+            s.Debugf("tracker: connect to %s", name)
+            tcpConn, e := TcpClient(t, name, s)
+            if e == nil {
+                t.tcpTx[tcpConn] = true
+                addDest(tcpConn, s)
+            }
+            t.conn <- tcpConn
+        case tcpConn := <- t.close:
+            s.Debugf("tracker: connect to %v", tcpConn.name)
+            delDest(tcpConn, s)
+            if _, ok := t.tcpTx[tcpConn]; ok {
+                delete(t.tcpTx, tcpConn)
+                close(tcpConn.send)
+            }
         }
     }
 }
@@ -103,7 +146,7 @@ func NewTcpRxTracker() *TcpRxTracker {
     return &TcpRxTracker {
         register: make(chan *TcpSeConn),
         unregister: make(chan *TcpSeConn),
-        clients: make(map[*TcpSeConn]bool),
+        tcpRx: make(map[*TcpSeConn]bool),
     }
 }
 
@@ -112,11 +155,11 @@ func (t *TcpRxTracker) run(s *zap.SugaredLogger) {
         select {
         case client := <- t.register:
             s.Debug("tracker: registering tcp rx client")
-            t.clients[client] = true
+            t.tcpRx[client] = true
         case client := <- t.unregister:
             s.Debug("tracker: unregistering tcp rx client")
-            if _, ok := t.clients[client]; ok {
-                delete(t.clients, client)
+            if _, ok := t.tcpRx[client]; ok {
+                delete(t.tcpRx, client)
             }
         }
     }

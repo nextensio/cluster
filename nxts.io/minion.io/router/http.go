@@ -31,7 +31,7 @@ var (
 )
 
 type WsClient struct {
-    track *WsTracker
+    track *Tracker
     conn *websocket.Conn
     send chan []byte
     codec string
@@ -162,23 +162,21 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
             }
 
             // open a TCP connection if not opened
-            /*
-            right := LookupRightService[dn]
+            right := LookupRightDest(fwd.Dest)
             if right == nil {
-                c.track.conn <- fwd.Dest
-                ok, right <- c.track.conn_ok
-            } else {
-                ok := right.ok
+                c.track.connect <- fwd.Dest
+                right = <- c.track.conn
             }
-            if ok {
+            if right != nil {
                 right.send <- p
+            } else {
+                s.Debug("http: packet drop")
             }
-            */
         }
     }
 }
 
-func wsEndpoint(t *WsTracker, w http.ResponseWriter, r *http.Request,
+func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
                 s *zap.SugaredLogger) {
     //TODO : Fix handling of Origin
     upgrader.CheckOrigin = func(r *http.Request) bool { 
@@ -212,7 +210,7 @@ func wsEndpoint(t *WsTracker, w http.ResponseWriter, r *http.Request,
 }
 
 // Register for websocket handler
-func setupRoutes(t *WsTracker, s *zap.SugaredLogger) {
+func setupRoutes(t *Tracker, s *zap.SugaredLogger) {
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         wsEndpoint(t, w, r, s)
     })
@@ -220,7 +218,7 @@ func setupRoutes(t *WsTracker, s *zap.SugaredLogger) {
 
 // Start http server
 func HttpStart(s *zap.SugaredLogger) error {
-    track := NewWsTracker()
+    track := NewTracker()
     go track.run(s)
     setupRoutes(track, s)
     portStr := strconv.Itoa(common.MyInfo.Oport)

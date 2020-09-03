@@ -18,6 +18,7 @@ type TcpClConn struct {
     conn net.Conn
     last time.Time
     send chan []byte
+    name string
 }
 
 /*
@@ -26,22 +27,24 @@ type TcpClConn struct {
  *     Handle packets going to another POD (inter or intra nextensio
  *     cluster)
  */
-func (c *TcpClConn) txHandler(s *zap.SugaredLogger) {
-    ticker := time.NewTicker(common.IdlePeriod)
+func (c *TcpClConn) txHandler(t *Tracker, s *zap.SugaredLogger) {
+    ticker := time.NewTicker(common.IdlePeriod * time.Second)
     defer func() {
         ticker.Stop()
         c.conn.Close()
+        t.close <- c
     }()
 
     for {
         select {
         case <- ticker.C:
-            s.Debug("tcp: check for idle activity")
+            s.Debug("tx_tcp: check for idle activity")
             // if c.last > IDLE time, then close the connection
         case msg, ok := <- c.send:
             if !ok {
                 return
             }
+            s.Debug("tx_tcp: got the packet to sent")
             c.conn.Write(msg)
             n := len(c.send)
             for i := 0; i < n; i++ {
@@ -57,16 +60,17 @@ func (c *TcpClConn) txHandler(s *zap.SugaredLogger) {
  *     create connection to another POD (inter or intra nextensio
  *     cluster)
  */
-func TcpClient(name string, s *zap.SugaredLogger) (*TcpClConn, error) {
+func TcpClient(t *Tracker, name string, s *zap.SugaredLogger) (*TcpClConn, error) {
     servAddr := strings.Join([]string{name, "80"}, ":")
     conn, e := net.Dial("tcp", servAddr)
     if e != nil {
-        s.Debugw("tcp:", "err", e)
+        s.Debugw("tx_tcp:", "err", e)
         return nil, e
     }
     v := TcpClConn{conn: conn, last: time.Now(), 
-                   send: make(chan []byte, common.MaxQueueSize)}
-    go v.txHandler(s)
+                   send: make(chan []byte, common.MaxQueueSize), name: name}
+    s.Debugf("tx_tcp: dial tcp connection to %v", servAddr)
+    go v.txHandler(t, s)
 
     return &v, e
 }

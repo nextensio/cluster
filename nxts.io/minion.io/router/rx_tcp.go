@@ -26,16 +26,16 @@ func httpSendOk(handle *TcpSeConn, s *zap.SugaredLogger) {
     resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n")
     _, e := handle.conn.Write(resp)
     if e != nil {
-        s.Errorw("tcp:", "err", e)
+        s.Errorw("rx_tcp:", "err", e)
     }
-    s.Debug("tcp: http ok")
+    s.Debug("rx_tcp: http ok")
 }
 
 func httpForLeft(pak []byte, s *zap.SugaredLogger) {
     reader := bufio.NewReader(strings.NewReader(string(pak)))
     r, e := http.ReadRequest(reader)
     if e != nil {
-        s.Errorw("tcp:", "err", e)
+        s.Errorw("rx_tcp:", "err", e)
     }
     dest := r.Header.Get("x-nextensio-for")
     destinfo := strings.Split(dest, ":")
@@ -45,7 +45,7 @@ func httpForLeft(pak []byte, s *zap.SugaredLogger) {
     if left != nil {
         left.send <- pak
     } else {
-        s.Debug("tcp: packet drop")
+        s.Debug("rx_tcp: packet drop")
     }
 }
 
@@ -61,11 +61,11 @@ func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
     for {
          len, e:= c.conn.Read(buf)
          if e == io.EOF {
-             s.Info("tcp: conn EOF received")
+             s.Info("rx_tcp: conn EOF received")
              break
          }
          if e != nil {
-             s.Errorw("tcp:", "err", e)
+             s.Errorw("rx_tcp:", "err", e)
          } else {
              pLen += Execute(state, buf, len, s)
              if IsBodyComplete(state) == true {
@@ -83,18 +83,18 @@ func TcpServer(t *TcpRxTracker, s *zap.SugaredLogger) error {
     addr := strings.Join([]string{common.MyInfo.ListenIp, portStr}, ":")
     l, e := net.Listen("tcp", addr)
     if e != nil {
-        s.Errorw("tcp:", "err", e)
+        s.Errorw("rx_tcp:", "err", e)
         return e
     }   
 
     // Close the listener when the application closes
     defer l.Close()
-    s.Infow("tcp:", "addr", addr)
+    s.Infow("rx_tcp:", "addr", addr)
     for {
         // Listen for an incoming connection
         conn, e := l.Accept()
         if e != nil {
-            s.Errorw("tcp:", "err", e)
+            s.Errorw("rx_tcp:", "err", e)
             return e
         }
 
