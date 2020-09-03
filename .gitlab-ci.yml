@@ -12,7 +12,7 @@ variables:
 # Thus, making a symbolic link corrects this.
 before_script:
   - mkdir -p $GOPATH/src/minion.io
-  - ln -svf $CI_PROJECT_DIR/cluster/nxts.io/minion.io $GOPATH/src/minion.io
+  - ln -svf $CI_PROJECT_DIR/nxts.io/minion.io $GOPATH/src/minion.io
   - cd $GOPATH/src/minion.io
 
 stages:
