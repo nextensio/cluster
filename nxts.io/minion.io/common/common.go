@@ -25,6 +25,8 @@ const (
     SelfDest = 1
     LocalDest = 2
     RemoteDest = 3
+    MaxQueueSize = 256
+    IdlePeriod = 60
 )
 
 // Structure for storing various parameters for this program

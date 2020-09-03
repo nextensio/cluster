@@ -31,7 +31,7 @@ var (
 )
 
 type WsClient struct {
-    track *Tracker
+    track *WsTracker
     conn *websocket.Conn
     send chan []byte
     codec string
@@ -54,7 +54,7 @@ func (c *WsClient) txHandler(s *zap.SugaredLogger) {
             if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
                 return
             }
-        case msg, ok := <-c.send:
+        case msg, ok := <- c.send:
             c.conn.SetWriteDeadline(time.Now().Add(common.WriteWait))
             if !ok {
                 c.conn.WriteMessage(websocket.CloseMessage, []byte{})
@@ -178,7 +178,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
     }
 }
 
-func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
+func wsEndpoint(t *WsTracker, w http.ResponseWriter, r *http.Request,
                 s *zap.SugaredLogger) {
     //TODO : Fix handling of Origin
     upgrader.CheckOrigin = func(r *http.Request) bool { 
@@ -202,7 +202,9 @@ func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
     s.Debug("http: Client connected")
 
     // add the connection for the bookeeping
-    client := &WsClient{track: t, conn: ws, send: make(chan []byte, 256), codec: codec}
+    client := &WsClient{track: t, conn: ws, 
+                        send: make(chan []byte, common.MaxQueueSize),
+                        codec: codec}
     client.track.register <- client
 
     go client.txHandler(s)
@@ -210,7 +212,7 @@ func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
 }
 
 // Register for websocket handler
-func setupRoutes(t *Tracker, s *zap.SugaredLogger) {
+func setupRoutes(t *WsTracker, s *zap.SugaredLogger) {
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         wsEndpoint(t, w, r, s)
     })
@@ -218,7 +220,7 @@ func setupRoutes(t *Tracker, s *zap.SugaredLogger) {
 
 // Start http server
 func HttpStart(s *zap.SugaredLogger) error {
-    track := newTracker()
+    track := NewWsTracker()
     go track.run(s)
     setupRoutes(track, s)
     portStr := strconv.Itoa(common.MyInfo.Oport)

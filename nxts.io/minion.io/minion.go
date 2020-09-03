@@ -29,7 +29,7 @@ func main() {
     args.ArgHandler(sugar)
     env.EnvHandler(sugar)
     go router.HttpStart(sugar)
-    go router.TcpServer(sugar)
+    go router.TcpRxStart(sugar)
     for {
     }
 }

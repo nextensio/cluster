@@ -11,12 +11,18 @@ import (
     "minion.io/consul"
 )
 
-type Tracker struct {
+type WsTracker struct {
     clients map[*WsClient]bool
     register chan *WsClient
     unregister chan *WsClient
     add chan *WsClient
     del chan *WsClient
+}
+
+type TcpRxTracker struct {
+    clients map[*TcpSeConn]bool
+    register chan *TcpSeConn
+    unregister chan *TcpSeConn
 }
 
 var serviceLeft map[string]*WsClient
@@ -27,9 +33,9 @@ func clientInit() {
     serviceLeft = make(map[string]*WsClient)
 }
 
-func newTracker() *Tracker {
+func NewWsTracker() *WsTracker {
     clientInit()
-    return &Tracker {
+    return &WsTracker {
         register: make(chan *WsClient),
         unregister: make(chan *WsClient),
         clients: make(map[*WsClient]bool),
@@ -71,7 +77,7 @@ func LookupRightService(name string) *WsClient {
     return nil
 }
 
-func (t *Tracker) run(s *zap.SugaredLogger) {
+func (t *WsTracker) run(s *zap.SugaredLogger) {
     for {
         select {
         case client := <- t.register:
@@ -89,6 +95,29 @@ func (t *Tracker) run(s *zap.SugaredLogger) {
         case client := <- t.del:
             s.Debug("tracker: deregistering services")
             delService(client, s)
+        }
+    }
+}
+
+func NewTcpRxTracker() *TcpRxTracker {
+    return &TcpRxTracker {
+        register: make(chan *TcpSeConn),
+        unregister: make(chan *TcpSeConn),
+        clients: make(map[*TcpSeConn]bool),
+    }
+}
+
+func (t *TcpRxTracker) run(s *zap.SugaredLogger) {
+    for {
+        select {
+        case client := <- t.register:
+            s.Debug("tracker: registering tcp rx client")
+            t.clients[client] = true
+        case client := <- t.unregister:
+            s.Debug("tracker: unregistering tcp rx client")
+            if _, ok := t.clients[client]; ok {
+                delete(t.clients, client)
+            }
         }
     }
 }

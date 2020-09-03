@@ -1,6 +1,5 @@
 /*
- * tcp.go: Handle incoming tcp request. Keep the TCP connection persistent for a 
- *         a configured time
+ * rx_tcp.go: Rx Packet Processor 
  * 
  * Davi Gupta, davigupta@gmail.com, Jun 2019
  */
@@ -10,7 +9,6 @@ package router
 import (
     "io"
     "net"
-    "time"
     "bufio"
     "strings"
     "strconv"
@@ -19,43 +17,12 @@ import (
     "minion.io/common"
 )
 
-type sconn struct {
-     conn net.Conn
-     pos int
+type TcpSeConn struct {
+    track *TcpRxTracker
+    conn net.Conn
 }
 
-type cconn struct {
-     conn net.Conn
-     pos int
-     live bool
-     last time.Time
-}
-
-var tcpSerConn []*sconn
-var tcpCliConn []*cconn
-var ticker *time.Ticker
-
-func TcpReaper(sugar *zap.SugaredLogger) {
-    for range ticker.C {
-        sugar.Debug("tcp: tick")
-    }
-}
-
-func sconnRemove(s []*sconn, i int) {
-    s[i] = s[len(s) - 1]
-    s = s[:len(s) - 1]
-}
-
-func TcpStartPeriod(s *zap.SugaredLogger) {
-    ticker = time.NewTicker(common.Period * time.Millisecond)
-    go TcpReaper(s)
-}
-
-func TcpStopPeriod(s *zap.SugaredLogger) {
-    ticker.Stop()
-}
-
-func httpSendOk(handle *sconn, s *zap.SugaredLogger) {
+func httpSendOk(handle *TcpSeConn, s *zap.SugaredLogger) {
     resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n")
     _, e := handle.conn.Write(resp)
     if e != nil {
@@ -82,13 +49,17 @@ func httpForLeft(pak []byte, s *zap.SugaredLogger) {
     }
 }
 
-func handleHttpRequest(handle *sconn, s *zap.SugaredLogger) {
+func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
     // Make a buffer to hold incoming data
     var pLen int = 0
     buf := make([]byte, common.TcpBuffSize)
     state := InitCtx()
+    defer func() {
+        c.track.unregister <- c
+        c.conn.Close()
+    }()
     for {
-         len, e:= handle.conn.Read(buf)
+         len, e:= c.conn.Read(buf)
          if e == io.EOF {
              s.Info("tcp: conn EOF received")
              break
@@ -98,7 +69,7 @@ func handleHttpRequest(handle *sconn, s *zap.SugaredLogger) {
          } else {
              pLen += Execute(state, buf, len, s)
              if IsBodyComplete(state) == true {
-                 httpSendOk(handle, s)
+                 httpSendOk(c, s)
                  pak := append(GetHeaders(state), GetBody(state)...)
                  httpForLeft(pak, s)
              }
@@ -106,7 +77,7 @@ func handleHttpRequest(handle *sconn, s *zap.SugaredLogger) {
     }
 }
 
-func TcpServer(s *zap.SugaredLogger) error {
+func TcpServer(t *TcpRxTracker, s *zap.SugaredLogger) error {
     // Listen for incoming connections
     portStr := strconv.Itoa(common.MyInfo.Iport)
     addr := strings.Join([]string{common.MyInfo.ListenIp, portStr}, ":")
@@ -128,15 +99,17 @@ func TcpServer(s *zap.SugaredLogger) error {
         }
 
         // Handle connections in a new goroutine
-        tcpSerConn = append(tcpSerConn, &sconn{conn, 0})
-        t := tcpSerConn[len(tcpSerConn) - 1]
-        t.pos  = len(tcpSerConn) - 1
-        go handleHttpRequest(t, s)
+        client := &TcpSeConn{track: t, conn: conn}
+        client.track.register <- client
+        
+        go client.handleHttpRequest(s)
     }
 
     return nil
 }
 
-func TcpClient(s *zap.SugaredLogger) error {
-    return nil
+func TcpRxStart(s *zap.SugaredLogger) {
+    track := NewTcpRxTracker()
+    go track.run(s)
+    go TcpServer(track, s)
 }
