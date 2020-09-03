@@ -1,6 +1,16 @@
 # minion
 Humble workers
 
+Environment
+
+mkdir -p ${HOME}/work/go/src
+export GOPATH=${HOME}/work/go
+cd ${HOME}/work
+git clone git@gitlab.com:nextensio/cluster.git
+cd ${HOME}/work/go/src
+ln -s ${HOME}/work/cluster/nxts.io/minion.io
+go build
+
 # Running test for a particular module
 cd nxts.io/minion.io/router
 go test -v
