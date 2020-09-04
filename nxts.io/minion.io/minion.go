@@ -1,5 +1,5 @@
 /*
- * main.go:
+ * minion.go:
  *
  * Workers of Nextensio world. They work tirelessly connecting two islands
  * in a secure way. Let the work begin.
