@@ -12,7 +12,7 @@ from kubernetes.client.rest import ApiException
 import re
 from pprint import pprint
 
-IMAGE = "davigupta/minion:0.14"
+IMAGE = "davigupta/minion:0.69"
 
 def main(pod, namespace, delete, host, ca, token, cluster):
     cfg = client.Configuration()
