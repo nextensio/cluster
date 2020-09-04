@@ -4,9 +4,9 @@ metadata:
   name: consul
 spec:
   hosts:
-  - "consul.kismis.org"
+  - "consul.sjc.nextensio.net"
   gateways:
-  - kismis-gateway
+  - service-gateway
   http:
   - match:
     - uri:

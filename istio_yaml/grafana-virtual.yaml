@@ -4,9 +4,9 @@ metadata:
   name: grafana
 spec:
   hosts:
-  - "grafana.kismis.org"
+  - "grafana.sjc.nextensio.net"
   gateways:
-  - kismis-gateway
+  - service-gateway
   http:
   - match:
     - uri:
