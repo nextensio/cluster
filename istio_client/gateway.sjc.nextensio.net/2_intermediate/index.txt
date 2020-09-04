@@ -1,2 +1,0 @@
-V	200410061147Z		100212	unknown	/C=US/ST=Denial/L=Springfield/O=Dis/CN=gateway.sjc.nextensio.net
-V	200410061149Z		100213	unknown	/C=US/ST=Denial/L=Springfield/O=Dis/CN=gateway.sjc.nextensio.net
