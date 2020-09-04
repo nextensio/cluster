@@ -27,18 +27,3 @@ spec:
       protocol: HTTP
     hosts:
     - "gateway.sjc.nextensio.net"
----
-apiVersion: networking.istio.io/v1alpha3
-kind: Gateway
-metadata:
-  name: nextensio-egressgateway
-spec:
-  selector:
-    istio: egressgateway
-  servers:
-  - port:
-      number: 80
-      name: http-ric
-      protocol: HTTP
-    hosts:
-    - gateway.ric.nextensio.net
