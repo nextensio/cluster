@@ -1,12 +1,11 @@
 #
 # Author: Davi Gupta (davigupta@gmail.com)
-# Copyright Mar 2019
+# Copyright 2019
 #
 apiVersion: networking.istio.io/v1alpha3
 kind: VirtualService
 metadata:
-  name: tom-vs
-  namespace: default
+  name: tom-gw-svc
 spec:
   hosts:
   - "gateway.sjc.nextensio.net"
@@ -15,8 +14,8 @@ spec:
   http:
   - match:
     - headers:
-        x-nextensio-for: 
-          prefix: "tom.com"
+       x-nextensio-for: 
+         prefix: "agent-10"
     route:
     - destination:
         host: 
@@ -25,32 +24,33 @@ spec:
           number: 80
   - match:
     - headers:
-        x-nextensio-connect: 
-          prefix: "tom.com"
+       x-nextensio-connect: 
+         prefix: "agent-10"
     route:
     - destination:
         host: 
           tom-com-out
         port:
           number: 8002
-    websocketUpgrade: true
 ---
 apiVersion: networking.istio.io/v1alpha3
 kind: DestinationRule
 metadata:
   name: tom-ingress
-  namespace: default
 spec:
   host: tom-com-in
   subsets:
   - name: tom
+    labels:
+      version: v1
 ---
 apiVersion: networking.istio.io/v1alpha3
 kind: DestinationRule
 metadata:
   name: tom-egress
-  namespace: default
 spec:
   host: tom-com-out
   subsets:
   - name: tom
+    labels:
+      version: v1

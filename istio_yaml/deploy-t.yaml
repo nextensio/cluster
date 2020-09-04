@@ -1,14 +1,38 @@
-#
-# Author: Davi Gupta (davigupta@gmail.com)
-# Copyright Mar 2019
-#
-apiVersion: extensions/v1beta1
+apiVersion: v1
+kind: Service
+metadata:
+  name: tom-com-in
+  labels:
+    app: tom
+spec:
+  ports:
+  - port: 80
+    name: http
+  selector:
+    app: tom
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tom-com-out
+  labels:
+    app: tom
+spec:
+  ports:
+  - port: 8002
+    name: http
+  selector:
+    app: tom
+---
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: tom
-  namespace: default
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      app: tom
   template:
     metadata:
       labels:
@@ -19,32 +43,32 @@ spec:
     spec:
       containers:
       - name: minion
-        image: davigupta/minion:0.56
+        image: davigupta/minion:0.69
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
         - containerPort: 8002
         env:
-          - name: MY_NODE_NAME
-            valueFrom:
-              fieldRef:
-                fieldPath: spec.nodeName
-          - name: MY_POD_NAME
-            value: "tom-com"
-          - name: MY_POD_NAMESPACE
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.namespace
-          - name: MY_POD_IP
-            valueFrom:
-              fieldRef:
-                fieldPath: status.podIP
-          - name: MY_POD_CLUSTER
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['cluster']
-          - name: MY_DNS
-            value: "10.110.209.4"
+        - name: MY_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: MY_POD_NAME
+          value: "tom-com"
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: MY_POD_CLUSTER
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['cluster']
+        - name: MY_DNS
+          value: "10.110.209.4"
       terminationGracePeriodSeconds: 60
       imagePullSecrets:
       - name: regcred
