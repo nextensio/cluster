@@ -1,36 +1,26 @@
 # This file is a template, and might need editing before it works on your project.
-image: golang:latest
+image: docker:19.03.12
 
 variables:
   # Please edit to your GitLab project
   REPO_NAME: gitlab.com/nextensio/cluster
-# The problem is that to be able to use go get, one needs to put
-# the repository in the $GOPATH. So for example if your gitlab domain
-# is gitlab.com, and that your repository is namespace/project, and
-# the default GOPATH being /go, then you'd need to have your
-# repository in /go/src/gitlab.com/namespace/project
-# Thus, making a symbolic link corrects this.
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+
+services:
+  - docker:19.03.12-dind
+
 before_script:
-  - mkdir -p $GOPATH/src
-  - ln -svf $CI_PROJECT_DIR/nxts.io/minion.io $GOPATH/src/
-  - cd $GOPATH/src/minion.io
+  - docker info
 
 stages:
-  - test
   - build
+  - test
   - deploy
 
-format:
-  stage: test
-  script:
-    - go fmt $(go list ./... | grep -v /vendor/)
-    - go vet $(go list ./... | grep -v /vendor/)
-    - go test -race $(go list ./... | grep -v /vendor/ | grep -v consul)
-
-compile:
+compile-and-test:
   stage: build
   script:
-    - go build -race -ldflags "-extldflags '-static'" -o $CI_PROJECT_DIR/mybinary
-  artifacts:
-    paths:
-      - mybinary
+    - cd $CI_PROJECT_DIR/nxts.io; docker build -t minion-go .
+    - docker run minion-go sh -c 'go fmt $(go list ./... | grep -v /vendor/); go vet $(go list ./... | grep -v /vendor/); go test -race $(go list ./... | grep -v /vendor/ | grep -v consul)'
+    - cd $CI_PROJECT_DIR/minion; docker build -t minion-py .
