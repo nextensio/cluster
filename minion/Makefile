@@ -5,7 +5,7 @@ image=$(shell docker images $(USER)/$(NAME):$(VERSION) -q)
 
 all:
 	rm -r -f files/src/version
-	echo $(VERSION) > files/version
+	echo $(VERSION) > files/src/version
 	docker build -t $(USER)/$(NAME):$(VERSION) .
 
 clean:
