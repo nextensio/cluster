@@ -1,3 +1,7 @@
+/*
+ * auth.go - mock library used by minion python code
+ * Author: Davi Gupta (davigupta@gmail.com), Sep 2020
+ */
 package main
 
 import "C"

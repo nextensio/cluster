@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+#
+# Author: Davi Gupta (davigupta@gmail.com), Apr 2019
+#
+
 import re
 
 len_regex_b = re.compile(b'content-length:\s?(.*)\r\n', re.IGNORECASE)

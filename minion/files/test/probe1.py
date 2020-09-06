@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 #
-# Davi Gupta, May 2020
+# Author: Davi Gupta (davigupta@gmail.com), May 2020
 #
 
 import os

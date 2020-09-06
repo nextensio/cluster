@@ -1,7 +1,7 @@
 /*
  * tracker.go: maintains list of clients
  *
- * Davi Gupta, davigupta@gmail.com, Sep 2020
+ * Author: Davi Gupta (davigupta@gmail.com), Sep 2020
  */
 package router
 

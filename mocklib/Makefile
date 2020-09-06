@@ -1,3 +1,7 @@
+#
+# Author: Davi Gupta (davigupta@gmail.com), Sep 2020
+#
+
 all: libauth.so
 
 libauth.so: auth.go

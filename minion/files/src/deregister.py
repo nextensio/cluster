@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+#
+# Author: Davi Gupta (davigupta@gmail.com), Sep 2020
+#
+
 import os
 import logging
 import minion

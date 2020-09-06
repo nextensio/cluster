@@ -9,7 +9,7 @@
  * communication happens over websocket. Format of data exchanged over websocket
  * is json or http/1.1 or http/2 formatted.
  * 
- * Davi Gupta, davigupta@gmail.com, Jun 2019
+ * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
  */
 
 package main

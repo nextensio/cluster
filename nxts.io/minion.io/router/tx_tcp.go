@@ -1,7 +1,7 @@
 /*
  * tx_tcp.go: Tx Packet Processor
  * 
- * Davi Gupta, davigupta@gmail.com, Sep 2020
+ * Author: Davi Gupta (davigupta@gmail.com), Sep 2020
  */
 
 package router

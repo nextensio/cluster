@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Davi Gupta, Mar 2019
+# Author: Davi Gupta (davigupta@gmail.com), Mar 2019
 # TOKEN=$(curl https://raw.githubusercontent.com/istio/istio/release-1.0/security/tools/jwt/samples/demo.jwt -s)
 #
 

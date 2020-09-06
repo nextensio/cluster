@@ -1,7 +1,7 @@
 /*
  * common.go: variables, constant, structures shared across packages
  * 
- * Davi Gupta, davigupta@gmail.com, Jun 2019
+ * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
  */
 
 package common

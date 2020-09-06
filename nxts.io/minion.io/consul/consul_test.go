@@ -1,7 +1,7 @@
 /*
  * consul_test.go: Testing
  * 
- * Davi Gupta, davigupta@gmail.com, Jun 2019
+ * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
  */
 
 /*

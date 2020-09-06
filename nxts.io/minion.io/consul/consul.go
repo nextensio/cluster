@@ -1,7 +1,7 @@
 /*
  * consul.go: regsiter services with consul
  * 
- * Davi Gupta, davigupta@gmail.com, Jun 2019
+ * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
  */
 
 package consul

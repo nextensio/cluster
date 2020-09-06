@@ -2,7 +2,7 @@
  * parse.go: Simple HTTP/1.1 parser, not complete -- only handles Http Header
  *          having content-length
  * 
- * Davi Gupta, davigupta@gmail.com, Jun 2019
+ * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
  */
 
 package router

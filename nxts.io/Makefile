@@ -1,3 +1,7 @@
+#
+# Author: Davi Gupta (davigupta@gmail.com), Sep 2020
+#
+
 VERSION=1.00
 NAME=minion
 USER=davigupta

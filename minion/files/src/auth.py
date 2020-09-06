@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 #
-# Davi Gupta, Sep 2020
+# Author: Davi Gupta (davigupta@gmail.com), Sep 2020
 #
 
 """

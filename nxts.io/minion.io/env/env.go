@@ -1,7 +1,7 @@
 /*
  * env.go: parse environment variables
  * 
- * Davi Gupta, davigupta@gmail.com, Jun 2019
+ * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
  */
 
 package env
