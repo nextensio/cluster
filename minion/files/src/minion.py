@@ -76,6 +76,7 @@ len_regex_b = re.compile(b'content-length:\s?(.*)\r\n', re.IGNORECASE)
 usr_regex_b = re.compile(b'x-nextensio-attr:\s?(.*)\r\n', re.IGNORECASE)
 my_info['services'] = []
 UUID = 0
+CLITYPE = "agent"
 
 def valid_ip(address):
     try:
@@ -387,6 +388,10 @@ async def l_worker(pin, pout, tunnel, websocket, path):
         else:
             ssec = sec
         services = ssec.split()
+        if services[0] == "NCTR":
+            CLITYPE="connector"
+        else:
+            CLITYPE="agent"
         if services[0] == "NCTR" or services[0] == "NAGT":
             greeting = f"Hello {services[0]}!"
             #
@@ -436,7 +441,7 @@ async def q_worker(pin):
             pak = await queues[pin].get()
             log.info(f"got pak, handle {handles.get(pin)} for {pin}")
             access = True
-            if pin == "outside":
+            if pin == "outside" and CLITYPE == "connector":
                " check access "
                m = usr_regex_b.search(pak)
                if m == None:
