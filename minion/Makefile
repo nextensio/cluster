@@ -1,13 +1,13 @@
-VERSION=0.69
+VERSION=0.70
 NAME=minion
 USER=davigupta
 image=$(shell docker images $(USER)/$(NAME):$(VERSION) -q)
 
 all:
-	rm -r -f files/version
+	rm -r -f files/src/version
 	echo $(VERSION) > files/version
 	docker build -t $(USER)/$(NAME):$(VERSION) .
 
 clean:
 	-docker rmi $(image)
-	-rm -r -f files/version
+	-rm -r -f files/src/version

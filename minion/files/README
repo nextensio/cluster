@@ -8,7 +8,7 @@ docker run -it --net host \
            -e MY_POD_CLUSTER='sjc' \
            -e MY_DNS='157.230.160.64' \
            -e MY_SIM_TEST='T' \
-           davigupta/minion:0.65
+           davigupta/minion:0.70 -t
 
 ==== 
 

@@ -38,6 +38,7 @@ import time
 import ipaddress
 import traceback
 from myparse import HttpParser
+import auth
 
 OUT_PORT = 8002
 IN_PORT = 8001
@@ -72,7 +73,9 @@ pend_now = datetime.now()
 for_regex_b = re.compile(b'x-nextensio-for:\s?(.*)\r\n', re.IGNORECASE)
 for_regex_s = re.compile(r'x-nextensio-for:\s?(.*)\r\n', re.IGNORECASE)
 len_regex_b = re.compile(b'content-length:\s?(.*)\r\n', re.IGNORECASE)
+usr_regex_b = re.compile(b'x-nextensio-attr:\s?(.*)\r\n', re.IGNORECASE)
 my_info['services'] = []
+UUID = 0
 
 def valid_ip(address):
     try:
@@ -266,19 +269,22 @@ class HTTPProtocol(asyncio.Protocol):
         log.info('Connection close for {}'.format(self.peername))
         self.transport.close()
 
-async def route_json_pak(pak, counter):
+async def route_json_pak(pak, counter, uuid, usr_info):
     jpak = json.loads(pak)
 
 #
 # Instead of parsing HTTP data, just search for x-nextensio-for
 #
-async def route_http_pak(pak, counter):
+async def route_http_pak(pak, counter, uuid, usr_info):
     #p = HttpParser()
     if type(pak) is str:
         npak = pak.encode('utf-8')
     else:
         npak = pak
     receved = len(npak)
+    """ insert use info """
+    top, bottom = npak.split(b'\r\n', 1)
+    npak = top + b'\r\n' + b'x-nextensio-attr: ' + usr_info + b'\r\n' + bottom
     #nparsed = p.execute(npak, receved)
     #head = p.get_headers()
     #pp.pprint(head)
@@ -362,13 +368,16 @@ async def route_http_pak(pak, counter):
 # only allow 1 connection to exist at a time -- current limitation
 #
 async def l_worker(pin, pout, tunnel, websocket, path):
+    global UUID
     log.info(f"listener {pin} in action")
     if handles.get(pin):
         await websocket.close()
         log.info(f"new connection {pin} while older connection exist")
         return
     counter = 0
+    UUID = websocket.request_headers['x-nextensio-uuid'].encode('utf-8')
     codec = websocket.request_headers['x-nextensio-codec']
+    usr_info = auth.goGetUsrAttr(UUID, log)
     log.info(codec)
     if tunnel:
         sec = await websocket.recv()
@@ -394,9 +403,9 @@ async def l_worker(pin, pout, tunnel, websocket, path):
             pak = await websocket.recv()
             if tunnel:
                 if "json" in codec:
-                    await route_json_pak(pak, counter)
+                    await route_json_pak(pak, counter, UUID, usr_info)
                 elif "http" in codec:
-                    await route_http_pak(pak, counter)
+                    await route_http_pak(pak, counter, UUID, usr_info)
                 await asyncio.sleep(0)
             else:
                 await queues[pout].put(pak)
@@ -419,14 +428,28 @@ async def out_hello(websocket, path):
     await l_worker("outside", "inside", tunnel, websocket, path)
 
 async def q_worker(pin):
+    global UUID
     log.info(f"worker queue {pin} -> websocket {pin}")
     while True:
         try:
             log.debug("get next")
             pak = await queues[pin].get()
             log.info(f"got pak, handle {handles.get(pin)} for {pin}")
+            access = True
+            if pin == "outside":
+               " check access "
+               m = usr_regex_b.search(pak)
+               if m == None:
+                   pass
+               else:
+                   usr = m[1]
+                   """ UUID is kept globally, as current implementatio supports
+                       only 1 connection either agent or connector
+                   """
+                   access = auth.goAccessOk(UUID, usr, log)
             if handles.get(pin):
-                await handles[pin].send(pak)
+                if access:
+                    await handles[pin].send(pak)
             queues[pin].task_done()
         except:
             traceback.print_exc()
@@ -555,6 +578,7 @@ if __name__ == '__main__':
         signal.signal(signal.SIGINT, sig_handler)
         signal.signal(signal.SIGUSR1, handle_pdb)
         signal.signal(signal.SIGUSR2, handle_debug)
+        auth.goAuthInit(log)
         init_periodic()
         init_listener()
         init_worker()
