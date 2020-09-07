@@ -270,22 +270,28 @@ class HTTPProtocol(asyncio.Protocol):
         log.info('Connection close for {}'.format(self.peername))
         self.transport.close()
 
-async def route_json_pak(pak, counter, uuid, usr_info):
+async def route_json_pak(pak, counter, uuid):
+    global CLITYPE, UUID
+    if CLITYPE == 'agent':
+        usr_info = auth.goGetUsrAttr(UUID, log)
     jpak = json.loads(pak)
 
 #
 # Instead of parsing HTTP data, just search for x-nextensio-for
 #
-async def route_http_pak(pak, counter, uuid, usr_info):
+async def route_http_pak(pak, counter, uuid):
+    global CLITYPE, UUID
     #p = HttpParser()
     if type(pak) is str:
         npak = pak.encode('utf-8')
     else:
         npak = pak
     receved = len(npak)
-    """ insert use info """
-    top, bottom = npak.split(b'\r\n', 1)
-    npak = top + b'\r\n' + b'x-nextensio-attr: ' + usr_info + b'\r\n' + bottom
+    if CLITYPE == 'agent':
+        usr_info = auth.goGetUsrAttr(UUID, log)
+        """ insert use info """
+        top, bottom = npak.split(b'\r\n', 1)
+        npak = top + b'\r\n' + b'x-nextensio-attr: ' + usr_info + b'\r\n' + bottom
     #nparsed = p.execute(npak, receved)
     #head = p.get_headers()
     #pp.pprint(head)
@@ -369,7 +375,7 @@ async def route_http_pak(pak, counter, uuid, usr_info):
 # only allow 1 connection to exist at a time -- current limitation
 #
 async def l_worker(pin, pout, tunnel, websocket, path):
-    global UUID
+    global CLITYPE, UUID
     log.info(f"listener {pin} in action")
     if handles.get(pin):
         await websocket.close()
@@ -378,7 +384,6 @@ async def l_worker(pin, pout, tunnel, websocket, path):
     counter = 0
     UUID = websocket.request_headers['x-nextensio-uuid'].encode('utf-8')
     codec = websocket.request_headers['x-nextensio-codec']
-    usr_info = auth.goGetUsrAttr(UUID, log)
     log.info(codec)
     if tunnel:
         sec = await websocket.recv()
@@ -401,6 +406,7 @@ async def l_worker(pin, pout, tunnel, websocket, path):
             register_to_consul()
             await websocket.send(greeting)
             log.info(f"> {greeting}")
+    auth.goUsrJoin(CLITYPE.encode('utf-8'), UUID, log)
     handles[pin] = websocket
     frame_mode = True
     try:
@@ -408,9 +414,9 @@ async def l_worker(pin, pout, tunnel, websocket, path):
             pak = await websocket.recv()
             if tunnel:
                 if "json" in codec:
-                    await route_json_pak(pak, counter, UUID, usr_info)
+                    await route_json_pak(pak, counter, UUID)
                 elif "http" in codec:
-                    await route_http_pak(pak, counter, UUID, usr_info)
+                    await route_http_pak(pak, counter, UUID)
                 await asyncio.sleep(0)
             else:
                 await queues[pout].put(pak)
@@ -424,6 +430,7 @@ async def l_worker(pin, pout, tunnel, websocket, path):
             #close_internal()
             deregister_from_consul(log)
             my_info['services'] = []
+            auth.goUsrLeave(CLITYPE.encode('utf-8'), UUID, log)
             pass
 
 async def in_hello(websocket, path):
@@ -583,7 +590,7 @@ if __name__ == '__main__':
         signal.signal(signal.SIGINT, sig_handler)
         signal.signal(signal.SIGUSR1, handle_pdb)
         signal.signal(signal.SIGUSR2, handle_debug)
-        auth.goAuthInit(log)
+        auth.goAuthInit(my_info['namespace'].encode('utf-8'), log)
         init_periodic()
         init_listener()
         init_worker()

@@ -11,13 +11,23 @@ import (
 )
 
 //export AuthInit
-func AuthInit() int { 
-    fmt.Println("auth initialised")
+func AuthInit(ns string, pod string) int { 
+    fmt.Printf("auth initialised in namespace %v\n", ns)
     return 0
 }
 
+//export UsrJoin
+func UsrJoin(pod string, id string) {
+    fmt.Printf("user joined %v of type %v\n", id, pod)
+}
+
+//export UsrLeave
+func UsrLeave(pod string, id string) {
+    fmt.Printf("user left %v of type %v\n", id, pod)
+}
+
 //export GetUsrAttr
-func GetUsrAttr (id string) string {
+func GetUsrAttr(id string) string {
     fmt.Println(id)
     usrAttr := "{ dept: computer-science, team: blue }"
     return usrAttr
@@ -29,6 +39,13 @@ func AccessOk(id string, attr string) bool {
     fmt.Println(attr)
   
     return true
+}
+
+//export RunTask
+func RunTask() {
+    fmt.Println("running background task")
+    for {
+    }
 }
 
 func main() {}
