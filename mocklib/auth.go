@@ -14,7 +14,7 @@ import (
 var Stop bool
 
 //export AuthInit
-func AuthInit(ns string, pod string) int { 
+func AuthInit(ns string) int { 
     fmt.Printf("auth initialised in namespace %v\n", ns)
     return 0
 }
