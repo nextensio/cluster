@@ -10,7 +10,7 @@
     A given POD only services client of a particular tenant identified by the namespace.
     Also a POD serves only one type of clients either agent or connector and not mix. When
     the POD is spawned it knows which namespace it belongs. Type of client binding is done
-    when the first client joins. The following API is called in following init.
+    when the first client joins. The following API is implented in go library.
     Init phase:
         AuthInit - args : namespace
     User Join
@@ -23,13 +23,22 @@
         AccessOk - args: client uuid, return: boolean {1: permit, 0: deny}
     User Leave
         UsrLeave - args : client type {"agent", "connector"}, client uuid
-    Task: TODO
-        Plan is to create a thread where is library background task can be run
+    Task
+        This task is run in a seperate thread. Signalling to stop the task is done
+        via StopTask. This RunTask should look for stop signal and on true stops
+        processing.
+        RunTask - args: none
+        StopTask - args: none
 """
 
+import sys
+import threading
+import time
 from ctypes import *
 
 lib = cdll.LoadLibrary("./libauth.so")
+
+THREADS = []
 
 class GoString(Structure):
     _fields_ = [("p", c_char_p), ("n", c_longlong)]
@@ -72,7 +81,13 @@ def goAccessOk(id, usr, log):
     return access
 
 def goRunTask():
-    lib.RunTask()
+    global THREADS
+    goThread = threading.Thread(target=lib.RunTask)
+    THREADS.append(goThread)
+    goThread.start()
+
+def goStopTask():
+    lib.StopTask()
 
 if  __name__ == "__main__":
     import sys
@@ -81,7 +96,12 @@ if  __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     uid = b"1234-5678-9abc-defg"
     goAuthInit(b"blue", logger)
+    goRunTask()
     goUsrJoin(b"agent", uid, logger)
     info = goGetUsrAttr(uid, logger)
     v = goAccessOk(uid, info, logger)
     goUsrLeave(b"agent", uid, logger)
+    time.sleep(120)
+    goStopTask()
+    for p in THREADS:
+        p.join()

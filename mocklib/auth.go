@@ -8,7 +8,10 @@ import "C"
 
 import (
     "fmt"
+    "time"
 )
+
+var Stop bool
 
 //export AuthInit
 func AuthInit(ns string, pod string) int { 
@@ -41,10 +44,23 @@ func AccessOk(id string, attr string) bool {
     return true
 }
 
+//export StopTask
+func StopTask() {
+    Stop = true
+    fmt.Println("got signal to stop")
+}
+
 //export RunTask
 func RunTask() {
+    Stop = false
     fmt.Println("running background task")
     for {
+        if Stop == true {
+            fmt.Println("exiting task")
+            return
+        }
+        fmt.Println(time.Now().Format(time.RFC3339))
+        time.Sleep(60 * time.Second)
     }
 }
 
