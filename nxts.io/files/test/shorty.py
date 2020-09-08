@@ -42,6 +42,7 @@ rcv_count = 0
 max_count = 400
 import signal
 services = ["service-1"]
+clitype = "connector"
 
 data = "GET / HTTP/1.1\r\nHost: place\r\nuser-agent: shorty\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 12345678\r\ncontent-length: xxx\r\n\r\n"
 
@@ -104,6 +105,7 @@ def read_args():
     global data, url, ca, cert, key, ip, to_ip
     global name, to_name, use_ssl, use_domain, use_token, opcode, verify
     global stress, max_count, services
+    global clitype
 
     parser = argparse.ArgumentParser(description="Configure mode for " + __file__)
     parser.add_argument('--ip', type=str, default="127.0.0.1", help='ip address to connect')
@@ -125,6 +127,7 @@ def read_args():
     parser.add_argument('--stress', action='store_true', help='stress it')
     parser.add_argument('--count', type=int, default=400, help='max packet to send while stressing')
     parser.add_argument('--services', type=str, nargs="*", default=["service-1"], help='services to register')
+    parser.add_argument('--clitype', type=str, default="connector", help='type of client')
     args = parser.parse_args()
     port = args.port
     use_ssl = args.ssl
@@ -162,8 +165,10 @@ def read_args():
     #print(data)
     services = args.services
     print(services)
+    clitype = args.clitype
 
 async def ws_connect(url):
+    global use_ssl, clitype
     print(url)
     if use_ssl:
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
@@ -174,7 +179,11 @@ async def ws_connect(url):
     else:
         ssl_context = None
     async with websockets.connect(url, extra_headers=headers, ssl=ssl_context) as ws:
-        await ws.send("NCTR " + ''.join(services))
+        if clitype == "connector":
+            prefix = "NCTR "
+        else:
+            prefix = "NAGT "
+        await ws.send(prefix + ''.join(services))
         greeting = await ws.recv()
         print(f"< {greeting}")
         c_task = asyncio.ensure_future(consumer_handler(ws))
