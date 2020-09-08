@@ -16,9 +16,11 @@ package main
 
 import (
     "go.uber.org/zap"
+    "minion.io/common"
     "minion.io/args"
     "minion.io/env"
     "minion.io/router"
+    "minion.io/auth"
 )
 
 func main() {
@@ -30,6 +32,7 @@ func main() {
     env.EnvHandler(sugar)
     go router.HttpStart(sugar)
     go router.TcpRxStart(sugar)
+    go auth.AuthStart(common.MyInfo.Namespace)
     for {
     }
 }

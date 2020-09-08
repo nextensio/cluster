@@ -19,6 +19,7 @@ import (
     "go.uber.org/zap"
     "minion.io/common"
     "minion.io/consul"
+    "minion.io/auth"
 )
 
 var upgrader = websocket.Upgrader{
@@ -37,6 +38,8 @@ type WsClient struct {
     codec string
     name [common.MaxService]string
     num int
+    clitype string
+    uuid string
 }
 
 func (c *WsClient) txHandler(s *zap.SugaredLogger) {
@@ -88,6 +91,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
         c.track.del <- c 
         c.track.unregister <- c
         c.conn.Close()
+        auth.UsrLeave(c.clitype, c.uuid)
     }()
 
     c.conn.SetReadLimit(common.MaxMessageSize)
@@ -102,6 +106,12 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
     s.Debugw("http", "type", messageType)
     s.Debugw("http", "body", string(p))
     words := bytes.Split(p, space)
+    if bytes.Equal(words[0], []byte("NCTR")) {
+        c.clitype = "connector"
+    } else {
+        c.clitype = "agent"
+    }
+    s.Debugw("http", "clitype", c.clitype)
     if bytes.Equal(words[0], []byte("NCTR")) || bytes.Equal(words[0], []byte("NAGT")) {
         e = c.conn.WriteMessage(messageType, bytes.Join([][]byte{[]byte("Hello"), words[0]}, space))
         if e != nil {
@@ -113,7 +123,11 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
         c.name[i - 1] = string(words[i])
     }
     c.num = len(words) - 1
+    // add loopback service
+    c.name[c.num] = "127-0-0-1"
+    c.num += 1
     c.track.add <- c
+    auth.UsrJoin(c.clitype, c.uuid)
 
     // Read the packet and forward
     for {
@@ -148,6 +162,13 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
             s.Debugw("http", "key", consul_key)
             // do consul lookup
             fwd, _ = consul.ConsulDnsLookup(consul_key, s)
+        }
+        if c.clitype == "agent" {
+            usr := auth.GetUsrAttr(c.uuid)
+            attr := "x-nextensio-attr: " + usr
+            attrb := []byte(attr)
+            z := bytes.SplitN(p, []byte("\r\n"), 2)
+            p = bytes.Join([][]byte{z[0], attrb, z[1]}, []byte("\r\n"))
         }
         if fwd.DestType == common.SelfDest {
             left := LookupLeftService(fwd.Dest)
@@ -199,10 +220,13 @@ func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
 
     s.Debug("http: Client connected")
 
+    uuid := r.Header.Get("x-nextensio-uuid")
+    s.Debugw("http", "uuid", uuid)
     // add the connection for the bookeeping
     client := &WsClient{track: t, conn: ws, 
                         send: make(chan []byte, common.MaxQueueSize),
-                        codec: codec}
+                        codec: codec, clitype: "connector",
+                        uuid: uuid}
     client.track.register <- client
 
     go client.txHandler(s)

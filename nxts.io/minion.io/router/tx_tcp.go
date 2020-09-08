@@ -10,6 +10,7 @@ import (
     "net"
     "time"
     "strings"
+    "strconv"
     "go.uber.org/zap"
     "minion.io/common"
 )
@@ -61,7 +62,8 @@ func (c *TcpClConn) txHandler(t *Tracker, s *zap.SugaredLogger) {
  *     cluster)
  */
 func TcpClient(t *Tracker, name string, s *zap.SugaredLogger) (*TcpClConn, error) {
-    servAddr := strings.Join([]string{name, "80"}, ":")
+    portStr := strconv.Itoa(common.MyInfo.Iport)
+    servAddr := strings.Join([]string{name, portStr}, ":")
     conn, e := net.Dial("tcp", servAddr)
     if e != nil {
         s.Debugw("tx_tcp:", "err", e)
