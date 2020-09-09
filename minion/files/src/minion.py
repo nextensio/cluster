@@ -385,7 +385,7 @@ async def l_worker(pin, pout, tunnel, websocket, path):
     codec = websocket.request_headers['x-nextensio-codec']
     log.info(codec)
     # Check is connection is allowed
-    allowed = aaa.goUsrAllowed(CLITYPE.encode('utf-8'), UUID, log)
+    allowed = aaa.goUsrAllowed(UUID, log)
     if allowed == False:
         await websocket.close()
         log.info(f"new connection {pin} auth failed")

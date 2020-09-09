@@ -48,7 +48,7 @@ class GoString(Structure):
 
 lib.AaaInit.argtypes = [GoString]
 lib.AaaInit.restype = c_int
-lib.UsrAllowed.argtypes = [GoString, GoString]
+lib.UsrAllowed.argtypes = [GoString]
 lib.UsrAllowed.restype = c_int
 lib.UsrJoin.argtypes = [GoString, GoString]
 lib.UsrLeave.argtypes = [GoString, GoString]
@@ -61,10 +61,9 @@ def goAaaInit(ns, log):
     goNs = GoString(ns, len(ns))
     return lib.AaaInit(goNs)
 
-def goUsrAllowed(pod, id, log):
+def goUsrAllowed(id, log):
     goId = GoString(id, len(id))
-    goPod = GoString(pod, len(pod))
-    usr = lib.UsrAllowed(goPod, goId)
+    usr = lib.UsrAllowed(goId)
     if usr:
         return True
     else:
@@ -115,7 +114,7 @@ if  __name__ == "__main__":
     uid = b"1234-5678-9abc-defg"
     goAaaInit(b"blue", logger)
     goRunTask()
-    goUsrAllowed(b"agent", uid, logger)
+    goUsrAllowed(uid, logger)
     goUsrJoin(b"agent", uid, logger)
     info = goGetUsrAttr(b"connector", uid, logger)
     if info is None:
