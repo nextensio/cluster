@@ -32,7 +32,7 @@ func main() {
     env.EnvHandler(sugar)
     go router.HttpStart(sugar)
     go router.TcpRxStart(sugar)
-    go auth.AuthStart(common.MyInfo.Namespace)
+    go auth.AuthStart(common.MyInfo.Namespace, sugar)
     for {
     }
 }

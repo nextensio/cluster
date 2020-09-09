@@ -45,11 +45,9 @@ func httpForLeft(pak []byte, s *zap.SugaredLogger) {
     left := LookupLeftService(host)
     if left != nil {
         // Check whether it is allowed
-        if left.clitype == "connector" {
-            usr := r.Header.Get("x-nextensio-attr")
-            if auth.AccessOk(left.uuid, usr) == false {
-                s.Debug("rx_tcp: access denied, packet drop")
-            }
+        usr := r.Header.Get("x-nextensio-attr")
+        if auth.AccessOk(left.clitype, left.uuid, usr, s) == false {
+            s.Debug("rx_tcp: access denied, packet drop")
         }
         left.send <- pak
     } else {
