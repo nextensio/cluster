@@ -272,8 +272,7 @@ class HTTPProtocol(asyncio.Protocol):
 
 async def route_json_pak(pak, counter, uuid):
     global CLITYPE, UUID
-    if CLITYPE == 'agent':
-        usr_info = auth.goGetUsrAttr(UUID, log)
+    usr_info = auth.goGetUsrAttr(CLITYPE.encode('utf-8'), UUID, log)
     jpak = json.loads(pak)
 
 #
@@ -287,8 +286,8 @@ async def route_http_pak(pak, counter, uuid):
     else:
         npak = pak
     receved = len(npak)
-    if CLITYPE == 'agent':
-        usr_info = auth.goGetUsrAttr(UUID, log)
+    usr_info = auth.goGetUsrAttr(CLITYPE.encode('utf-8'), UUID, log)
+    if usr_info is not None:
         """ insert use info """
         top, mid, bottom = npak.split(b'\r\n', 2)
         npak = top + b'\r\n' + mid + b'\r\n' + b'x-nextensio-attr: ' + usr_info + b'\r\n' + bottom
@@ -448,17 +447,17 @@ async def q_worker(pin):
             pak = await queues[pin].get()
             log.info(f"got pak, handle {handles.get(pin)} for {pin}")
             access = True
-            if pin == "outside" and CLITYPE == "connector":
+            if pin == "outside":
                " check access "
                m = usr_regex_b.search(pak)
                if m == None:
-                   pass
+                   access = 1
                else:
                    usr = m[1]
                    """ UUID is kept globally, as current implementatio supports
                        only 1 connection either agent or connector
                    """
-                   access = auth.goAccessOk(UUID, usr, log)
+                   access = auth.goAccessOk(CLITYPE.encode('utf-8'), UUID, usr, log)
             if handles.get(pin):
                 if access:
                     await handles[pin].send(pak)

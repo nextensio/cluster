@@ -66,14 +66,18 @@ def goUsrLeave(pod, id, log):
     goPod = GoString(pod, len(pod))
     usr = lib.UsrLeave(goPod, goId)
 
-def goGetUsrAttr(id, log):
+def goGetUsrAttr(pod, id, log):
+    if pod == b"connector":
+        return None
     goId = GoString(id, len(id))
     usr = lib.GetUsrAttr(goId)
     info = usr.p[:usr.n]
     log.info('{} - {}'.format(id, info))
     return info
 
-def goAccessOk(id, usr, log):
+def goAccessOk(pod, id, usr, log):
+    if pod == b"agent":
+        return 1
     goId = GoString(id, len(id))
     goUsr = GoString(usr, len(usr))
     access = lib.AccessOk(goId, goUsr)
@@ -98,8 +102,11 @@ if  __name__ == "__main__":
     goAuthInit(b"blue", logger)
     goRunTask()
     goUsrJoin(b"agent", uid, logger)
-    info = goGetUsrAttr(uid, logger)
-    v = goAccessOk(uid, info, logger)
+    info = goGetUsrAttr(b"connector", uid, logger)
+    if info is None:
+        logger.info("empty usr attr")
+    info = goGetUsrAttr(b"agent", uid, logger)
+    v = goAccessOk(b"connector", uid, info, logger)
     goUsrLeave(b"agent", uid, logger)
     time.sleep(120)
     goStopTask()
