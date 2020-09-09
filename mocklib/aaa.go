@@ -20,8 +20,8 @@ func AaaInit(ns string) int {
 }
 
 //export UsrAllowed
-func UsrAllowed(pod string, id string) bool {
-    fmt.Printf("user allowed %v of type %v\n", id, pod)
+func UsrAllowed(id string) bool {
+    fmt.Printf("user allowed %v\n", id)
 
     return true
 }
