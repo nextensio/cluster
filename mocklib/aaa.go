@@ -1,5 +1,5 @@
 /*
- * auth.go - mock library used by minion python code
+ * aaa.go - mock library used by minion python code
  * Author: Davi Gupta (davigupta@gmail.com), Sep 2020
  */
 package main
@@ -13,9 +13,9 @@ import (
 
 var Stop bool
 
-//export AuthInit
-func AuthInit(ns string) int { 
-    fmt.Printf("auth initialised in namespace %v\n", ns)
+//export AaaInit
+func AaaInit(ns string) int { 
+    fmt.Printf("aaa initialised in namespace %v\n", ns)
     return 0
 }
 

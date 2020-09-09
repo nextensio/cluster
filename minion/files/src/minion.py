@@ -38,7 +38,7 @@ import time
 import ipaddress
 import traceback
 from myparse import HttpParser
-import auth
+import aaa
 
 OUT_PORT = 8002
 IN_PORT = 8001
@@ -272,7 +272,7 @@ class HTTPProtocol(asyncio.Protocol):
 
 async def route_json_pak(pak, counter, uuid):
     global CLITYPE, UUID
-    usr_info = auth.goGetUsrAttr(CLITYPE.encode('utf-8'), UUID, log)
+    usr_info = aaa.goGetUsrAttr(CLITYPE.encode('utf-8'), UUID, log)
     jpak = json.loads(pak)
 
 #
@@ -286,7 +286,7 @@ async def route_http_pak(pak, counter, uuid):
     else:
         npak = pak
     receved = len(npak)
-    usr_info = auth.goGetUsrAttr(CLITYPE.encode('utf-8'), UUID, log)
+    usr_info = aaa.goGetUsrAttr(CLITYPE.encode('utf-8'), UUID, log)
     if usr_info is not None:
         """ insert use info """
         top, mid, bottom = npak.split(b'\r\n', 2)
@@ -405,7 +405,7 @@ async def l_worker(pin, pout, tunnel, websocket, path):
             register_to_consul()
             await websocket.send(greeting)
             log.info(f"> {greeting}")
-    auth.goUsrJoin(CLITYPE.encode('utf-8'), UUID, log)
+    aaa.goUsrJoin(CLITYPE.encode('utf-8'), UUID, log)
     handles[pin] = websocket
     frame_mode = True
     try:
@@ -429,7 +429,7 @@ async def l_worker(pin, pout, tunnel, websocket, path):
             #close_internal()
             deregister_from_consul(log)
             my_info['services'] = []
-            auth.goUsrLeave(CLITYPE.encode('utf-8'), UUID, log)
+            aaa.goUsrLeave(CLITYPE.encode('utf-8'), UUID, log)
             pass
 
 async def in_hello(websocket, path):
@@ -457,7 +457,7 @@ async def q_worker(pin):
                    """ UUID is kept globally, as current implementatio supports
                        only 1 connection either agent or connector
                    """
-                   access = auth.goAccessOk(CLITYPE.encode('utf-8'), UUID, usr, log)
+                   access = aaa.goAccessOk(CLITYPE.encode('utf-8'), UUID, usr, log)
             if handles.get(pin):
                 if access:
                     await handles[pin].send(pak)
@@ -589,7 +589,7 @@ if __name__ == '__main__':
         signal.signal(signal.SIGINT, sig_handler)
         signal.signal(signal.SIGUSR1, handle_pdb)
         signal.signal(signal.SIGUSR2, handle_debug)
-        auth.goAuthInit(my_info['namespace'].encode('utf-8'), log)
+        aaa.goAaaInit(my_info['namespace'].encode('utf-8'), log)
         init_periodic()
         init_listener()
         init_worker()

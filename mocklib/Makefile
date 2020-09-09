@@ -2,11 +2,11 @@
 # Author: Davi Gupta (davigupta@gmail.com), Sep 2020
 #
 
-all: libauth.so
+all: libaaa.so
 
-libauth.so: auth.go
+libaaa.so: aaa.go
 	go build -o $@ -buildmode=c-shared $<
 
 .PHONY: clean
 clean:
-	-rm libauth.so libauth.h
+	-rm libaaa.so libaaa.h

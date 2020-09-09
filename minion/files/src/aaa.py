@@ -6,13 +6,13 @@
 
 """
     Call OPA functions for access check. OPA functionality is written in go, so the
-    c-shared library is generated, which is called here (libauth.so)
+    c-shared library is generated, which is called here (libaaa.so)
     A given POD only services client of a particular tenant identified by the namespace.
     Also a POD serves only one type of clients either agent or connector and not mix. When
     the POD is spawned it knows which namespace it belongs. Type of client binding is done
     when the first client joins. The following API is implented in go library.
     Init phase:
-        AuthInit - args : namespace
+        AaaInit - args : namespace
     User Join
         UsrJoin - args : client type {"agent", "connector"}, client uuid
     Packet Fowrarding
@@ -36,15 +36,15 @@ import threading
 import time
 from ctypes import *
 
-lib = cdll.LoadLibrary("./libauth.so")
+lib = cdll.LoadLibrary("./libaaa.so")
 
 THREADS = []
 
 class GoString(Structure):
     _fields_ = [("p", c_char_p), ("n", c_longlong)]
 
-lib.AuthInit.argtypes = [GoString]
-lib.AuthInit.restype = c_int
+lib.AaaInit.argtypes = [GoString]
+lib.AaaInit.restype = c_int
 lib.UsrJoin.argtypes = [GoString, GoString]
 lib.UsrLeave.argtypes = [GoString, GoString]
 lib.GetUsrAttr.argtypes = [GoString]
@@ -52,9 +52,9 @@ lib.GetUsrAttr.restype = GoString
 lib.AccessOk.argtypes = [GoString, GoString]
 lib.AccessOk.restype = c_int
 
-def goAuthInit(ns, log):
+def goAaaInit(ns, log):
     goNs = GoString(ns, len(ns))
-    return lib.AuthInit(goNs)
+    return lib.AaaInit(goNs)
 
 def goUsrJoin(pod, id, log):
     goId = GoString(id, len(id))
@@ -96,10 +96,10 @@ def goStopTask():
 if  __name__ == "__main__":
     import sys
     import logging
-    logger = logging.getLogger('auth')
+    logger = logging.getLogger('aaa')
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     uid = b"1234-5678-9abc-defg"
-    goAuthInit(b"blue", logger)
+    goAaaInit(b"blue", logger)
     goRunTask()
     goUsrJoin(b"agent", uid, logger)
     info = goGetUsrAttr(b"connector", uid, logger)

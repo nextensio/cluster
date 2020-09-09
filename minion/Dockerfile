@@ -12,17 +12,17 @@ RUN cd /tmp/nextensio \
     && python3 -m compileall minion.py \
     && python3 -m compileall deregister.py \
     && python3 -m compileall myparse.py \
-    && python3 -m compileall auth.py \
+    && python3 -m compileall aaa.py \
     && mv __pycache__/minion.cpython-*.pyc minion.pyc \
     && mv __pycache__/deregister.cpython-*.pyc deregister \
     && mv __pycache__/myparse.cpython-*.pyc myparse.pyc \
-    && mv __pycache__/auth.cpython-*.pyc auth.pyc \
+    && mv __pycache__/aaa.cpython-*.pyc aaa.pyc \
     && chmod 755 minion.pyc deregister \
     && \rm -r -f __pycache__ \
     && \rm -r -f minion.py \
     && \rm -r -f deregister.py \
     && \rm -r -f myparse.py \
-    && \rm -r -f auth.py
+    && \rm -r -f aaa.py
 
 EXPOSE 80/tcp 8002/tcp
 
