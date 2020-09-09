@@ -1,3 +1,4 @@
 nxts.io/minion.io/go.sum
 minion/files/test/__pycache__
 minion/files/src/__pycache__
+minion/files/src/version
