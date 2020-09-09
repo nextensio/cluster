@@ -40,6 +40,7 @@ type WsClient struct {
     num int
     clitype string
     uuid string
+    name_reg [common.MaxService]bool
 }
 
 func (c *WsClient) txHandler(s *zap.SugaredLogger) {
