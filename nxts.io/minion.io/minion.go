@@ -20,7 +20,7 @@ import (
     "minion.io/args"
     "minion.io/env"
     "minion.io/router"
-    "minion.io/auth"
+    "minion.io/aaa"
 )
 
 func main() {
@@ -32,7 +32,7 @@ func main() {
     env.EnvHandler(sugar)
     go router.HttpStart(sugar)
     go router.TcpRxStart(sugar)
-    go auth.AuthStart(common.MyInfo.Namespace, sugar)
+    go aaa.AaaStart(common.MyInfo.Namespace, sugar)
     for {
     }
 }

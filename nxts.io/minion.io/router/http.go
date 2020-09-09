@@ -19,7 +19,7 @@ import (
     "go.uber.org/zap"
     "minion.io/common"
     "minion.io/consul"
-    "minion.io/auth"
+    "minion.io/aaa"
 )
 
 var upgrader = websocket.Upgrader{
@@ -93,7 +93,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
         c.track.del <- c 
         c.track.unregister <- c
         c.conn.Close()
-        auth.UsrLeave(c.clitype, c.uuid, s)
+        aaa.UsrLeave(c.clitype, c.uuid, s)
     }()
 
     c.conn.SetReadLimit(common.MaxMessageSize)
@@ -129,7 +129,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
     c.name[c.num] = "127-0-0-1"
     c.num += 1
     c.track.add <- c
-    auth.UsrJoin(c.clitype, c.uuid, s)
+    aaa.UsrJoin(c.clitype, c.uuid, s)
 
     // Read the packet and forward
     for {
@@ -165,7 +165,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
             // do consul lookup
             fwd, _ = consul.ConsulDnsLookup(consul_key, s)
         }
-        usr, ok := auth.GetUsrAttr(c.clitype, c.uuid, s)
+        usr, ok := aaa.GetUsrAttr(c.clitype, c.uuid, s)
         rewrite = false
         if ok {
             attr := "x-nextensio-attr: " + usr

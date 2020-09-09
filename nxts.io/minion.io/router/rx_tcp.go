@@ -15,7 +15,7 @@ import (
     "net/http"
     "go.uber.org/zap"
     "minion.io/common"
-    "minion.io/auth"
+    "minion.io/aaa"
 )
 
 type TcpSeConn struct {
@@ -46,7 +46,7 @@ func httpForLeft(pak []byte, s *zap.SugaredLogger) {
     if left != nil {
         // Check whether it is allowed
         usr := r.Header.Get("x-nextensio-attr")
-        if auth.AccessOk(left.clitype, left.uuid, usr, s) == false {
+        if aaa.AccessOk(left.clitype, left.uuid, usr, s) == false {
             s.Debug("rx_tcp: access denied, packet drop")
         }
         left.send <- pak
