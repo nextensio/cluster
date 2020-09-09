@@ -14,7 +14,7 @@
     Init phase:
         AaaInit - args : namespace
     User Allowed
-        UsrAllowed - args : client type {"agent", "connector"}, client uuid,
+        UsrAllowed - args : client uuid,
                      return: boolean {1: permit, 0: deny}
     User Join
         UsrJoin - args : client type {"agent", "connector"}, client uuid
