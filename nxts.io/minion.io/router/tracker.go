@@ -8,6 +8,7 @@ package router
 import (
     "sync"
     "go.uber.org/zap"
+    "minion.io/common"
     "minion.io/consul"
 )
 
@@ -57,27 +58,45 @@ func NewTracker() *Tracker {
 
 func addService(c *WsClient, s *zap.SugaredLogger) {
     // register with Consul
-    consul.RegisterConsul(c.name, s)
-    mL.Lock()
     for i := 0; i < c.num; i++ {
-        serviceLeft[c.name[i]] = c
+        v := serviceLeft[c.name[i]]
+        if v != nil {
+            s.Debugf("tracker: duplicate service %v\n", c.name[i])
+            c.name_reg[i] = false
+        } else {
+            c.name_reg[i] = true
+            consul.RegisterConsul([common.MaxService]string{c.name[i]}, s)
+            mL.Lock()
+            serviceLeft[c.name[i]] = c
+            mL.Unlock()
+        }
     }
-    mL.Unlock()
     s.Debugf("tracker: services %v", serviceLeft)
 }
 
 func delService(c *WsClient, s *zap.SugaredLogger) {
     mL.Lock()
     for i := 0; i < c.num; i++ {
-        delete(serviceLeft, c.name[i])
+        if c.name_reg[i] {
+            delete(serviceLeft, c.name[i])
+        }
     }
     mL.Unlock()
     s.Debugf("tracker: services %v", serviceLeft)
     // deregister with Consul
-    consul.DeRegisterConsul(c.name, s)
+    for i := 0; i < c.num; i++ {
+        if c.name_reg[i] {
+            consul.DeRegisterConsul([common.MaxService]string{c.name[i]}, s)
+        }
+    }
 }
 
 func addDest(c *TcpClConn, s *zap.SugaredLogger) {
+    v := destRight[c.name]
+    if v != nil {
+        s.Debugf("tracker: duplicate dest %v\n", c.name)
+        return
+    }
     mR.Lock()
     destRight[c.name] = c
     mR.Unlock()
