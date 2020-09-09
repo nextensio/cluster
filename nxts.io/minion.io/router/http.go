@@ -236,6 +236,12 @@ func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
 
     uuid := r.Header.Get("x-nextensio-uuid")
     s.Debugw("http", "uuid", uuid)
+    allowed := aaa.UsrAllowed(uuid, s)
+    if allowed == false {
+        s.Infow("http", "uuid", uuid, "access", allowed)
+        ws.Close()
+        return
+    }
     // add the connection for the bookeeping
     client := &WsClient{track: t, conn: ws, 
                         send: make(chan []byte, common.MaxQueueSize),

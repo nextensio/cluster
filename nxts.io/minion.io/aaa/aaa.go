@@ -14,6 +14,11 @@ func AaaInit(ns string, s *zap.SugaredLogger) int {
     return 0
 }
 
+func UsrAllowed(id string, s *zap.SugaredLogger) bool {
+    s.Debugf("aaa: user allowed %v\n", id)
+    return true
+}
+
 func UsrJoin(pod string, id string, s *zap.SugaredLogger) {
     s.Debugf("aaa: user joined %v of type %v\n", id, pod)
 }
