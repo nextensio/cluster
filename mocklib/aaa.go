@@ -19,6 +19,13 @@ func AaaInit(ns string) int {
     return 0
 }
 
+//export UsrAllowed
+func UsrAllowed(pod string, id string) bool {
+    fmt.Printf("user allowed %v of type %v\n", id, pod)
+
+    return true
+}
+
 //export UsrJoin
 func UsrJoin(pod string, id string) {
     fmt.Printf("user joined %v of type %v\n", id, pod)

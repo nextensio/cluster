@@ -13,6 +13,9 @@
     when the first client joins. The following API is implented in go library.
     Init phase:
         AaaInit - args : namespace
+    User Allowed
+        UsrAllowed - args : client type {"agent", "connector"}, client uuid,
+                     return: boolean {1: permit, 0: deny}
     User Join
         UsrJoin - args : client type {"agent", "connector"}, client uuid
     Packet Fowrarding
@@ -45,6 +48,8 @@ class GoString(Structure):
 
 lib.AaaInit.argtypes = [GoString]
 lib.AaaInit.restype = c_int
+lib.UsrAllowed.argtypes = [GoString, GoString]
+lib.UsrAllowed.restype = c_int
 lib.UsrJoin.argtypes = [GoString, GoString]
 lib.UsrLeave.argtypes = [GoString, GoString]
 lib.GetUsrAttr.argtypes = [GoString]
@@ -55,6 +60,15 @@ lib.AccessOk.restype = c_int
 def goAaaInit(ns, log):
     goNs = GoString(ns, len(ns))
     return lib.AaaInit(goNs)
+
+def goUsrAllowed(pod, id, log):
+    goId = GoString(id, len(id))
+    goPod = GoString(pod, len(pod))
+    usr = lib.UsrAllowed(goPod, goId)
+    if usr:
+        return True
+    else:
+        return False
 
 def goUsrJoin(pod, id, log):
     goId = GoString(id, len(id))
@@ -101,6 +115,7 @@ if  __name__ == "__main__":
     uid = b"1234-5678-9abc-defg"
     goAaaInit(b"blue", logger)
     goRunTask()
+    goUsrAllowed(b"agent", uid, logger)
     goUsrJoin(b"agent", uid, logger)
     info = goGetUsrAttr(b"connector", uid, logger)
     if info is None:
