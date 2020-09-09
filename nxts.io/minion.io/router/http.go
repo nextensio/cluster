@@ -87,6 +87,7 @@ func isIpv4Net (host string) bool {
 
 func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
     var fwd common.Fwd
+    var rewrite bool
 
     defer func() {
         c.track.del <- c 
@@ -165,11 +166,17 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
             fwd, _ = consul.ConsulDnsLookup(consul_key, s)
         }
         usr, ok := auth.GetUsrAttr(c.clitype, c.uuid, s)
+        rewrite = false
         if ok {
             attr := "x-nextensio-attr: " + usr
             attrb := []byte(attr)
             z := bytes.SplitN(p, []byte("\r\n"), 3)
-            p = bytes.Join([][]byte{z[0], z[1], attrb, z[2]}, []byte("\r\n"))
+            newhost := z[1]
+            if fwd.DestType == common.RemoteDest {
+                rewrite = true
+                newhost = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
+            }
+            p = bytes.Join([][]byte{z[0], newhost, attrb, z[2]}, []byte("\r\n"))
         }
         if fwd.DestType == common.SelfDest {
             left := LookupLeftService(fwd.Dest)
@@ -181,6 +188,12 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
         } else {
             if fwd.DestType == common.RemoteDest {
                 // rewrite HOST part in GET
+                if rewrite == false {
+                    z := bytes.SplitN(p, []byte("\r\n"), 3)
+                    rewrite = true
+                    newhost := bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
+                    p = bytes.Join([][]byte{z[0], newhost, z[2]}, []byte("\r\n"))
+                }
             }
 
             // open a TCP connection if not opened
