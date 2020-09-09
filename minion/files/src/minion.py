@@ -290,8 +290,8 @@ async def route_http_pak(pak, counter, uuid):
     if CLITYPE == 'agent':
         usr_info = auth.goGetUsrAttr(UUID, log)
         """ insert use info """
-        top, bottom = npak.split(b'\r\n', 1)
-        npak = top + b'\r\n' + b'x-nextensio-attr: ' + usr_info + b'\r\n' + bottom
+        top, mid, bottom = npak.split(b'\r\n', 2)
+        npak = top + b'\r\n' + mid + b'\r\n' + b'x-nextensio-attr: ' + usr_info + b'\r\n' + bottom
     #nparsed = p.execute(npak, receved)
     #head = p.get_headers()
     #pp.pprint(head)
