@@ -183,7 +183,7 @@ async def ws_connect(url):
             prefix = "NCTR "
         else:
             prefix = "NAGT "
-        await ws.send(prefix + ''.join(services))
+        await ws.send(prefix + ' '.join(services))
         greeting = await ws.recv()
         print(f"< {greeting}")
         c_task = asyncio.ensure_future(consumer_handler(ws))
