@@ -168,8 +168,8 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
         if ok {
             attr := "x-nextensio-attr: " + usr
             attrb := []byte(attr)
-            z := bytes.SplitN(p, []byte("\r\n"), 2)
-            p = bytes.Join([][]byte{z[0], attrb, z[1]}, []byte("\r\n"))
+            z := bytes.SplitN(p, []byte("\r\n"), 3)
+            p = bytes.Join([][]byte{z[0], z[1], attrb, z[2]}, []byte("\r\n"))
         }
         if fwd.DestType == common.SelfDest {
             left := LookupLeftService(fwd.Dest)
