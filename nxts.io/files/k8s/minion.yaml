@@ -123,5 +123,7 @@ spec:
                 fieldPath: metadata.labels['cluster']
          - name: MY_DNS
             value: "10.110.209.4"
+         - name: MY_MONGO_URI
+            value: "mongodb+srv://nextensio:nextensio238@cluster0.prph0.mongodb.net"
       terminationGracePeriodSeconds: 60
 ---
