@@ -22,7 +22,7 @@ async def pak_drop(pak, reason, log):
     pak = re.sub(b"content-length: .*", b"content-length: 0", pak, re.MULTILINE)
     if not OPENED:
         try:
-            _, MYW = await asyncio.open_connection("127.0.0.1", 10000)
+            _, MYW = await asyncio.open_connection("null", 10000)
             OPENED = True
         except :
             return
