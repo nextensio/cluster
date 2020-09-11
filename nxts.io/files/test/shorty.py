@@ -16,9 +16,11 @@ import pdata
 
 port = 8002
 
+# 5f57d00ca712c68fb308e020	123	John Doe	johndoe@gmail.com
+
 headers = {'x-nextensio-codec': 'http',
            'x-nextensio-connect': 'abc.com',
-           'x-nextensio-uuid': '12345678',
+           'x-nextensio-uuid': '123',
            "Authorization": "Bearer "}
 url = ""
 prefix = ""
@@ -128,7 +130,7 @@ def read_args():
     parser.add_argument('--count', type=int, default=400, help='max packet to send while stressing')
     parser.add_argument('--services', type=str, nargs="*", default=["service-1"], help='services to register')
     parser.add_argument('--clitype', type=str, default="connector", help='type of client')
-    parser.add_argument('--uuid', type=str, default="5f57d00ca712c68fb308e020", help='id of client')
+    parser.add_argument('--uuid', type=str, default="123", help='id of client')
     args = parser.parse_args()
     port = args.port
     use_ssl = args.ssl
