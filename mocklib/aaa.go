@@ -7,68 +7,68 @@ package main
 import "C"
 
 import (
-    "fmt"
-    "time"
+	"fmt"
+	"time"
 )
 
 var Stop bool
 
 //export AaaInit
-func AaaInit(ns string) int { 
-    fmt.Printf("aaa initialised in namespace %v\n", ns)
-    return 0
+func AaaInit(ns string) int {
+	fmt.Printf("aaa initialised in namespace %v\n", ns)
+	return 0
 }
 
 //export UsrAllowed
 func UsrAllowed(id string) bool {
-    fmt.Printf("user allowed %v\n", id)
+	fmt.Printf("user allowed %v\n", id)
 
-    return true
+	return true
 }
 
 //export UsrJoin
 func UsrJoin(pod string, id string) {
-    fmt.Printf("user joined %v of type %v\n", id, pod)
+	fmt.Printf("user joined %v of type %v\n", id, pod)
 }
 
 //export UsrLeave
 func UsrLeave(pod string, id string) {
-    fmt.Printf("user left %v of type %v\n", id, pod)
+	fmt.Printf("user left %v of type %v\n", id, pod)
 }
 
 //export GetUsrAttr
 func GetUsrAttr(id string) string {
-    fmt.Println(id)
-    usrAttr := "{ dept: computer-science, team: blue }"
-    return usrAttr
+	fmt.Println(id)
+	usrAttr := "{ dept: computer-science, team: blue }"
+	return usrAttr
 }
 
 //export AccessOk
 func AccessOk(id string, attr string) bool {
-    fmt.Println(id)
-    fmt.Println(attr)
-  
-    return true
+	fmt.Println(id)
+	fmt.Println(attr)
+
+	return true
 }
 
 //export StopTask
 func StopTask() {
-    Stop = true
-    fmt.Println("got signal to stop")
+	Stop = true
+	fmt.Println("got signal to stop")
 }
 
 //export RunTask
 func RunTask() {
-    Stop = false
-    fmt.Println("running background task")
-    for {
-        if Stop == true {
-            fmt.Println("exiting task")
-            return
-        }
-        fmt.Println(time.Now().Format(time.RFC3339))
-        time.Sleep(60 * time.Second)
-    }
+	Stop = false
+	fmt.Println("running background task")
+	for {
+		if Stop == true {
+			fmt.Println("exiting task")
+			return
+		}
+		fmt.Println(time.Now().Format(time.RFC3339))
+		time.Sleep(60 * time.Second)
+	}
 }
 
 func main() {}
