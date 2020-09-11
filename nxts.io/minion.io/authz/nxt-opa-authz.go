@@ -1,4 +1,4 @@
-package main
+package authz
 
 /*************************************
 // Nextensio interface for Opa Rego library to provide policy based application access
@@ -12,8 +12,6 @@ package main
 // Egress pod APIs:
 //
 *************************************/
-
-import "C"
 
 import (
 	"context"
@@ -56,7 +54,7 @@ var initDone, evalDone chan bool
 var inpType string
 
 // Temporary function until we can compile as part of the minion code
-func main() {
+func authzMain() {
 	ctx := context.Background()
 
 	err := nxtOpaInit(os.Args[1] == "egress")
