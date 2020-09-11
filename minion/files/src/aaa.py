@@ -111,7 +111,8 @@ if  __name__ == "__main__":
     import logging
     logger = logging.getLogger('aaa')
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    uid = b"5f57d00ca712c68fb308e020"
+    # 5f57d00ca712c68fb308e020	123	John Doe	johndoe@gmail.com
+    uid = b"123"
     goAaaInit(b"blue", logger)
     goRunTask()
     goUsrAllowed(uid, logger)
@@ -120,7 +121,8 @@ if  __name__ == "__main__":
     if info is None:
         logger.info("empty usr attr")
     info = goGetUsrAttr(b"agent", uid, logger)
-    bid = b"5f57a03ca712c68fb308e01f"
+    #5f57d00ca712c68fb308e020	923	Accounting
+    bid = b"923"
     v = goAccessOk(b"connector", bid, info, logger)
     goUsrLeave(b"agent", uid, logger)
     time.sleep(120)
