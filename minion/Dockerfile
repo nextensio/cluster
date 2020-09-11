@@ -22,7 +22,8 @@ RUN cd /tmp/nextensio \
     && \rm -r -f minion.py \
     && \rm -r -f deregister.py \
     && \rm -r -f myparse.py \
-    && \rm -r -f aaa.py
+    && \rm -r -f aaa.py \
+    && \rm -r -f authz
 
 EXPOSE 80/tcp 8002/tcp
 
