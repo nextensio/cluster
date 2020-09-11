@@ -5,8 +5,10 @@ MAINTAINER Davi Gupta <davigupta@gmail.com>
 RUN apt-get update -y && apt-get install git python3 python3-pip psmisc net-tools curl telnet iproute2 tcpdump -y
 RUN mkdir -p /tmp/nextensio
 RUN mkdir -p /tmp/nextensio/test
+RUN mkdir -p /tmp/nextensio/authz
 COPY files/test/* /tmp/nextensio/test/
 COPY files/src/* /tmp/nextensio/
+COPY files/authz/* /tmp/nextensio/authz/
 RUN cd /tmp/nextensio \
     && pip3 install -r requirements.txt \
     && python3 -m compileall minion.py \

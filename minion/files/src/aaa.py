@@ -12,7 +12,7 @@
     the POD is spawned it knows which namespace it belongs. Type of client binding is done
     when the first client joins. The following API is implented in go library.
     Init phase:
-        AaaInit - args : namespace
+        AaaInit - args : namespace, uri
     User Allowed
         UsrAllowed - args : client uuid,
                      return: boolean {1: permit, 0: deny}
@@ -46,7 +46,7 @@ THREADS = []
 class GoString(Structure):
     _fields_ = [("p", c_char_p), ("n", c_longlong)]
 
-lib.AaaInit.argtypes = [GoString]
+lib.AaaInit.argtypes = [GoString, GoString]
 lib.AaaInit.restype = c_int
 lib.UsrAllowed.argtypes = [GoString]
 lib.UsrAllowed.restype = c_int
@@ -57,9 +57,10 @@ lib.GetUsrAttr.restype = GoString
 lib.AccessOk.argtypes = [GoString, GoString]
 lib.AccessOk.restype = c_int
 
-def goAaaInit(ns, log):
+def goAaaInit(ns, uri, log):
     goNs = GoString(ns, len(ns))
-    return lib.AaaInit(goNs)
+    goUri = GoString(uri, len(uri))
+    return lib.AaaInit(goNs, goUri)
 
 def goUsrAllowed(id, log):
     goId = GoString(id, len(id))
@@ -113,7 +114,8 @@ if  __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     # 5f57d00ca712c68fb308e020	123	John Doe	johndoe@gmail.com
     uid = b"123"
-    goAaaInit(b"blue", logger)
+    uri = b"mongodb+srv://nextensio:nextensio238@cluster0.prph0.mongodb.net"
+    goAaaInit(b"blue", uri, logger)
     goRunTask()
     goUsrAllowed(uid, logger)
     goUsrJoin(b"agent", uid, logger)

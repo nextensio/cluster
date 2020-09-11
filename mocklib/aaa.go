@@ -14,8 +14,8 @@ import (
 var Stop bool
 
 //export AaaInit
-func AaaInit(ns string) int {
-	fmt.Printf("aaa initialised in namespace %v\n", ns)
+func AaaInit(ns string, uri string) int {
+	fmt.Printf("aaa initialised in namespace %v with uri %v\n", ns, uri)
 	return 0
 }
 
