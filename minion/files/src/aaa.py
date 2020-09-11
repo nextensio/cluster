@@ -120,7 +120,8 @@ if  __name__ == "__main__":
     if info is None:
         logger.info("empty usr attr")
     info = goGetUsrAttr(b"agent", uid, logger)
-    v = goAccessOk(b"connector", uid, info, logger)
+    bid = b"5f57a03ca712c68fb308e01f"
+    v = goAccessOk(b"connector", bid, info, logger)
     goUsrLeave(b"agent", uid, logger)
     time.sleep(120)
     goStopTask()
