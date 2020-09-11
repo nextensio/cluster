@@ -2,3 +2,6 @@ nxts.io/minion.io/go.sum
 minion/files/test/__pycache__
 minion/files/src/__pycache__
 minion/files/src/version
+nxts.io/files/test/__pycache__
+istio_client/__pycache__
+istio_yaml/__pycache__

@@ -44,7 +44,7 @@ import signal
 services = ["service-1"]
 clitype = "connector"
 
-data = "GET / HTTP/1.1\r\nHost: place\r\nuser-agent: shorty\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 12345678\r\ncontent-length: xxx\r\n\r\n"
+data = "GET / HTTP/1.1\r\nHost: place\r\nuser-agent: shorty\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: myid\r\ncontent-length: xxx\r\n\r\n"
 
 async def aio_readline(greeting):
     line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
@@ -128,6 +128,7 @@ def read_args():
     parser.add_argument('--count', type=int, default=400, help='max packet to send while stressing')
     parser.add_argument('--services', type=str, nargs="*", default=["service-1"], help='services to register')
     parser.add_argument('--clitype', type=str, default="connector", help='type of client')
+    parser.add_argument('--uuid', type=str, default="5f57d00ca712c68fb308e020", help='id of client')
     args = parser.parse_args()
     port = args.port
     use_ssl = args.ssl
@@ -166,6 +167,8 @@ def read_args():
     services = args.services
     print(services)
     clitype = args.clitype
+    headers['x-nextensio-uuid'] = args.uuid
+    data = re.sub("myid", args.uuid, data, re.MULTILINE)
 
 async def ws_connect(url):
     global use_ssl, clitype
