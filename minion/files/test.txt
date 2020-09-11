@@ -14,6 +14,8 @@ export MY_POD_NAMESPACE='default'
 export MY_POD_IP='127.0.0.1'
 export MY_POD_CLUSTER='sjc'
 export MY_DNS='157.230.160.64'
+export MY_MONGO_URI='mongodb+srv//:127.0.0.1'
+
 ./minion.py -t --consul_dns --register
 ==
 ./shorty.py --domain --name "localhost" --to_name "a361.11.0.0.1" --port 8002 --service "localhost"
