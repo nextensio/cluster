@@ -39,6 +39,7 @@ import ipaddress
 import traceback
 from myparse import HttpParser
 import aaa
+import stats
 
 OUT_PORT = 8002
 IN_PORT = 8001
@@ -320,12 +321,12 @@ async def route_http_pak(pak, counter, uuid):
             if use_consul_http:
                 complete_rt = await consul_http_lookup(consul_key)
                 if complete_rt is None:
-                    log.error("packet drop: lookup failure")
+                    stats.pak_drop(pak, "lookup failure", log)
                     return
             elif use_consul_dns:
                 complete_rt = await consul_dns_lookup(consul_key)
                 if complete_rt is None:
-                    log.error("packet drop: lookup failure")
+                    stats.pak_drop(pak, "lookup failure", log)
                     return
             else:
                 complete_rt = host + '-in.' + my_info['namespace'] + suffix
@@ -467,6 +468,8 @@ async def q_worker(pin):
             if handles.get(pin):
                 if access:
                     await handles[pin].send(pak)
+                else:
+                    stats.pak_drop(pak, "access denied", log)
             queues[pin].task_done()
         except:
             traceback.print_exc()
