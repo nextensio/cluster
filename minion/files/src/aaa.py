@@ -111,7 +111,7 @@ if  __name__ == "__main__":
     import logging
     logger = logging.getLogger('aaa')
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    uid = b"1234-5678-9abc-defg"
+    uid = b"5f57d00ca712c68fb308e020"
     goAaaInit(b"blue", logger)
     goRunTask()
     goUsrAllowed(uid, logger)
