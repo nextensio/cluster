@@ -12,6 +12,7 @@ import (
 	"io"
 	"minion.io/aaa"
 	"minion.io/common"
+	"minion.io/stats"
 	"net"
 	"net/http"
 	"strconv"
@@ -47,11 +48,11 @@ func httpForLeft(pak []byte, s *zap.SugaredLogger) {
 		// Check whether it is allowed
 		usr := r.Header.Get("x-nextensio-attr")
 		if aaa.AccessOk(left.clitype, left.uuid, usr, s) == false {
-			s.Debug("rx_tcp: access denied, packet drop")
+			stats.PakDrop(pak, "access denied", s)
 		}
 		left.send <- pak
 	} else {
-		s.Debug("rx_tcp: packet drop")
+		stats.PakDrop(pak, "lookup left failure", s)
 	}
 }
 
