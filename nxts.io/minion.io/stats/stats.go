@@ -31,7 +31,7 @@ func PakDrop(pak []byte, reason string, s *zap.SugaredLogger) {
 	} else {
 		s.Debug("stats: connection exists\n")
 	}
-	z := bytes.SplitN(pak, []byte("\r\n\r\n"), 1)
+	z := bytes.SplitN(pak, []byte("\r\n\r\n"), 2)
 	drop := "x-nextensio-drop: " + reason + "\r\n"
 	dropb := []byte(drop)
 	pak = bytes.Join([][]byte{z[0], dropb}, []byte("\r\n"))
