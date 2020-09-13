@@ -38,6 +38,7 @@ import (
 const maxOpaUseCases = 5 // we currently have 3
 const maxMongoColls = 10 // assume max 10 MongoDB collections
 const maxUsers = 10000
+
 /*****************************
 // MongoDB database and collections
 // TODO: Ensure each service pod gets the NxtDB for the tenant it is handling via
@@ -63,39 +64,39 @@ var inpType string
 /******************************** Calls from minion ******************/
 //export AaaInit
 func AaaInit(namespace string, s *zap.SugaredLogger) int {
-        _ = nxtOpaInit(1)
+	_ = nxtOpaInit(1)
 	return 0
 }
 
 //export UsrJoin
 func UsrJoin(pod string, userid string, s *zap.SugaredLogger) {
-        _ = nxtReadUserAttrJSON(userid)
+	_ = nxtReadUserAttrJSON(userid)
 }
 
 //export UsrLeave
 func UsrLeave(pod string, userid string, s *zap.SugaredLogger) {
-        nxtPurgeUserAttrJSON(userid)
+	nxtPurgeUserAttrJSON(userid)
 }
 
 //export GetUsrAttr
 func GetUsrAttr(userid string, s *zap.SugaredLogger) (string, bool) {
-        return nxtReadUserAttrJSON(userid), true
+	return nxtReadUserAttrJSON(userid), true
 }
 
 //export UsrAllowed
 func UsrAllowed(userid string, s *zap.SugaredLogger) bool {
-        return true
+	return true
 }
 
 //export AccessOk
 func AccessOk(bundleid string, userattr string, s *zap.SugaredLogger) bool {
-        return nxtEvalAppAccessAuthz(userattr, bundleid)
+	return nxtEvalAppAccessAuthz(userattr, bundleid)
 }
+
 /*********************************************************************/
 
 func authzMain() {
 }
-
 
 // For now, this function tests access for a number of users with each app bundle.
 // In production, this will monitor for DB updates and pull in any modified documents
@@ -103,24 +104,24 @@ func authzMain() {
 func nxtOpaProcess(ctx context.Context, egress bool) int {
 
 	select {
-	        case <-initDone:
+	case <-initDone:
 	}
 
 	for {
 		for i, ucase := range opaUseCases {
 			if initUseCase[i] > 0 {
-			        nxtSetupUseCase(ctx, i, ucase)
-		        }
+				nxtSetupUseCase(ctx, i, ucase)
+			}
 		}
 		// Monitoring for new version of UserAttr collection
 		tmphdr := nxtReadUserAttrHdr(ctx)
 		if (tmphdr.Majver > inpRefHdr.Majver) || (tmphdr.Minver > inpRefHdr.Minver) {
-                        inpRefHdr = tmphdr
-		        nxtUpdateUserAttrCache()
+			inpRefHdr = tmphdr
+			nxtUpdateUserAttrCache()
 		}
-		
+
 		// sleep(5 mins)
-		time.Sleep(5*60*1000*time.Millisecond)
+		time.Sleep(5 * 60 * 1000 * time.Millisecond)
 	}
 
 	evalDone <- true // Done with all evaluations
@@ -220,7 +221,7 @@ func nxtOpaInit(egress int) error {
 		nxtCreateOpaUseCase(ucase, egressPod[i], policyType[i], dataType[i], loadDir[i],
 			opaQuery[i], DColls[i])
 		if initUseCase[i] > 0 { // Initialize now in Init function
-		        nxtSetupUseCase(ctx, i, ucase)
+			nxtSetupUseCase(ctx, i, ucase)
 		}
 	}
 	// Read header document for user attributes collection
@@ -258,7 +259,7 @@ func nxtMongoDBInit(ctx context.Context, egress bool) (*mongo.Client, error) {
 		CollMap[PolicyCollection] = db.Collection(PolicyCollection)
 		// For testing only in egress pod
 		CollMap[userAttrCollection] = db.Collection(userAttrCollection)
-	//} else {  TODO: Undo for MVP; temp change for demo
+		//} else {  TODO: Undo for MVP; temp change for demo
 		//CollMap[userAttrCollection] = db.Collection(userAttrCollection)
 		CollMap[userInfoCollection] = db.Collection(userInfoCollection)
 		//CollMap[PolicyCollection] = db.Collection(PolicyCollection)
@@ -467,20 +468,20 @@ func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 // with header info added. Called when user connects to service pod.
 //export nxtReadUserAttrJSON
 func nxtReadUserAttrJSON(uuid string) string {
-        ua, ok := nxtReadUserAttrCache(uuid)
+	ua, ok := nxtReadUserAttrCache(uuid)
 	if ok {
-	        return ua   // cached version
+		return ua // cached version
 	}
 	ua = nxtReadUserAttrDB(uuid)
 	if userAttrLock != true {
-	        userAttr[uuid] = ua
+		userAttr[uuid] = ua
 	}
 	return ua
 }
 
 func nxtReadUserAttrCache(uuid string) (string, bool) {
-        if userAttrLock {
-	        return "", false  // force a read from the DB
+	if userAttrLock {
+		return "", false // force a read from the DB
 	}
 	// Check in cache if user's attributes exist. If yes, return value.
 	uaDoc, ok := userAttr[uuid]
@@ -513,7 +514,7 @@ func nxtReadUserAttrDB(uuid string) string {
 //export nxtPurgeUserAttrJSON
 func nxtPurgeUserAttrJSON(uuid string) {
 	if userAttrLock != true {
-		delete(userAttr, uuid)  // if locked, let it be
+		delete(userAttr, uuid) // if locked, let it be
 	}
 }
 
@@ -534,8 +535,8 @@ func nxtUserAttrJSON(user *UserAttr) string {
 }
 
 func nxtUpdateUserAttrCache() {
-        userAttrLock = true
-        for id, _ := range userAttr {
+	userAttrLock = true
+	for id, _ := range userAttr {
 		userAttr[id] = nxtReadUserAttrDB(id)
 	}
 	userAttrLock = false
