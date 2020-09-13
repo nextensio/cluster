@@ -38,6 +38,10 @@ func EnvHandler(sugar *zap.SugaredLogger) {
 	if common.MyInfo.DnsIp == "" {
 		common.MyInfo.DnsIp = "157.230.160.64"
 	}
+	common.MyInfo.MongoUri = os.Getenv("MY_MONGO_URI")
+	if common.MyInfo.MongoUri == "" {
+		common.MyInfo.MongoUri = "127.0.0.1"
+	}
 	common.MyInfo.Sim, _ = strconv.ParseBool(os.Getenv("MY_SIM_TEST"))
 	if common.MyInfo.Sim == false {
 		common.MyInfo.Sim = false
@@ -52,6 +56,7 @@ func EnvHandler(sugar *zap.SugaredLogger) {
 	sugar.Infow("env", "PodIp", common.MyInfo.PodIp)
 	sugar.Infow("env", "Id", common.MyInfo.Id)
 	sugar.Infow("env", "DnsIp", common.MyInfo.DnsIp)
+	sugar.Infow("env", "MongoUri", common.MyInfo.MongoUri)
 	sugar.Infow("env", "Sim", common.MyInfo.Sim)
 	sugar.Infow("-", "C_suffix", common.MyInfo.C_suffix)
 	sugar.Infow("-", "C_server", common.MyInfo.C_server)
