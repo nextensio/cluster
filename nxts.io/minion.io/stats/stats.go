@@ -21,7 +21,7 @@ func PakDrop(pak []byte, reason string, s *zap.SugaredLogger) {
 	s.Debugf("stats: packet drop due to %v\n", reason)
 	if nullConn == nil {
 		portStr := strconv.Itoa(10000)
-		servAddr := strings.Join([]string{"127.0.0.1", portStr}, ":")
+		servAddr := strings.Join([]string{"null", portStr}, ":")
 		conn, e := net.Dial("tcp", servAddr)
 		if e != nil {
 			s.Debugw("stats:", "error", e)
