@@ -234,7 +234,7 @@ func nxtOpaInit(egress int) error {
 
 func nxtMongoDBInit(ctx context.Context, egress bool) (*mongo.Client, error) {
 
-	mongoURI := nxtGetMongoEnv("MONGO_URI", "mongodb://localhost:27017")
+	mongoURI := nxtGetMongoEnv("MY_MONGO_URI", "mongodb://localhost:27017")
 
 	// Set client options
 	mongoclientOptions := options.Client().ApplyURI(mongoURI)
