@@ -39,7 +39,7 @@ func UsrLeave(pod string, id string) {
 //export GetUsrAttr
 func GetUsrAttr(id string) string {
 	fmt.Println(id)
-	usrAttr := "{ dept: computer-science, team: blue }"
+	usrAttr := "{\"uid\":\"123\",\"category\":\"employee\",\"type\":\"IC\",\"level\":\"2\",\"dept\":[\"dept1\"], \"team\":[\"team20\"],\"maj_ver\":\"1\",\"min_ver\":\"0\",\"tenant\":\"5f57d00ca712c68fb308e020\"}"
 	return usrAttr
 }
 
