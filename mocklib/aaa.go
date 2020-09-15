@@ -8,6 +8,8 @@ import "C"
 
 import (
 	"fmt"
+	"io/ioutil"
+	"strings"
 	"time"
 )
 
@@ -37,9 +39,12 @@ func UsrLeave(pod string, id string) {
 }
 
 //export GetUsrAttr
-func GetUsrAttr(id string) string {
+func GetUsrAttr(id string) *C.char {
 	fmt.Println(id)
-	usrAttr := "{\"uid\":\"123\",\"category\":\"employee\",\"type\":\"IC\",\"level\":\"2\",\"dept\":[\"dept1\"], \"team\":[\"team20\"],\"maj_ver\":\"1\",\"min_ver\":\"0\",\"tenant\":\"5f57d00ca712c68fb308e020\"}"
+	dat, _ := ioutil.ReadFile("./dat")
+	str := string(dat)
+	str = strings.TrimSuffix(str, "\n")
+	usrAttr := C.CString(str)
 	return usrAttr
 }
 

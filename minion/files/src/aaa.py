@@ -38,6 +38,7 @@ import sys
 import threading
 import time
 from ctypes import *
+from ctypes.util import find_library
 
 lib = cdll.LoadLibrary("./libaaa.so")
 
@@ -53,7 +54,7 @@ lib.UsrAllowed.restype = c_int
 lib.UsrJoin.argtypes = [GoString, GoString]
 lib.UsrLeave.argtypes = [GoString, GoString]
 lib.GetUsrAttr.argtypes = [GoString]
-lib.GetUsrAttr.restype = GoString
+lib.GetUsrAttr.restype = c_char_p
 lib.AccessOk.argtypes = [GoString, GoString]
 lib.AccessOk.restype = c_int
 
@@ -84,8 +85,7 @@ def goGetUsrAttr(pod, id, log):
     if pod == b"connector":
         return None
     goId = GoString(id, len(id))
-    usr = lib.GetUsrAttr(goId)
-    info = usr.p[:usr.n]
+    info = lib.GetUsrAttr(goId)
     log.info('{} - {}'.format(id, info))
     return info
 
