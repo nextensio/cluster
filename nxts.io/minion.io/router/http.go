@@ -15,6 +15,7 @@ import (
 	"minion.io/aaa"
 	"minion.io/common"
 	"minion.io/consul"
+	"minion.io/stats"
 	"net"
 	"net/http"
 	"strconv"
@@ -183,7 +184,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 			if left != nil {
 				left.send <- p
 			} else {
-				s.Debug("http: packet drop")
+				stats.PakDrop(p, "lookup left failure", s)
 			}
 		} else {
 			if fwd.DestType == common.RemoteDest {
@@ -205,7 +206,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 			if right != nil {
 				right.send <- p
 			} else {
-				s.Debug("http: packet drop")
+				stats.PakDrop(p, "lookup right failure", s)
 			}
 		}
 	}

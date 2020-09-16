@@ -12,7 +12,7 @@
     the POD is spawned it knows which namespace it belongs. Type of client binding is done
     when the first client joins. The following API is implented in go library.
     Init phase:
-        AaaInit - args : namespace
+        AaaInit - args : namespace, uri
     User Allowed
         UsrAllowed - args : client uuid,
                      return: boolean {1: permit, 0: deny}
@@ -38,6 +38,7 @@ import sys
 import threading
 import time
 from ctypes import *
+from ctypes.util import find_library
 
 lib = cdll.LoadLibrary("./libaaa.so")
 
@@ -46,20 +47,21 @@ THREADS = []
 class GoString(Structure):
     _fields_ = [("p", c_char_p), ("n", c_longlong)]
 
-lib.AaaInit.argtypes = [GoString]
+lib.AaaInit.argtypes = [GoString, GoString]
 lib.AaaInit.restype = c_int
 lib.UsrAllowed.argtypes = [GoString]
 lib.UsrAllowed.restype = c_int
 lib.UsrJoin.argtypes = [GoString, GoString]
 lib.UsrLeave.argtypes = [GoString, GoString]
 lib.GetUsrAttr.argtypes = [GoString]
-lib.GetUsrAttr.restype = GoString
+lib.GetUsrAttr.restype = c_char_p
 lib.AccessOk.argtypes = [GoString, GoString]
 lib.AccessOk.restype = c_int
 
-def goAaaInit(ns, log):
+def goAaaInit(ns, uri, log):
     goNs = GoString(ns, len(ns))
-    return lib.AaaInit(goNs)
+    goUri = GoString(uri, len(uri))
+    return lib.AaaInit(goNs, goUri)
 
 def goUsrAllowed(id, log):
     goId = GoString(id, len(id))
@@ -83,8 +85,7 @@ def goGetUsrAttr(pod, id, log):
     if pod == b"connector":
         return None
     goId = GoString(id, len(id))
-    usr = lib.GetUsrAttr(goId)
-    info = usr.p[:usr.n]
+    info = lib.GetUsrAttr(goId)
     log.info('{} - {}'.format(id, info))
     return info
 
@@ -111,8 +112,10 @@ if  __name__ == "__main__":
     import logging
     logger = logging.getLogger('aaa')
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    uid = b"1234-5678-9abc-defg"
-    goAaaInit(b"blue", logger)
+    # 5f57d00ca712c68fb308e020	123	John Doe	johndoe@gmail.com
+    uid = b"123"
+    uri = b"mongodb+srv://nextensio:nextensio238@cluster0.prph0.mongodb.net"
+    goAaaInit(b"blue", uri, logger)
     goRunTask()
     goUsrAllowed(uid, logger)
     goUsrJoin(b"agent", uid, logger)
@@ -120,7 +123,9 @@ if  __name__ == "__main__":
     if info is None:
         logger.info("empty usr attr")
     info = goGetUsrAttr(b"agent", uid, logger)
-    v = goAccessOk(b"connector", uid, info, logger)
+    #5f57d00ca712c68fb308e020	923	Accounting
+    bid = b"923"
+    v = goAccessOk(b"connector", bid, info, logger)
     goUsrLeave(b"agent", uid, logger)
     time.sleep(120)
     goStopTask()

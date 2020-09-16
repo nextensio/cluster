@@ -39,6 +39,7 @@ import ipaddress
 import traceback
 from myparse import HttpParser
 import aaa
+import stats
 
 OUT_PORT = 8002
 IN_PORT = 8001
@@ -320,12 +321,12 @@ async def route_http_pak(pak, counter, uuid):
             if use_consul_http:
                 complete_rt = await consul_http_lookup(consul_key)
                 if complete_rt is None:
-                    log.error("packet drop: lookup failure")
+                    await stats.pak_drop(pak, "lookup failure", log)
                     return
             elif use_consul_dns:
                 complete_rt = await consul_dns_lookup(consul_key)
                 if complete_rt is None:
-                    log.error("packet drop: lookup failure")
+                    await stats.pak_drop(pak, "lookup failure", log)
                     return
             else:
                 complete_rt = host + '-in.' + my_info['namespace'] + suffix
@@ -467,6 +468,8 @@ async def q_worker(pin):
             if handles.get(pin):
                 if access:
                     await handles[pin].send(pak)
+                else:
+                    await stats.pak_drop(pak, "access denied", log)
             queues[pin].task_done()
         except:
             traceback.print_exc()
@@ -524,9 +527,10 @@ def get_environ(log):
     my_info['pod'] = os.environ.get('MY_POD_NAME')
     my_info['namespace'] = os.environ.get('MY_POD_NAMESPACE')
     my_info['ip'] = os.environ.get('MY_POD_IP')
-    my_info['id']= os.environ.get('MY_POD_CLUSTER')
-    my_info['ns']= os.environ.get('MY_DNS')
-    my_info['test']= os.environ.get('MY_SIM_TEST')
+    my_info['id'] = os.environ.get('MY_POD_CLUSTER')
+    my_info['ns'] = os.environ.get('MY_DNS')
+    my_info['test'] = os.environ.get('MY_SIM_TEST')
+    my_info['mongo'] = os.environ.get('MY_MONGO_URI')
     log.info(my_info['node'])
     log.info(my_info['pod'])
     log.info(my_info['namespace'])
@@ -595,7 +599,7 @@ if __name__ == '__main__':
         signal.signal(signal.SIGINT, sig_handler)
         signal.signal(signal.SIGUSR1, handle_pdb)
         signal.signal(signal.SIGUSR2, handle_debug)
-        aaa.goAaaInit(my_info['namespace'].encode('utf-8'), log)
+        aaa.goAaaInit(my_info['namespace'].encode('utf-8'), my_info['mongo'].encode('utf-8'), log)
         init_periodic()
         init_listener()
         init_worker()

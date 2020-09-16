@@ -8,14 +8,16 @@ import "C"
 
 import (
 	"fmt"
+	"io/ioutil"
+	"strings"
 	"time"
 )
 
 var Stop bool
 
 //export AaaInit
-func AaaInit(ns string) int {
-	fmt.Printf("aaa initialised in namespace %v\n", ns)
+func AaaInit(ns string, uri string) int {
+	fmt.Printf("aaa initialised in namespace %v with uri %v\n", ns, uri)
 	return 0
 }
 
@@ -37,9 +39,12 @@ func UsrLeave(pod string, id string) {
 }
 
 //export GetUsrAttr
-func GetUsrAttr(id string) string {
+func GetUsrAttr(id string) *C.char {
 	fmt.Println(id)
-	usrAttr := "{ dept: computer-science, team: blue }"
+	dat, _ := ioutil.ReadFile("./dat")
+	str := string(dat)
+	str = strings.TrimSuffix(str, "\n")
+	usrAttr := C.CString(str)
 	return usrAttr
 }
 

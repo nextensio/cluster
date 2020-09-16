@@ -12,7 +12,8 @@ Step1: run minion
            -e MY_POD_CLUSTER='sjc' \
            -e MY_DNS='157.230.160.64' \
            -e MY_SIM_TEST='T' \
-           davigupta/minion:0.70 /tmp/nextensio/minion.pyc -t
+           -e MY_MONGO_URI='mongodb+srv//:127.0.0.1' \
+           davigupta/minion:0.70 python3 /tmp/nextensio/minion.pyc -t
 
 Step2: run test client in files/test/shorty.py
     cd files/test; ./shorty.py

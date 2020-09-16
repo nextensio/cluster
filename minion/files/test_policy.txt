@@ -1,0 +1,60 @@
+Test 1: usr attribute test
+
+window 1
+
+docker run -it --net host \
+           -e MY_NODE_NAME='k8s-worker1' \
+           -e MY_POD_NAME='tom.com' \
+           -e MY_POD_NAMESPACE='default' \
+           -e MY_POD_IP='127.0.0.1' \
+           -e MY_POD_CLUSTER='sjc' \
+           -e MY_DNS='157.230.160.64' \
+           -e MY_SIM_TEST='T' \
+           -e MY_MONGO_URI='mongodb+srv//:127.0.0.1' \
+           davigupta/minion:0.70 python3 /tmp/nextensio/minion.pyc -t
+
+window 2
+
+./shorty.py --clitype agent
+
+type any word in this window it will be echoed back we can check for usr attr e.g.,
+
+(env) davi@nuc5:~/work/cluster/minion/files/test$ ./shorty.py --clitype agent
+1
+['service-1']
+ws://127.0.0.1:8002
+< Hello NAGT!
+hello
+> b'GET / HTTP/1.1\r\nHost: gateway.sjc.nextensio.net\r\nx-nextensio-attr: {"uid":"123", "category":"employee", "type":"IC", "level":"2", "dept":["dept1"], "team":[team20"], "maj_ver":"1", "min_ver":"0", "tenant":"5f57d00ca712c68fb308e020" }\r\nuser-agent: ./shorty.py\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 123\r\ncontent-length: 23\r\n\r\n<body>\r\nhello\n</body>\r\n'
+tello
+> b'GET / HTTP/1.1\r\nHost: gateway.sjc.nextensio.net\r\nx-nextensio-attr: {"uid":"123", "category":"employee", "type":"IC", "level":"2", "d
+ept":["dept1"], "team":[team20"], "maj_ver":"1", "min_ver":"0", "tenant":"5f57d00ca712c68fb308e020" }\r\nuser-agent: ./shorty.py\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 123\r\ncontent-length: 23\r\n\r\n<body>\r\ntello\n</body>\r\n'
+^Csnd_count 2, rcv_count 2
+^Csnd_count 2, rcv_count 2
+
+Test 2: permit/deny
+
+window 1
+
+docker run -it --net host \
+           -e MY_NODE_NAME='k8s-worker1' \
+           -e MY_POD_NAME='tom.com' \
+           -e MY_POD_NAMESPACE='default' \
+           -e MY_POD_IP='127.0.0.1' \
+           -e MY_POD_CLUSTER='sjc' \
+           -e MY_DNS='157.230.160.64' \
+           -e MY_SIM_TEST='T' \
+           -e MY_MONGO_URI='mongodb+srv//:127.0.0.1' \
+           davigupta/minion:0.70 python3 /tmp/nextensio/minion.pyc -t
+
+
+window 2
+
+./shorty.py --uid 923 --services connector-7
+
+
+window 3
+
+./access.py
+
+If policy is permit, we will see a message on window 2 else none

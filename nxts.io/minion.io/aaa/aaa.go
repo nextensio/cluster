@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
-func AaaInit(ns string, s *zap.SugaredLogger) int {
+func AaaInit(ns string, uri string, s *zap.SugaredLogger) int {
 	s.Debugf("aaa: initialised in namespace %v\n", ns)
+	s.Debugf("aaa: mongo uri %v\n", uri)
 	return 0
 }
 
@@ -45,8 +46,8 @@ func AccessOk(pod string, id string, attr string, s *zap.SugaredLogger) bool {
 	return true
 }
 
-func AaaStart(ns string, s *zap.SugaredLogger) {
-	AaaInit(ns, s)
+func AaaStart(ns string, uri string, s *zap.SugaredLogger) {
+	AaaInit(ns, uri, s)
 	s.Debug("aaa: running background task")
 	for {
 		s.Debugf("aaa: %v\n", time.Now().Format(time.RFC3339))

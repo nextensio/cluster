@@ -1,6 +1,8 @@
 # minion
 Humble workers
 
+Put pre-commit file in .git/hooks/pre-commit
+
 Environment
 
 mkdir -p ${HOME}/work/go/src

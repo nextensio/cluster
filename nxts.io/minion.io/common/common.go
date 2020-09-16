@@ -44,6 +44,7 @@ type Params struct {
 	PodIp     string
 	Id        string
 	DnsIp     string
+	MongoUri  string
 	Sim       bool
 	C_suffix  string
 	C_server  string

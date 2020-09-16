@@ -32,7 +32,7 @@ func main() {
 	env.EnvHandler(sugar)
 	go router.HttpStart(sugar)
 	go router.TcpRxStart(sugar)
-	go aaa.AaaStart(common.MyInfo.Namespace, sugar)
+	go aaa.AaaStart(common.MyInfo.Namespace, common.MyInfo.MongoUri, sugar)
 	for {
 	}
 }
