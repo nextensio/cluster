@@ -50,7 +50,7 @@ docker run -it --net host \
 
 window 2
 
-./shorty.py --services connector-7
+./shorty.py --uid 923 --services connector-7
 
 
 window 3
