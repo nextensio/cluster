@@ -39,7 +39,6 @@ import (
 const maxOpaUseCases = 5 // we currently have 3
 const maxMongoColls = 10 // assume max 10 MongoDB collections
 const maxUsers = 10000
-
 /*****************************
 // MongoDB database and collections
 // TODO: Ensure each service pod gets the NxtDB for the tenant it is handling via
@@ -64,63 +63,40 @@ var inpType string
 
 /******************************** Calls from minion ******************/
 //export AaaInit
-func AaaInit(namespace string, mongouri string) int {
-	_ = nxtOpaInit(1)
+func AaaInit(namespace string) int {
+        _ = nxtOpaInit(1)
 	return 0
 }
 
 //export UsrJoin
 func UsrJoin(pod string, userid string) {
-	_ = nxtReadUserAttrJSON(userid)
+        _ = nxtReadUserAttrJSON(userid)
 }
 
 //export UsrLeave
 func UsrLeave(pod string, userid string) {
-	nxtPurgeUserAttrJSON(userid)
+        nxtPurgeUserAttrJSON(userid)
 }
 
 //export GetUsrAttr
-func GetUsrAttr(userid string) *C.char {
-	return C.CString(nxtReadUserAttrJSON(userid))
+func GetUsrAttr(userid string) string {
+        return nxtReadUserAttrJSON(userid)
 }
 
 //export UsrAllowed
-func UsrAllowed(userid string) bool {
-	return true
+func UsrAllowed(userid string) int {
+        return 1
 }
 
 //export AccessOk
-func AccessOk(bundleid string, userattr string) bool {
-	return nxtEvalAppAccessAuthz(userattr, bundleid)
+func AccessOk(bundleid string, userattr string) int {
+        return nxtEvalAppAccessAuthz(userattr, bundleid)
 }
-
-/********************Temporary code for aaa.py **********************/
-var Stop bool
-
-//export StopTask
-func StopTask() {
-	Stop = true
-	fmt.Println("got signal to stop")
-}
-
-//export RunTask
-func RunTask() {
-	Stop = false
-	fmt.Println("running background task")
-	for {
-		if Stop == true {
-			fmt.Println("exiting task")
-			return
-		}
-		fmt.Println(time.Now().Format(time.RFC3339))
-		time.Sleep(60 * time.Second)
-	}
-}
-
 /*********************************************************************/
 
 func main() {
 }
+
 
 // For now, this function tests access for a number of users with each app bundle.
 // In production, this will monitor for DB updates and pull in any modified documents
@@ -128,24 +104,24 @@ func main() {
 func nxtOpaProcess(ctx context.Context, egress bool) int {
 
 	select {
-	case <-initDone:
+	        case <-initDone:
 	}
 
 	for {
 		for i, ucase := range opaUseCases {
 			if initUseCase[i] > 0 {
-				nxtSetupUseCase(ctx, i, ucase)
-			}
+			        nxtSetupUseCase(ctx, i, ucase)
+		        }
 		}
 		// Monitoring for new version of UserAttr collection
 		tmphdr := nxtReadUserAttrHdr(ctx)
 		if (tmphdr.Majver > inpRefHdr.Majver) || (tmphdr.Minver > inpRefHdr.Minver) {
-			inpRefHdr = tmphdr
-			nxtUpdateUserAttrCache()
+                        inpRefHdr = tmphdr
+		        nxtUpdateUserAttrCache()
 		}
-
+		
 		// sleep(5 mins)
-		time.Sleep(5 * 60 * 1000 * time.Millisecond)
+		time.Sleep(5*60*1000*time.Millisecond)
 	}
 
 	evalDone <- true // Done with all evaluations
@@ -245,7 +221,7 @@ func nxtOpaInit(egress int) error {
 		nxtCreateOpaUseCase(ucase, egressPod[i], policyType[i], dataType[i], loadDir[i],
 			opaQuery[i], DColls[i])
 		if initUseCase[i] > 0 { // Initialize now in Init function
-			nxtSetupUseCase(ctx, i, ucase)
+		        nxtSetupUseCase(ctx, i, ucase)
 		}
 	}
 	// Read header document for user attributes collection
@@ -283,7 +259,7 @@ func nxtMongoDBInit(ctx context.Context, egress bool) (*mongo.Client, error) {
 		CollMap[PolicyCollection] = db.Collection(PolicyCollection)
 		// For testing only in egress pod
 		CollMap[userAttrCollection] = db.Collection(userAttrCollection)
-		//} else {  TODO: Undo for MVP; temp change for demo
+	//} else {  TODO: Undo for MVP; temp change for demo
 		//CollMap[userAttrCollection] = db.Collection(userAttrCollection)
 		CollMap[userInfoCollection] = db.Collection(userInfoCollection)
 		//CollMap[PolicyCollection] = db.Collection(PolicyCollection)
@@ -492,20 +468,20 @@ func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 // with header info added. Called when user connects to service pod.
 //export nxtReadUserAttrJSON
 func nxtReadUserAttrJSON(uuid string) string {
-	ua, ok := nxtReadUserAttrCache(uuid)
+        ua, ok := nxtReadUserAttrCache(uuid)
 	if ok {
-		return ua // cached version
+	        return ua   // cached version
 	}
 	ua = nxtReadUserAttrDB(uuid)
 	if userAttrLock != true {
-		userAttr[uuid] = ua
+	        userAttr[uuid] = ua
 	}
 	return ua
 }
 
 func nxtReadUserAttrCache(uuid string) (string, bool) {
-	if userAttrLock {
-		return "", false // force a read from the DB
+        if userAttrLock {
+	        return "", false  // force a read from the DB
 	}
 	// Check in cache if user's attributes exist. If yes, return value.
 	uaDoc, ok := userAttr[uuid]
@@ -538,7 +514,7 @@ func nxtReadUserAttrDB(uuid string) string {
 //export nxtPurgeUserAttrJSON
 func nxtPurgeUserAttrJSON(uuid string) {
 	if userAttrLock != true {
-		delete(userAttr, uuid) // if locked, let it be
+		delete(userAttr, uuid)  // if locked, let it be
 	}
 }
 
@@ -559,8 +535,8 @@ func nxtUserAttrJSON(user *UserAttr) string {
 }
 
 func nxtUpdateUserAttrCache() {
-	userAttrLock = true
-	for id, _ := range userAttr {
+        userAttrLock = true
+        for id, _ := range userAttr {
 		userAttr[id] = nxtReadUserAttrDB(id)
 	}
 	userAttrLock = false
@@ -668,7 +644,7 @@ func nxtAddVerToBundleAttrDoc(ucase string, ba *bundleAttr) {
 // instead of the complex struct rego.ResultSet.
 
 //export nxtEvalAppAccessAuthz
-func nxtEvalAppAccessAuthz(uattr string, bid string) bool {
+func nxtEvalAppAccessAuthz(uattr string, bid string) int {
 	// Unmarshal uattr into a UserAttr struct and insert bid into it
 	// Convert back to a unified json string
 	// Call nxtEvalAppAccessAuthzCore() with json string
@@ -681,7 +657,7 @@ func nxtEvalAppAccessAuthz(uattr string, bid string) bool {
 	return nxtEvalAppAccessAuthzCore(nxtUserAttrPlusBidJSON(&ua))
 }
 
-func nxtEvalAppAccessAuthzCore(inp []byte) bool {
+func nxtEvalAppAccessAuthzCore(inp []byte) int {
 	// Rego object is pre-created and query prepared for evaluation.
 	// Here we only evaluate the prepared query with the input data
 
@@ -704,9 +680,9 @@ func nxtEvalAppAccessAuthzCore(inp []byte) bool {
 	}
 	retval := fmt.Sprintf("%v", rs[0].Expressions[0].Value)
 	if retval == "true" {
-		return true
+	        return 1
 	}
-	return false
+	return 0
 }
 
 func nxtUserAttrPlusBidJSON(user *UserAttrPlusBid) []byte {
@@ -752,7 +728,7 @@ func nxtEvalAgentAuthz(ctx context.Context, ldir string, inp []byte) int {
 	}
 	retval := fmt.Sprintf("%v", rs[0].Expressions[0].Value)
 	if retval == "true" {
-		return 1
+	        return 1
 	}
 	return 0
 }
@@ -786,7 +762,7 @@ func nxtEvalConnectorAuthz(ctx context.Context, inp []byte) int {
 	}
 	retval := fmt.Sprintf("%v", rs[0].Expressions[0].Value)
 	if retval == "true" {
-		return 1
+	        return 1
 	}
 	return 0
 }
@@ -840,7 +816,7 @@ var testBidCnt int
 
 func nxtTestUserAccess(ctx context.Context) {
 
-	var res [500]bool // 5 * 100 max
+	var res [500]int // 5 * 100 max
 	var users []UserAttr
 
 	users = nxtReadUserAttrCollection(ctx) // user attributes from mongoDB
