@@ -18,7 +18,7 @@ import time
 
 IN_PORT = 8001
 
-data=b'GET / HTTP/1.1\r\nHost: gateway.sjc.nextensio.net\r\nx-nextensio-attr: {"uid":"123", "category":"employee", "type":"IC", "level":"2", "dept":["dept1"], "team":[team20"], "maj_ver":"1", "min_ver":"0", "tenant":"5f57d00ca712c68fb308e020" }\r\nuser-agent: ./shorty.py\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 123\r\ncontent-length: 23\r\n\r\n<body>\r\nhello\n</body>\r\n'
+data=b'GET / HTTP/1.1\r\nHost: gateway.sjc.nextensio.net\r\nx-nextensio-attr: {"uid":"123", "category":"employee", "type":"IC", "level":"2", "dept":["dept1"], "team":["team20"], "maj_ver":"1", "min_ver":"0", "tenant":"5f57d00ca712c68fb308e020" }\r\nuser-agent: ./shorty.py\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 123\r\ncontent-length: 23\r\n\r\n<body>\r\nhello\n</body>\r\n'
 
 writer = {}
 reader = {}

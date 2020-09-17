@@ -25,10 +25,10 @@ type any word in this window it will be echoed back we can check for usr attr e.
 ws://127.0.0.1:8002
 < Hello NAGT!
 hello
-> b'GET / HTTP/1.1\r\nHost: gateway.sjc.nextensio.net\r\nx-nextensio-attr: {"uid":"123", "category":"employee", "type":"IC", "level":"2", "dept":["dept1"], "team":[team20"], "maj_ver":"1", "min_ver":"0", "tenant":"5f57d00ca712c68fb308e020" }\r\nuser-agent: ./shorty.py\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 123\r\ncontent-length: 23\r\n\r\n<body>\r\nhello\n</body>\r\n'
+> b'GET / HTTP/1.1\r\nHost: gateway.sjc.nextensio.net\r\nx-nextensio-attr: {"uid":"123", "category":"employee", "type":"IC", "level":"2", "dept":["dept1"], "team":["team20"], "maj_ver":"1", "min_ver":"0", "tenant":"5f57d00ca712c68fb308e020" }\r\nuser-agent: ./shorty.py\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 123\r\ncontent-length: 23\r\n\r\n<body>\r\nhello\n</body>\r\n'
 tello
 > b'GET / HTTP/1.1\r\nHost: gateway.sjc.nextensio.net\r\nx-nextensio-attr: {"uid":"123", "category":"employee", "type":"IC", "level":"2", "d
-ept":["dept1"], "team":[team20"], "maj_ver":"1", "min_ver":"0", "tenant":"5f57d00ca712c68fb308e020" }\r\nuser-agent: ./shorty.py\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 123\r\ncontent-length: 23\r\n\r\n<body>\r\ntello\n</body>\r\n'
+ept":["dept1"], "team":["team20"], "maj_ver":"1", "min_ver":"0", "tenant":"5f57d00ca712c68fb308e020" }\r\nuser-agent: ./shorty.py\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 123\r\ncontent-length: 23\r\n\r\n<body>\r\ntello\n</body>\r\n'
 ^Csnd_count 2, rcv_count 2
 ^Csnd_count 2, rcv_count 2
 
