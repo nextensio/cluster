@@ -72,11 +72,15 @@ def goUsrAllowed(id, log):
         return False
 
 def goUsrJoin(pod, id, log):
+    if pod == b"connector":
+        return
     goId = GoString(id, len(id))
     goPod = GoString(pod, len(pod))
     usr = lib.UsrJoin(goPod, goId)
 
 def goUsrLeave(pod, id, log):
+    if pod == b"connector":
+        return
     goId = GoString(id, len(id))
     goPod = GoString(pod, len(pod))
     usr = lib.UsrLeave(goPod, goId)
@@ -119,6 +123,7 @@ if  __name__ == "__main__":
     goRunTask()
     goUsrAllowed(uid, logger)
     goUsrJoin(b"agent", uid, logger)
+    goUsrJoin(b"connector", uid, logger)
     info = goGetUsrAttr(b"connector", uid, logger)
     if info is None:
         logger.info("empty usr attr")
@@ -127,6 +132,7 @@ if  __name__ == "__main__":
     bid = b"923"
     v = goAccessOk(b"connector", bid, info, logger)
     goUsrLeave(b"agent", uid, logger)
+    goUsrLeave(b"connector", uid, logger)
     time.sleep(120)
     goStopTask()
     for p in THREADS:
