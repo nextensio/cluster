@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"io"
 )
 
 type TcpClConn struct {
@@ -20,7 +21,10 @@ type TcpClConn struct {
 	last time.Time
 	send chan []byte
 	name string
+	counter int
 }
+
+const ACK_RESP = 256
 
 /*
  * txHandler:
@@ -37,6 +41,7 @@ func (c *TcpClConn) txHandler(t *Tracker, s *zap.SugaredLogger) {
 	}()
 
 	for {
+		var tmp []byte = make([]byte, ACK_RESP)
 		select {
 		case <-ticker.C:
 			s.Debug("tx_tcp: check for idle activity")
@@ -45,11 +50,30 @@ func (c *TcpClConn) txHandler(t *Tracker, s *zap.SugaredLogger) {
 			if !ok {
 				return
 			}
-			s.Debug("tx_tcp: got the packet to sent")
+			s.Debugf("tx_tcp: packet sent %v\n", c.counter)
 			c.conn.Write(msg)
+			_, e := c.conn.Read(tmp)
+			if e != nil {
+				if e != io.EOF {
+					s.Errorw("tx_tcp:", "err", e)
+				}
+			} else {
+				s.Debugf("tx_tcp: got ack %v\n", c.counter)
+			}
+			c.counter++
 			n := len(c.send)
 			for i := 0; i < n; i++ {
+				s.Debugf("tx_tcp: packet sent %v\n", c.counter)
 				c.conn.Write(<-c.send)
+				_, e := c.conn.Read(tmp)
+				if e != nil {
+					if e != io.EOF {
+						s.Errorw("tx_tcp:", "err", e)
+					}
+				} else {
+					s.Debugf("tx_tcp: got ack %v\n", c.counter)
+				}
+				c.counter++
 			}
 			c.last = time.Now()
 		}
@@ -66,7 +90,7 @@ func TcpClient(t *Tracker, name string, s *zap.SugaredLogger) (*TcpClConn, error
 	servAddr := strings.Join([]string{name, portStr}, ":")
 	conn, e := net.Dial("tcp", servAddr)
 	if e != nil {
-		s.Debugw("tx_tcp:", "err", e)
+		s.Errorw("tx_tcp:", "err", e)
 		return nil, e
 	}
 	v := TcpClConn{conn: conn, last: time.Now(),

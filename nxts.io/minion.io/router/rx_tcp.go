@@ -22,6 +22,7 @@ import (
 type TcpSeConn struct {
 	track *TcpRxTracker
 	conn  net.Conn
+	counter int
 }
 
 func httpSendOk(handle *TcpSeConn, s *zap.SugaredLogger) {
@@ -30,7 +31,7 @@ func httpSendOk(handle *TcpSeConn, s *zap.SugaredLogger) {
 	if e != nil {
 		s.Errorw("rx_tcp:", "err", e)
 	}
-	s.Debug("rx_tcp: http ok")
+	s.Debugf("rx_tcp: http ok %v\n", handle.counter)
 }
 
 func httpForLeft(pak []byte, s *zap.SugaredLogger) {
@@ -76,9 +77,11 @@ func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
 		} else {
 			pLen += Execute(state, buf, len, s)
 			if IsBodyComplete(state) == true {
+				s.Debugf("rx_tcp: got pak %v\n", c.counter)
 				httpSendOk(c, s)
 				pak := append(GetHeaders(state), GetBody(state)...)
 				httpForLeft(pak, s)
+				c.counter++
 			}
 		}
 	}
