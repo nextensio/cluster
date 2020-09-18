@@ -1,1 +1,1 @@
-{"uid":"123", "category":"employee", "type":"IC", "level":"2", "dept":["dept1"], "team":[team20"], "maj_ver":"1", "min_ver":"0", "tenant":"5f57d00ca712c68fb308e020" }
+{"uid":"123", "category":"employee", "type":"IC", "level":"2", "dept":["dept1"], "team":["team20"], "maj_ver":"1", "min_ver":"0", "tenant":"5f57d00ca712c68fb308e020" }

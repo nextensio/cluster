@@ -25,7 +25,7 @@ type TcpSeConn struct {
 }
 
 func httpSendOk(handle *TcpSeConn, s *zap.SugaredLogger) {
-	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n")
+	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
 	_, e := handle.conn.Write(resp)
 	if e != nil {
 		s.Errorw("rx_tcp:", "err", e)

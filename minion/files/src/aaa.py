@@ -72,11 +72,15 @@ def goUsrAllowed(id, log):
         return False
 
 def goUsrJoin(pod, id, log):
+    if pod == b"connector":
+        return
     goId = GoString(id, len(id))
     goPod = GoString(pod, len(pod))
     usr = lib.UsrJoin(goPod, goId)
 
 def goUsrLeave(pod, id, log):
+    if pod == b"connector":
+        return
     goId = GoString(id, len(id))
     goPod = GoString(pod, len(pod))
     usr = lib.UsrLeave(goPod, goId)
@@ -114,19 +118,21 @@ if  __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     # 5f57d00ca712c68fb308e020	123	John Doe	johndoe@gmail.com
     uid = b"123"
+    bid = b"923"
     uri = b"mongodb+srv://nextensio:nextensio238@cluster0.prph0.mongodb.net"
     goAaaInit(b"blue", uri, logger)
     goRunTask()
     goUsrAllowed(uid, logger)
     goUsrJoin(b"agent", uid, logger)
+    goUsrJoin(b"connector", bid, logger)
     info = goGetUsrAttr(b"connector", uid, logger)
     if info is None:
         logger.info("empty usr attr")
     info = goGetUsrAttr(b"agent", uid, logger)
     #5f57d00ca712c68fb308e020	923	Accounting
-    bid = b"923"
     v = goAccessOk(b"connector", bid, info, logger)
     goUsrLeave(b"agent", uid, logger)
+    goUsrLeave(b"connector", bid, logger)
     time.sleep(120)
     goStopTask()
     for p in THREADS:

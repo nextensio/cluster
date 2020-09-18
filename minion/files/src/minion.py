@@ -231,17 +231,9 @@ class HTTPProtocol(asyncio.Protocol):
         Ack the HTTP request
         Reply as HTTP/1.1 server, saying HTTP OK
         """
-        resp_headers = {
-            'Content-Length': 0,
-        }
-        resp_headers_raw = ''.join('%s: %s\n'%(k,v) for k, v in resp_headers.items())
-        resp_proto = 'HTTP/1.1'.encode()
-        resp_status = '200'.encode()
-        resp_status_text = 'OK'.encode()
-        self.transport.write(b'%s %s %s\n'%(resp_proto, resp_status, resp_status_text))
-        self.transport.write(resp_headers_raw.encode())
-        self.transport.write(b'\n')
-        log.info("sending ack")
+        ack = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+        self.transport.write(ack)
+        log.info("sending ack {}".format(self.counter))
 
     def data_received(self, data):
         log.debug("http data received")
@@ -354,7 +346,7 @@ async def route_http_pak(pak, counter, uuid):
         try:
             await writer[rt].drain()
             resp = await reader[rt].read(READ_BYTES)
-            log.debug("got an ack")
+            log.info("got an ack {}".format(counter))
             log.debug(resp)
         except (ConnectionResetError, ConnectionAbortedError) as e:
             log.info("Got exception, close connection for {}".format(rt))
@@ -366,6 +358,9 @@ async def route_http_pak(pak, counter, uuid):
         writer[rt].write(npak)
         try:
             await writer[rt].drain()
+            resp = await reader[rt].read(READ_BYTES)
+            log.info("got an ack {}".format(counter))
+            log.debug(resp)
         except (ConnectionResetError, ConnectionAbortedError) as e:
             writer[rt].is_closed = True
             writer[rt].close()
