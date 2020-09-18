@@ -8,19 +8,19 @@ package router
 
 import (
 	"go.uber.org/zap"
+	"io"
 	"minion.io/common"
 	"net"
 	"strconv"
 	"strings"
 	"time"
-	"io"
 )
 
 type TcpClConn struct {
-	conn net.Conn
-	last time.Time
-	send chan []byte
-	name string
+	conn    net.Conn
+	last    time.Time
+	send    chan []byte
+	name    string
 	counter int
 }
 

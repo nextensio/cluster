@@ -20,8 +20,8 @@ import (
 )
 
 type TcpSeConn struct {
-	track *TcpRxTracker
-	conn  net.Conn
+	track   *TcpRxTracker
+	conn    net.Conn
 	counter int
 }
 
