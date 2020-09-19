@@ -31,3 +31,5 @@ tello
 > b'GET / HTTP/1.1\r\nx-nextensio-attr: { dept: computer-science, team: blue }\r\nHost: gateway.sjc.nextensio.net\r\nuser-agent: ./shorty.py\r\nx-nextensio-for: 127.0.0.1\r\nx-nextensio-uuid: 12345678\r\ncontent-length: 23\r\n\r\n<body>\r\ntello\n</body>\r\n'
 ^Csnd_count 2, rcv_count 2
 ^Csnd_count 2, rcv_count 2
+
+Building a Debug image
