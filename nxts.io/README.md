@@ -20,3 +20,8 @@ go test -v
 # Running a program
 cd nxts.io/minion.io
 go run minion.go
+
+Debug
+
+Use make debug to generate a debug version of container. It does not run
+minion code by default. We need to start it manually.

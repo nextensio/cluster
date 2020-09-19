@@ -12,6 +12,11 @@ all:
 	echo $(VERSION) > files/version
 	docker build -t $(USER)/$(NAME):$(VERSION) .
 
+debug:
+	rm -r -f files/version
+	echo $(VERSION) > files/version
+	docker build -f Dockerfile.debug -t $(USER)/$(NAME):$(VERSION) .
+
 clean:
 	-docker rmi $(image)
 	-rm -r -f files/version
