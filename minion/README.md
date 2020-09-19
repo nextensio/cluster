@@ -33,3 +33,9 @@ tello
 ^Csnd_count 2, rcv_count 2
 
 Building a Debug image
+
+make debug
+
+The minion container build by above method does not run minion program by default. We need to start the program seperately by ...
+
+docker run davigupta/minion:<ver> /tmp/nextension/minion.py <options....>
