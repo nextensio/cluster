@@ -28,7 +28,8 @@ RUN cd /tmp/nextensio \
     && \rm -r -f myparse.py \
     && \rm -r -f aaa.py \
     && \rm -r -f stats.py \
-    && \rm -r -f authz/nxt-opa-authz.go
+    && \rm -r -f nxt-opa-authz.go
+RUN mkdir -p /tmp/nextensio/authz/app-access
 
 EXPOSE 80/tcp 8002/tcp
 

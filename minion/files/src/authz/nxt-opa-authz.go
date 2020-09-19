@@ -202,9 +202,9 @@ const AAuthzQry = "data.app.access.allow"
 const CAuthzQry = "data.app.access.allow"
 const AccessQry = "data.app.access.allow"
 
-const agentldir = "agent-authz"
-const connldir = "conn-authz"
-const accessldir = "app-access"
+const agentldir = "authz/agent-authz"
+const connldir = "authz/conn-authz"
+const accessldir = "authz/app-access"
 
 const agentauthzpolicy = "agent-authz.rego"
 const connauthzpolicy = "conn-authz.rego"
@@ -357,7 +357,7 @@ func nxtReadPolicyDocument(ctx context.Context, usecase string, ptype string) {
 		log.Fatal(err)
 	}
 
-	if policy == nil {
+	if len(policy) <= 0 {
 		fmt.Printf("Could not read %v in nxtReadPolicyDocument\n", ptype)
 		log.Fatal(err)
 	}
@@ -395,8 +395,9 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 
 	// read version document for data collection
 	var hdr []DataHdr
-	coll := QStateMap[ucase].DColl
-	cursor, err := CollMap[coll].Find(ctx, bson.M{"_id": QStateMap[ucase].DataType})
+	qs := QStateMap[ucase]
+	coll := qs.DColl
+	cursor, err := CollMap[coll].Find(ctx, bson.M{"_id": qs.DataType})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -404,17 +405,21 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 		log.Fatal(err)
 	}
 
+	if len(hdr) <= 0 {
+		fmt.Printf("Could not read %v in nxtReadRefDataHdr\n", qs.DataType)
+		log.Fatal(err)
+	}
+
 	// If data collection majver < policy document majver, ignore data collection and return
-	if hdr[0].Majver < QStateMap[ucase].PStruct.Majver {
+	if hdr[0].Majver < qs.PStruct.Majver {
 		return false
 	}
 	// data collection majver >= policy document majver
 	// if data collection majver or minver is newer than current version,
 	// read entire data collection and store it in QStateMap
-	if (hdr[0].Majver > QStateMap[ucase].RefHdr.Majver) ||
-		(hdr[0].Minver > QStateMap[ucase].RefHdr.Minver) {
-		QStateMap[ucase].RefHdr = hdr[0]
-		QStateMap[ucase].NewVer = true
+	if (hdr[0].Majver > qs.RefHdr.Majver) || (hdr[0].Minver > qs.RefHdr.Minver) {
+		qs.RefHdr = hdr[0]
+		qs.NewVer = true
 		return true
 	}
 	return false
@@ -485,6 +490,11 @@ func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 		log.Fatal(err)
 	}
 
+	if len(uahdr) <= 0 {
+		fmt.Printf("Could not read %v in nxtReadUserAttrHdr\n", inpType)
+		log.Fatal(err)
+	}
+
 	return uahdr[0]
 }
 
@@ -496,8 +506,8 @@ func nxtReadUserAttrJSON(uuid string) string {
 	if ok {
 		return ua // cached version
 	}
-	ua = nxtReadUserAttrDB(uuid)
-	if userAttrLock != true {
+	ua, ok = nxtReadUserAttrDB(uuid)
+	if ok && (userAttrLock != true) {
 		userAttr[uuid] = ua
 	}
 	return ua
@@ -515,7 +525,7 @@ func nxtReadUserAttrCache(uuid string) (string, bool) {
 	return "", false
 }
 
-func nxtReadUserAttrDB(uuid string) string {
+func nxtReadUserAttrDB(uuid string) (string, bool) {
 	var usera []UserAttr
 
 	ctx := context.Background()
@@ -524,14 +534,17 @@ func nxtReadUserAttrDB(uuid string) string {
 	coll := CollMap[userAttrCollection]
 	cursor, err := coll.Find(ctx, bson.M{"_id": uuid})
 	if err != nil {
-		log.Fatal(err)
+		return "", false
 	}
 	if err = cursor.All(ctx, &usera); err != nil {
-		log.Fatal(err)
+		return "", false
+	}
+	if len(usera) <= 0 {
+		return "", false
 	}
 
 	nxtAddVerToUserAttr(&usera[0])
-	return nxtUserAttrJSON(&usera[0]) // json string with version nfo
+	return nxtUserAttrJSON(&usera[0]), true // json string with version nfo
 }
 
 // Remove user attributes for a user on disconnect
@@ -561,7 +574,7 @@ func nxtUserAttrJSON(user *UserAttr) string {
 func nxtUpdateUserAttrCache() {
 	userAttrLock = true
 	for id, _ := range userAttr {
-		userAttr[id] = nxtReadUserAttrDB(id)
+		userAttr[id], _ = nxtReadUserAttrDB(id)
 	}
 	userAttrLock = false
 }
