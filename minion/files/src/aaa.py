@@ -34,13 +34,17 @@
         StopTask - args: none
 """
 
+import os
 import sys
 import threading
 import time
 from ctypes import *
 from ctypes.util import find_library
 
-lib = cdll.LoadLibrary("./libaaa.so")
+if os.environ.get('MY_SIM_TEST') :
+    lib = cdll.LoadLibrary("./libaaa_mock.so")
+else:
+    lib = cdll.LoadLibrary("./libaaa.so")
 
 THREADS = []
 
