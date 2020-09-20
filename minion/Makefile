@@ -6,6 +6,7 @@ VERSION=0.79
 NAME=minion
 USER=davigupta
 image=$(shell docker images $(USER)/$(NAME):$(VERSION) -q)
+acontid=$(shell docker ps -a --filter ancestor=$(USER)/$(NAME):$(VERSION) -q)
 
 all:
 	rm -r -f files/src/version
@@ -18,5 +19,6 @@ debug:
 	docker build -f Dockerfile.debug -t $(USER)/$(NAME):$(VERSION) .
 
 clean:
+	-docker rm $(acontid)
 	-docker rmi $(image)
 	-rm -r -f files/src/version
