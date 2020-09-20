@@ -104,6 +104,8 @@ def goAccessOk(pod, id, usr, log):
     goUsr = GoString(usr, len(usr))
     access = lib.AccessOk(goId, goUsr)
     log.info('{} - {}'.format(id, access))
+    if not access:
+        log.info('{}'.format(usr))
     return access
 
 def goRunTask():
