@@ -9,7 +9,7 @@ docker run -it --net host \
            -e MY_DNS='157.230.160.64' \
            -e MY_SIM_TEST='T' \
            -e MY_MONGO_URI='mongodb+srv//:127.0.0.1' \
-           davigupta/minion:0.70 python3 /tmp/nextensio/minion.pyc -t
+           davigupta/minion:0.79 python3 /tmp/nextensio/minion.pyc -t
 
 ==== 
 
