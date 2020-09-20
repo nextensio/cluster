@@ -3,6 +3,8 @@ Humble workers
 
 To test on local machine
 
+Note:- If integeration of OPA needs to be testest, then remove MY_SIM_TEST
+
 Step1: run minion
     docker run -it --net host \
            -e MY_NODE_NAME='k8s-worker1' \
