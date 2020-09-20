@@ -6,7 +6,7 @@ WORKDIR /go/src/app
 COPY minion.io .
 RUN go get -d -v ./... \
     && go install -v ./... \
-    && \rm -r -f /go/src \
+    && \rm -r -f /go/src/app/* \
     && \rm -r -f /go/pkg/mod \
     && \rm -r -f /go/pkg/sumdb
 EXPOSE 80/tcp 8002/tcp
