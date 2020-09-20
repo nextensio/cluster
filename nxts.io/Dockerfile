@@ -4,7 +4,7 @@ MAINTAINER Davi Gupta <davigupta@gmail.com>
 COPY files .
 WORKDIR /go/src/app
 COPY minion.io .
-RUN go get -d -v ./...
-RUN go install -v ./...
+RUN go get -d -v ./... \
+    && go install -v ./...
 EXPOSE 80/tcp 8002/tcp
 CMD ["/go/src/app/wait.sh"]
