@@ -17,6 +17,11 @@ debug:
 	echo $(VERSION) > files/version
 	docker build -f Dockerfile -t $(USER)/$(NAME):$(VERSION) .
 
+slim:
+	rm -r -f files/version
+	echo $(VERSION) > files/version
+	docker build -f Dockerfile.slim -t $(USER)/$(NAME):$(VERSION) .
+
 clean:
 	-docker rmi $(image)
 	-rm -r -f files/version
