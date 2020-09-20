@@ -1,8 +1,8 @@
 FROM alpine:3.12
 
 MAINTAINER Davi Gupta <davigupta@gmail.com>
-COPY files .
-WORKDIR /app/bin
-COPY bin/* .
+COPY files /go
+WORKDIR /go/bin
+COPY bin .
 EXPOSE 80/tcp 8002/tcp
-CMD ["/app/bin/minion.io", "-tunnel", "-consul_dns", "-register", "-ip", "127.0.0.1", "-iport", "80"]
+CMD ["/go/bin/minion.io", "-tunnel", "-consul_dns", "-register", "-ip", "127.0.0.1", "-iport", "80"]

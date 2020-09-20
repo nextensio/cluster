@@ -6,22 +6,42 @@ VERSION=1.00
 NAME=minion
 USER=davigupta
 image=$(shell docker images $(USER)/$(NAME):$(VERSION) -q)
+bimage=$(shell docker images $(USER)/$(NAME)-build:$(VERSION) -q)
+acontid=$(shell docker ps -a --filter ancestor=$(USER)/$(NAME):$(VERSION) -q)
+abcontid=$(shell docker ps -a --filter ancestor=$(USER)/$(NAME)-build:$(VERSION) -q)
+bcontid=$(shell docker ps -a --filter ancestor=$(USER)/$(NAME)-build:$(VERSION) -q | head -n 1)
 
-all:
+.PHONY: all
+all: build copy slim
+
+.PHONY: build
+build:
 	rm -r -f files/version
 	echo $(VERSION) > files/version
-	docker build -f Dockerfile.prod -t $(USER)/$(NAME):$(VERSION) .
+	docker build -f Dockerfile.build -t $(USER)/$(NAME)-build:$(VERSION) .
+	docker create $(USER)/$(NAME)-build:$(VERSION)
 
+.PHONY: debug
 debug:
 	rm -r -f files/version
 	echo $(VERSION) > files/version
 	docker build -f Dockerfile -t $(USER)/$(NAME):$(VERSION) .
 
+.PHONY: copy
+copy:
+	-rm -r -f bin/$(NAME).io
+	docker cp $(bcontid):/go/bin/$(NAME).io bin
+
+.PHONY: slim
 slim:
 	rm -r -f files/version
 	echo $(VERSION) > files/version
 	docker build -f Dockerfile.slim -t $(USER)/$(NAME):$(VERSION) .
 
+.PHONY: clean
 clean:
+	-docker rm $(acontid)
+	-docker rm $(abcontid)
 	-docker rmi $(image)
+	-docker rmi $(bimage)
 	-rm -r -f files/version

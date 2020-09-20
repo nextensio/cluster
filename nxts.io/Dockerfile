@@ -1,7 +1,7 @@
 FROM golang:1.13
 
 MAINTAINER Davi Gupta <davigupta@gmail.com>
-COPY files .
+COPY files /go
 WORKDIR /go/src/app
 COPY minion.io .
 RUN go get -d -v ./... \
