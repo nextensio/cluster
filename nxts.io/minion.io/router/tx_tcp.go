@@ -19,7 +19,7 @@ import (
 type TcpClConn struct {
 	conn    net.Conn
 	last    time.Time
-	send    chan []byte
+	send    chan common.Queue
 	name    string
 	counter int
 }
@@ -51,7 +51,7 @@ func (c *TcpClConn) txHandler(t *Tracker, s *zap.SugaredLogger) {
 				return
 			}
 			s.Debugf("tx_tcp: packet sent %v\n", c.counter)
-			c.conn.Write(msg)
+			UtilWrite(c.conn, msg.Pak)
 			_, e := c.conn.Read(tmp)
 			if e != nil {
 				if e != io.EOF {
@@ -64,7 +64,8 @@ func (c *TcpClConn) txHandler(t *Tracker, s *zap.SugaredLogger) {
 			n := len(c.send)
 			for i := 0; i < n; i++ {
 				s.Debugf("tx_tcp: packet sent %v\n", c.counter)
-				c.conn.Write(<-c.send)
+				msg, _ = <-c.send
+				UtilWrite(c.conn, msg.Pak)
 				_, e := c.conn.Read(tmp)
 				if e != nil {
 					if e != io.EOF {
@@ -94,7 +95,7 @@ func TcpClient(t *Tracker, name string, s *zap.SugaredLogger) (*TcpClConn, error
 		return nil, e
 	}
 	v := TcpClConn{conn: conn, last: time.Now(),
-		send: make(chan []byte, common.MaxQueueSize), name: name}
+		send: make(chan common.Queue, common.MaxQueueSize), name: name}
 	s.Debugf("tx_tcp: dial tcp connection to %v", servAddr)
 	go v.txHandler(t, s)
 

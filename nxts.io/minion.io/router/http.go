@@ -35,13 +35,14 @@ var (
 type WsClient struct {
 	track    *Tracker
 	conn     *websocket.Conn
-	send     chan []byte
+	send     chan common.Queue
 	codec    string
 	name     [common.MaxService]string
 	num      int
 	clitype  string
 	uuid     string
 	name_reg [common.MaxService]bool
+	counter  int
 }
 
 func (c *WsClient) txHandler(s *zap.SugaredLogger) {
@@ -67,16 +68,24 @@ func (c *WsClient) txHandler(s *zap.SugaredLogger) {
 			}
 			w, err := c.conn.NextWriter(websocket.BinaryMessage)
 			if err != nil {
-				return
+				break
 			}
-			w.Write(msg)
+			w.Write(msg.Pak)
+			if err := w.Close(); err != nil {
+				break
+			}
 
 			n := len(c.send)
 			for i := 0; i < n; i++ {
-				w.Write(<-c.send)
-			}
-			if err := w.Close(); err != nil {
-				return
+				msg, _ = <-c.send
+				w, err := c.conn.NextWriter(websocket.BinaryMessage)
+				if err != nil {
+					break
+				}
+				w.Write(msg.Pak)
+				if err := w.Close(); err != nil {
+					break
+				}
 			}
 		}
 	}
@@ -132,13 +141,16 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 	c.track.add <- c
 	aaa.UsrJoin(c.clitype, c.uuid, s)
 
+	var drop bool
 	// Read the packet and forward
 	for {
+		s.Debugw("http", "read", 1)
 		messageType, p, e = c.conn.ReadMessage()
 		if e != nil {
 			if websocket.IsUnexpectedCloseError(e, websocket.CloseGoingAway) {
 				s.Errorw("http", "err", e)
 			}
+			s.Errorw("http", "err", e)
 			break
 		}
 		s.Debugw("http", "type", messageType)
@@ -161,7 +173,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 			fwd.DestType = common.LocalDest
 		} else {
 			host = strings.ReplaceAll(host, ".", "-")
-			consul_key := strings.Join([]string{host, common.MyInfo.Namespace}, "")
+			consul_key := strings.Join([]string{host, common.MyInfo.Namespace}, "-")
 			s.Debugw("http", "key", consul_key)
 			// do consul lookup
 			fwd, _ = consul.ConsulDnsLookup(consul_key, s)
@@ -179,11 +191,14 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 			}
 			p = bytes.Join([][]byte{z[0], newhost, attrb, z[2]}, []byte("\r\n"))
 		}
+		drop = false
 		if fwd.DestType == common.SelfDest {
 			left := LookupLeftService(fwd.Dest)
 			if left != nil {
-				left.send <- p
+				item := common.Queue{Id: c.counter, Pak: p}
+				left.send <- item
 			} else {
+				drop = true
 				stats.PakDrop(p, "lookup left failure", s)
 			}
 		} else {
@@ -204,10 +219,16 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 				right = <-c.track.conn
 			}
 			if right != nil {
-				right.send <- p
+				item := common.Queue{Id: c.counter, Pak: p}
+				right.send <- item
 			} else {
+				drop = true
 				stats.PakDrop(p, "lookup right failure", s)
 			}
+		}
+		if drop == false {
+			s.Debugw("http:", "pak", c.counter)
+			c.counter++
 		}
 	}
 }
@@ -245,7 +266,7 @@ func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
 	}
 	// add the connection for the bookeeping
 	client := &WsClient{track: t, conn: ws,
-		send:  make(chan []byte, common.MaxQueueSize),
+		send:  make(chan common.Queue, common.MaxQueueSize),
 		codec: codec, clitype: "connector",
 		uuid: uuid}
 	client.track.register <- client

@@ -94,3 +94,9 @@ type Fwd struct {
 	Id       string
 	Dest     string
 }
+
+// Structure for passing packet
+type Queue struct {
+	Id  int
+	Pak []byte
+}

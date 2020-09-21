@@ -27,14 +27,14 @@ type TcpSeConn struct {
 
 func httpSendOk(handle *TcpSeConn, s *zap.SugaredLogger) {
 	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-	_, e := handle.conn.Write(resp)
+	_, e := UtilWrite(handle.conn, resp)
 	if e != nil {
 		s.Errorw("rx_tcp:", "err", e)
 	}
 	s.Debugf("rx_tcp: http ok %v\n", handle.counter)
 }
 
-func httpForLeft(pak []byte, s *zap.SugaredLogger) {
+func httpForLeft(handle *TcpSeConn, pak []byte, s *zap.SugaredLogger) {
 	reader := bufio.NewReader(strings.NewReader(string(pak)))
 	r, e := http.ReadRequest(reader)
 	if e != nil {
@@ -51,7 +51,8 @@ func httpForLeft(pak []byte, s *zap.SugaredLogger) {
 		if aaa.AccessOk(left.clitype, left.uuid, usr, s) == false {
 			stats.PakDrop(pak, "access denied", s)
 		}
-		left.send <- pak
+		item := common.Queue{Id: handle.counter, Pak: pak}
+		left.send <- item
 	} else {
 		stats.PakDrop(pak, "lookup left failure", s)
 	}
@@ -80,7 +81,7 @@ func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
 				s.Debugf("rx_tcp: got pak %v\n", c.counter)
 				httpSendOk(c, s)
 				pak := append(GetHeaders(state), GetBody(state)...)
-				httpForLeft(pak, s)
+				httpForLeft(c, pak, s)
 				c.counter++
 			}
 		}
