@@ -24,6 +24,7 @@ import (
 	"minion.io/common"
 	"minion.io/env"
 	"minion.io/router"
+	"time"
 )
 
 var lumlog = &lumberjack.Logger{
@@ -49,5 +50,6 @@ func main() {
 	go router.TcpRxStart(sugar)
 	go aaa.AaaStart(common.MyInfo.Namespace, common.MyInfo.MongoUri, sugar)
 	for {
+		time.Sleep(86400 * time.Second)
 	}
 }
