@@ -51,6 +51,7 @@ const connInfoCollection = "NxtApps"
 const appAttrCollection = "NxtAppAttr"
 const userAttrCollection = "NxtUserAttr"
 const PolicyCollection = "NxtPolicies"
+const RouteCollection = "NxtRoutes"
 
 var opaUseCases = []string{"AgentAuthz", "ConnAuthz", "AppAccess"}
 var initUseCase = []int{0, 0, 1}
@@ -92,6 +93,28 @@ func UsrAllowed(userid string) bool {
 //export AccessOk
 func AccessOk(bundleid string, userattr string) bool {
 	return nxtEvalAppAccessAuthz(userattr, bundleid)
+}
+
+// NOTE: The bson decoder will not work if the structure field names dont start with upper case
+type Route struct {
+	Route  string             `json:"route" bson:"_id"`
+	Tenant primitive.ObjectID `json:"tenant" bson:"tenant"`
+	Tag    string             `json:"tag" bson:"tag"`
+}
+
+//export RouteLookup
+func RouteLookup(uid string, routeid string) *C.char {
+	var route Route
+	var tag = ""
+	var key = uid + ":" + routeid
+	err := CollMap[RouteCollection].FindOne(
+		context.TODO(),
+		bson.M{"_id": key},
+	).Decode(&route)
+	if err == nil {
+		tag = route.Tag
+	}
+	return C.CString(tag)
 }
 
 /********************Temporary code for aaa.py **********************/
@@ -288,6 +311,7 @@ func nxtMongoDBInit(ctx context.Context, egress bool) (*mongo.Client, error) {
 		CollMap[userInfoCollection] = db.Collection(userInfoCollection)
 		//CollMap[PolicyCollection] = db.Collection(PolicyCollection)
 	}
+	CollMap[RouteCollection] = db.Collection(RouteCollection)
 
 	return cl, nil
 }
