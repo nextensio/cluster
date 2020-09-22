@@ -144,8 +144,8 @@ func nxtOpaProcess(ctx context.Context, egress bool) int {
 			nxtUpdateUserAttrCache()
 		}
 
-		// sleep(5 mins)
-		time.Sleep(5 * 60 * 1000 * time.Millisecond)
+		// sleep(5 secs)
+		time.Sleep(5 * 1000 * time.Millisecond)
 	}
 
 	evalDone <- true // Done with all evaluations
@@ -159,8 +159,8 @@ func nxtOpaProcess(ctx context.Context, egress bool) int {
 // provide a filename that is then used to read the policy from a local file.
 type Policy struct {
 	PolicyId string `json:"pid" bson:"_id"`
-	Majver   string `json:"majver" bson:"majver"` // major version
-	Minver   string `json:"minver" bson:"minver"` // minor version
+	Majver   int    `json:"majver" bson:"majver"` // major version
+	Minver   int    `json:"minver" bson:"minver"` // minor version
 	//Tenant   string `json:"tenant" bson:"tenant"` // tenant id
 	Tenant primitive.ObjectID `json:"tenant" bson:"tenant"` // REMOTEDB
 	Fname  string             `json:"fname" bson:"fname"`   // rego policy filename
@@ -172,8 +172,8 @@ type Policy struct {
 // info for the collection from a single document.
 type DataHdr struct {
 	ID     string `bson:"_id" json:"ID"`
-	Majver string `bson:"majver" json:"majver"`
-	Minver string `bson:"minver" json:"minver"`
+	Majver int    `bson:"majver" json:"majver"`
+	Minver int    `bson:"minver" json:"minver"`
 	Tenant string `bson:"tenant" json:"tenant"`
 }
 
@@ -451,11 +451,11 @@ type UserAttr struct {
 	Uid      string   `bson:"_id" json:"uid"`
 	Category string   `bson:"category" json:"category"` // "employee" or "nonemployee"
 	Type     string   `bson:"type" json:"type"`         // "IC" or "manager" for employee
-	Level    string   `bson:"level" json:"level"`       // IC or manager grade level
+	Level    int      `bson:"level" json:"level"`       // IC or manager grade level
 	Dept     []string `bson:"dept" json:"dept"`         // ["dept1", ...]
 	Team     []string `bson:"team" json:"team"`         // ["team1, ...]
-	Majver   string   `bson:"majver" json:"maj_ver"`
-	Minver   string   `bson:"minver" json:"min_ver"`
+	Majver   int      `bson:"majver" json:"maj_ver"`
+	Minver   int      `bson:"minver" json:"min_ver"`
 	Tenant   string   `bson:"tenant" json:"tenant"`
 }
 
@@ -464,11 +464,11 @@ type UserAttrPlusBid struct {
 	Uid      string   `bson:"_id" json:"uid"`
 	Category string   `bson:"category" json:"category"` // "employee" or "nonemployee"
 	Type     string   `bson:"type" json:"type"`         // "IC" or "manager" for employee
-	Level    string   `bson:"level" json:"level"`       // IC or manager grade level
+	Level    int      `bson:"level" json:"level"`       // IC or manager grade level
 	Dept     []string `bson:"dept" json:"dept"`         // ["dept1", ...]
 	Team     []string `bson:"team" json:"team"`         // ["team1, ...]
-	Majver   string   `bson:"majver" json:"maj_ver"`
-	Minver   string   `bson:"minver" json:"min_ver"`
+	Majver   int      `bson:"majver" json:"maj_ver"`
+	Minver   int      `bson:"minver" json:"min_ver"`
 	Tenant   string   `bson:"tenant" json:"tenant"`
 	Bid      string   `bson:"bid" json:"bid"` // target app bundle ID
 }
@@ -587,8 +587,8 @@ type AppAttr struct {
 	Bid         string   `bson:"_id" json:"bid"`
 	Team        []string `bson:"team" json:"team"`               // ["team1", "team2", "team3", ...]
 	Dept        []string `bson:"dept" json:"dept"`               // ["dept1", "dept2", "dept3", ...]
-	Contrib     string   `bson:"IC" json:"IC"`                   // Minimum IC grade level for access
-	Manager     string   `bson:"manager" json:"manager"`         // Minimum Manager grade level for access
+	Contrib     int      `bson:"IC" json:"IC"`                   // Minimum IC grade level for access
+	Manager     int      `bson:"manager" json:"manager"`         // Minimum Manager grade level for access
 	Nonemployee string   `bson:"nonemployee" json:"nonemployee"` // "allow" or "deny" for now
 }
 
@@ -599,11 +599,11 @@ type bundleAttr struct {
 	Bid         string   `bson:"_id" json:"bid"`
 	Team        []string `bson:"team" json:"team"`
 	Dept        []string `bson:"dept" json:"dept"`
-	Contrib     string   `bson:"IC" json:"IC"`
-	Manager     string   `bson:"manager" json:"manager"`
+	Contrib     int      `bson:"IC" json:"IC"`
+	Manager     int      `bson:"manager" json:"manager"`
 	Nonemployee string   `bson:"nonemployee" json:"nonemployee"`
-	Majver      string   `bson:"majver" json:"maj_ver"`
-	Minver      string   `bson:"minver" json:"min_ver"`
+	Majver      int      `bson:"majver" json:"maj_ver"`
+	Minver      int      `bson:"minver" json:"min_ver"`
 	Tenant      string   `bson:"tenant" json:"tenant"`
 }
 
