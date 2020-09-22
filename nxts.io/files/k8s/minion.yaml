@@ -97,7 +97,7 @@ spec:
     spec:
       containers:
       - name: minion
-        image: davigupta/minion:1.00
+        image: davigupta/minion:1.04
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8001

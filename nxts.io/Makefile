@@ -2,7 +2,7 @@
 # Author: Davi Gupta (davigupta@gmail.com), Sep 2020
 #
 
-VERSION=1.03
+VERSION=1.04
 NAME=minion
 USER=davigupta
 image=$(shell docker images $(USER)/$(NAME):$(VERSION) -q)

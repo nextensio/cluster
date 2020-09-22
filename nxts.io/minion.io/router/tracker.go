@@ -64,8 +64,11 @@ func addService(c *WsClient, s *zap.SugaredLogger) {
 			s.Debugf("tracker: duplicate service %v\n", c.name[i])
 			c.name_reg[i] = false
 		} else {
-			c.name_reg[i] = true
-			consul.RegisterConsul([common.MaxService]string{c.name[i]}, s)
+			// Do not register last one (which is localhost)
+			if i < c.num-1 {
+				c.name_reg[i] = true
+				consul.RegisterConsul([common.MaxService]string{c.name[i]}, s)
+			}
 			mL.Lock()
 			serviceLeft[c.name[i]] = c
 			mL.Unlock()
@@ -83,8 +86,8 @@ func delService(c *WsClient, s *zap.SugaredLogger) {
 	}
 	mL.Unlock()
 	s.Debugf("tracker: services %v", serviceLeft)
-	// deregister with Consul
-	for i := 0; i < c.num; i++ {
+	// deregister with Consul, skip last entry (which is localhost)
+	for i := 0; i < c.num-1; i++ {
 		if c.name_reg[i] {
 			consul.DeRegisterConsul([common.MaxService]string{c.name[i]}, s)
 		}

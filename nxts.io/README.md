@@ -28,12 +28,12 @@ minion code by default. We need to start it manually.
 
 To run container in local environment
 
-docker run --net host -it davigupta/minion:1.00 /go/bin/minion.io -tunnel
+docker run --net host -it davigupta/minion:1.04 /go/bin/minion.io -tunnel
 
 or
 
-docker run --net host -it davigupta/minion-build:1.00 /go/bin/minion.io -tunnel
+docker run --net host -it davigupta/minion-build:1.04 /go/bin/minion.io -tunnel
 
 or
 
-docker run --net host -it davigupta/minion-debug:1.00 /go/bin/minion.io -tunnel
+docker run --net host -it davigupta/minion-debug:1.04 /go/bin/minion.io -tunnel
