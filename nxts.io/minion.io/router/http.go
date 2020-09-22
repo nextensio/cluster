@@ -144,7 +144,6 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 	var drop bool
 	// Read the packet and forward
 	for {
-		s.Debugw("http", "read", 1)
 		messageType, p, e = c.conn.ReadMessage()
 		if e != nil {
 			if websocket.IsUnexpectedCloseError(e, websocket.CloseGoingAway) {
