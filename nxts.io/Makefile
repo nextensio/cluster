@@ -33,6 +33,7 @@ debug:
 copy:
 	-rm -r -f bin/$(NAME).io
 	docker cp $(bcontid):/go/bin/$(NAME).io bin
+	cp files/version bin
 
 .PHONY: slim
 slim:
