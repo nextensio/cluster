@@ -117,7 +117,7 @@ def goRouteLookup(id, route, log):
     log.info('Route {} - {}'.format(route, tag))
     if tag == b'':
         return None
-    return tag
+    return tag.decode('utf-8')
 
 def goRunTask():
     global THREADS
