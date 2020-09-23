@@ -9,10 +9,13 @@ import (
 )
 
 var mocklib bool = true
+var initDone bool = false
+var myns string
+var myuri string
 
-func AaaInit(ns string, uri string, s *zap.SugaredLogger) int {
-	s.Debugf("aaa: initialised in namespace %v\n", ns)
+func AaaInit(ns string, uri string, pod string, s *zap.SugaredLogger) int {
 	s.Debugf("aaa: mongo uri %v\n", uri)
+	s.Debugf("aaa: initialised in namespace %v of type %v\n", ns, pod)
 	if mocklib {
 		return 0
 	} else {
@@ -33,10 +36,16 @@ func UsrAllowed(id string, s *zap.SugaredLogger) bool {
 
 func UsrJoin(pod string, id string, s *zap.SugaredLogger) {
 	s.Debugf("aaa: user joined %v of type %v\n", id, pod)
+	if initDone == false {
+		AaaInit(myns, myuri, pod, s)
+		initDone = true
+	}
 	if mocklib {
 		return
 	} else {
-		// put opa call
+		if pod == "agent" {
+			// put opa call
+		}
 	}
 }
 
@@ -45,7 +54,9 @@ func UsrLeave(pod string, id string, s *zap.SugaredLogger) {
 	if mocklib {
 		return
 	} else {
-		// put opa call
+		if pod == "agent" {
+			// put opa call
+		}
 	}
 }
 
@@ -78,7 +89,9 @@ func AccessOk(pod string, id string, attr string, s *zap.SugaredLogger) bool {
 }
 
 func AaaStart(ns string, uri string, s *zap.SugaredLogger) {
-	AaaInit(ns, uri, s)
+	myns = ns
+	myuri = uri
+
 	if mocklib {
 		return
 	}
