@@ -309,6 +309,9 @@ async def route_http_pak(pak, counter, uuid):
         is_ip = valid_ip(host)
         if not is_ip:
             host=re.sub("\.", "-", host)
+            tag = aaa.goRouteLookup(UUID, host.encode('utf-8'), log)
+            if tag is not None:
+                host = tag + "-" + host
             consul_key = host + my_info['c_suffix']
             if use_consul_http:
                 complete_rt = await consul_http_lookup(consul_key)

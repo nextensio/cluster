@@ -38,6 +38,12 @@ func UsrLeave(pod string, id string) {
 	fmt.Printf("user left %v of type %v\n", id, pod)
 }
 
+//export RouteLookup
+func RouteLookup(uid string, routeid string) *C.char {
+	fmt.Printf("lookup %v for %v\n", routeid, uid)
+	return (C.CString(""))
+}
+
 //export GetUsrAttr
 func GetUsrAttr(id string) *C.char {
 	fmt.Println(id)

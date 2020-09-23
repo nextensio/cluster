@@ -61,6 +61,8 @@ lib.GetUsrAttr.argtypes = [GoString]
 lib.GetUsrAttr.restype = c_char_p
 lib.AccessOk.argtypes = [GoString, GoString]
 lib.AccessOk.restype = c_int
+lib.RouteLookup.argtypes = [GoString, GoString]
+lib.RouteLookup.restype = c_char_p
 
 def goAaaInit(ns, uri, log):
     goNs = GoString(ns, len(ns))
@@ -108,6 +110,15 @@ def goAccessOk(pod, id, usr, log):
         log.info('{}'.format(usr))
     return access
 
+def goRouteLookup(id, route, log):
+    goId = GoString(id, len(id))
+    goRoute = GoString(route, len(route))
+    tag = lib.RouteLookup(goId, goRoute)
+    log.info('Route {} - {}'.format(route, tag))
+    if tag == b'':
+        return None
+    return tag
+
 def goRunTask():
     global THREADS
     goThread = threading.Thread(target=lib.RunTask)
@@ -131,6 +142,9 @@ if  __name__ == "__main__":
     goUsrAllowed(uid, logger)
     goUsrJoin(b"agent", uid, logger)
     goUsrJoin(b"connector", bid, logger)
+    tag = goRouteLookup(uid, b"connector-12", logger)
+    if tag is None:
+        logger.info("tag is empty")
     info = goGetUsrAttr(b"connector", uid, logger)
     if info is None:
         logger.info("empty usr attr")
