@@ -297,21 +297,22 @@ async def route_http_pak(pak, counter, uuid):
         if m == None:
             return 0
         rt = m[1]
+        tag = aaa.goRouteLookup(UUID, rt.encode('utf-8'), log)
     else:
         m = for_regex_b.search(pak)
         if m == None:
             return 0
         rt = m[1].decode('utf-8')
+        tag = aaa.goRouteLookup(UUID, rt, log)
    
+    if tag is not None:
+        rt = tag + "-" + rt
     if writer.get(rt) == None or writer[rt].is_closed:
         comps = rt.split(':', 1)
         host = comps[0]
         is_ip = valid_ip(host)
         if not is_ip:
             host=re.sub("\.", "-", host)
-            tag = aaa.goRouteLookup(UUID, host.encode('utf-8'), log)
-            if tag is not None:
-                host = tag + "-" + host
             consul_key = host + my_info['c_suffix']
             if use_consul_http:
                 complete_rt = await consul_http_lookup(consul_key)
