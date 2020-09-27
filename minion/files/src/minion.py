@@ -303,7 +303,7 @@ async def route_http_pak(pak, counter, uuid):
         if m == None:
             return 0
         rt = m[1].decode('utf-8')
-        tag = aaa.goRouteLookup(UUID, rt, log)
+        tag = aaa.goRouteLookup(UUID, m[1], log)
    
     if tag is not None:
         rt = tag + "-" + rt
