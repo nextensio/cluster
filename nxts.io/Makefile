@@ -4,7 +4,7 @@
 
 VERSION=1.04
 NAME=minion
-USER=davigupta
+USER=registry.gitlab.com/nextensio/cluster
 image=$(shell docker images $(USER)/$(NAME):$(VERSION) -q)
 bimage=$(shell docker images $(USER)/$(NAME)-build:$(VERSION) -q)
 dimage=$(shell docker images $(USER)/$(NAME)-debug:$(VERSION) -q)

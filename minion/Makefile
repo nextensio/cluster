@@ -4,7 +4,7 @@
 
 VERSION=0.80
 NAME=minion
-USER=davigupta
+USER=registry.gitlab.com/nextensio/cluster
 image=$(shell docker images $(USER)/$(NAME):$(VERSION) -q)
 acontid=$(shell docker ps -a --filter ancestor=$(USER)/$(NAME):$(VERSION) -q)
 
