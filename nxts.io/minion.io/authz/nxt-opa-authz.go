@@ -777,7 +777,7 @@ func nxtEvalAppAccessAuthzCore(inp []byte, ucase string) bool {
 func nxtUserAttrPlusBidJSON(user *UserAttrPlusBid) []byte {
 	jsonResp, merr := json.Marshal(user)
 	if merr != nil {
-		nxtLogError(user.Uid, fmt.Sprintf("JSON marshal error for user", merr))
+		nxtLogError(user.Uid, fmt.Sprintf("JSON marshal error for user - %v", merr))
 		return []byte("")
 	}
 	return jsonResp
