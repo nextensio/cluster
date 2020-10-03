@@ -49,12 +49,12 @@ func httpForLeft(handle *TcpSeConn, pak []byte, s *zap.SugaredLogger) {
 		// Check whether it is allowed
 		usr := r.Header.Get("x-nextensio-attr")
 		if aaa.AccessOk(left.clitype, left.uuid, usr, s) == false {
-			stats.PakDrop(pak, "access denied", s)
+			stats.PakDrop(pak, "AccessDenied", s)
 		}
 		item := common.Queue{Id: handle.counter, Pak: pak}
 		left.send <- item
 	} else {
-		stats.PakDrop(pak, "lookup left failure", s)
+		stats.PakDrop(pak, "LookupFailedLeft", s)
 	}
 }
 
