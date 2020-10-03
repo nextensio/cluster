@@ -1,0 +1,44 @@
+# Copyright 2020 Davi Gupta
+#
+# Null pod for receiving dropped packets
+#
+
+##################################################################################################
+# null service
+##################################################################################################
+apiVersion: v1
+kind: Service
+metadata:
+  name: blackhole
+  labels:
+    app: blackhole
+spec:
+  ports:
+  - name: http
+    port: 10000
+    targetPort: 80
+  selector:
+    app: blackhole
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blackhole
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blackhole
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: blackhole
+        version: v1
+    spec:
+      containers:
+      - image: docker.io/kennethreitz/httpbin
+        imagePullPolicy: IfNotPresent
+        name: blackhole
+        ports:
+        - containerPort: 80
