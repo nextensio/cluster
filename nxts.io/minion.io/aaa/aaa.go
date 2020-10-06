@@ -9,7 +9,7 @@ import (
 	"minion.io/authz"
 )
 
-var mocklib bool = true
+var mocklib bool = false
 var myns string
 var myuri string
 
