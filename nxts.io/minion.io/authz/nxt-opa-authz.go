@@ -1,19 +1,22 @@
 package authz
 
 /*************************************
-// Nextensio interface for Opa Rego library to provide policy based application access
-// authorization, Agent authorization, Connector authorization, etc.
+// TODO: break up file into modules
+// Nextensio interface for Opa Rego library to provide policy based services covering
+// application access authorization, Agent authorization, Connector authorization,
+// routing, etc.
 // This code will be compiled together with the minion code running in a service pod.
-// The minion code will first call nxtOpaInit() to set things up. After that, it will
+// The minion code will first call nxtAaaInit() to set things up. After that, it will
 // call an API specific to the authorization (or whatever) policy check required.
 // Some APIs are to be called in ingress service pod, some in egress service pod.
 // Common for every pod:
-// NxtAAAInit(egress int) - to be called once for initialization before any other API calls
+// NxtAAAInit() - to be called once for initialization before any other API calls
 // Ingress pod APIs:
 //     func NxtGetUsrAttr(userid string) (string, bool)
 //     func NxtUsrJoin(userid string)
 //     func NxtUsrLeave(userid string)
 //     func NxtUsrAllowed(userid string) bool
+//     <API for routing policy execution>
 // Egress pod APIs:
 //     func NxtAccessOk(bundleid string, userattr string) bool
 //
@@ -25,7 +28,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
+	"strconv"
 	"time"
 	//"strings"
 
@@ -37,8 +42,8 @@ import (
 	"go.uber.org/zap"
 )
 
-const maxOpaUseCases = 5 // we currently have 3
-const maxMongoColls = 10 // assume max 10 MongoDB collections
+const maxOpaUseCases = 5 // we currently have 4
+const maxMongoColls = 10 // assume max 10 MongoDB collections, currently 6
 const maxUsers = 10000   // max per tenant
 
 /*****************************
@@ -51,18 +56,19 @@ const userInfoCollection = "NxtUsers"
 const connInfoCollection = "NxtApps"
 const appAttrCollection = "NxtAppAttr"
 const userAttrCollection = "NxtUserAttr"
-const PolicyCollection = "NxtPolicies"
+const policyCollection = "NxtPolicies"
+const hostAttrCollection = "NxtHostAttr"
 
-var opaUseCases = []string{"AgentAuthz", "ConnAuthz", "AppAccess"}
-var initUseCase = []int{0, 0, 1}
+var opaUseCases = []string{"AgentAuthz", "ConnAuthz", "AppAccess", "RoutePol"}
+var initUseCase = []int{0, 0, 1, 0}
 
-var DColls = []string{userInfoCollection, connInfoCollection, appAttrCollection}
+var DColls = []string{userInfoCollection, connInfoCollection, appAttrCollection, hostAttrCollection}
 var CollMap map[string]*mongo.Collection
 var mongoClient *mongo.Client
 var nxtMongoDBName string
 
 var initDone, evalDone chan bool
-var inpType string
+var inpType, inp2Type string
 var libInitialized bool
 var slog *zap.Logger
 var tenant string
@@ -139,8 +145,9 @@ func nxtOpaProcess(ctx context.Context) int {
 		}
 		// Monitoring for new version of UserAttr collection
 		tmphdr := nxtReadUserAttrHdr(ctx)
-		if (tmphdr.Majver > inpRefHdr.Majver) || (tmphdr.Minver > inpRefHdr.Minver) {
-			inpRefHdr = tmphdr
+		if (tmphdr.Majver > usrAttrHdr.Majver) || (tmphdr.Minver > usrAttrHdr.Minver) {
+			usrAttrHdr = tmphdr
+			nxtReadUserExtAttrDoc(ctx)
 			nxtUpdateUserAttrCache()
 		}
 
@@ -196,27 +203,30 @@ type QState struct {
 	RefData  []byte                 `bson:"refdata" json:"refdata"` // reference data
 }
 
-var QStateMap map[string]*QState
+var QStateMap map[string]*QState // indexed by opaUseCases
 
 const AAuthzQry = "data.app.access.allow"
 const CAuthzQry = "data.app.access.allow"
 const AccessQry = "data.app.access.allow"
+const RouteQry = "data.user.routing.route_tag"
 
 const agentldir = "authz/agent-authz"
 const connldir = "authz/conn-authz"
 const accessldir = "authz/app-access"
+const routeldir = "authz/route-pol"
 
 const agentauthzpolicy = "agent-authz.rego"
 const connauthzpolicy = "conn-authz.rego"
 const appaccesspolicy = "app-access.rego"
+const userroutepolicy = "user-routing.rego"
 
-var policyType = []string{"AgentPolicy", "ConnPolicy", "AccessPolicy"}
-var dataType = []string{"UserInfo", "AppInfo", "AppAttr"}
-var opaQuery = []string{AAuthzQry, CAuthzQry, AccessQry}
-var loadDir = []string{agentldir, connldir, accessldir}
-var policyfile = []string{agentauthzpolicy, connauthzpolicy, appaccesspolicy}
+var policyType = []string{"AgentPolicy", "ConnPolicy", "AccessPolicy", "RoutePolicy"} // Keys
+var dataType = []string{"UserInfo", "AppInfo", "AppAttr", "HostAttr"}                 // Header doc keys
+var opaQuery = []string{AAuthzQry, CAuthzQry, AccessQry, RouteQry}
+var loadDir = []string{agentldir, connldir, accessldir, routeldir}
+var policyfile = []string{agentauthzpolicy, connauthzpolicy, appaccesspolicy, userroutepolicy}
 
-var st, sg, sm zap.Field
+var st, sg, sm zap.Field // for tenant, gateway, module
 
 // API to init nxt OPA interface
 //export nxtOpaInit
@@ -242,6 +252,7 @@ func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
 	evalDone = make(chan bool, 1)
 	initDone = make(chan bool, 1)
 	inpType = "UserAttr"
+	inp2Type = "UserExtAttr"
 
 	QStateMap = make(map[string]*QState, maxOpaUseCases) // assume max 5 OPA use cases
 
@@ -262,9 +273,11 @@ func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
 			nxtSetupUseCase(ctx, i, ucase)
 		}
 	}
-	// Read header document for user attributes collection
-	inpRefHdr = nxtReadUserAttrHdr(ctx)
-	userAttr = make(map[string]string, maxUsers)
+	// Read header document for user attributes collection.
+	// Then read the extended (runtime) attributes spec doc
+	userAttr = make(map[string]usrCache, maxUsers)
+	usrAttrHdr = nxtReadUserAttrHdr(ctx)
+	nxtReadUserExtAttrDoc(ctx)
 
 	libInitialized = true
 	go nxtOpaProcess(ctx)
@@ -276,10 +289,15 @@ func nxtLogError(ref string, msg string) {
 	slog.Error(" ", st, sg, sm, zap.String("Ref", ref), zap.String("Msg", msg))
 }
 
+func nxtLogInfo(ref string, msg string) {
+	slog.Info(" ", st, sg, sm, zap.String("Ref", ref), zap.String("Msg", msg))
+}
+
 func nxtLogDebug(ref string, msg string) {
 	slog.Debug(" ", st, sg, sm, zap.String("Ref", ref), zap.String("Msg", msg))
 }
 
+// Do everything needed to set up mongoDB access
 func nxtMongoDBInit(ctx context.Context, ns string, mURI string) (*mongo.Client, error) {
 
 	// Set client options
@@ -302,15 +320,16 @@ func nxtMongoDBInit(ctx context.Context, ns string, mURI string) (*mongo.Client,
 
 	CollMap = make(map[string]*mongo.Collection, maxMongoColls)
 	db := cl.Database(nxtMongoDBName)
-	nxtLogDebug(nxtMongoDBName, "DB being used for tenant")
+	nxtLogDebug(nxtMongoDBName, fmt.Sprintf("The DB being used for tenant %s", ns))
 
 	// Required on both apod and cpod
-	CollMap[PolicyCollection] = db.Collection(PolicyCollection)
+	CollMap[policyCollection] = db.Collection(policyCollection)
 	// Required on cpod only
 	CollMap[connInfoCollection] = db.Collection(connInfoCollection)
 	CollMap[appAttrCollection] = db.Collection(appAttrCollection)
 	// Required on apod only
 	CollMap[userInfoCollection] = db.Collection(userInfoCollection)
+	CollMap[hostAttrCollection] = db.Collection(hostAttrCollection)
 	// Required on apod. Required on cpod for testing app-access authz
 	CollMap[userAttrCollection] = db.Collection(userAttrCollection)
 
@@ -378,13 +397,13 @@ func nxtReadPolicyDocument(ctx context.Context, usecase string, ptype string) {
 	var policy []Policy
 
 	// Read specific policy by specifying "_id" = ptype
-	cursor, err := CollMap[PolicyCollection].Find(ctx, bson.M{"_id": ptype})
+	cursor, err := CollMap[policyCollection].Find(ctx, bson.M{"_id": ptype})
 	if err != nil {
-		nxtLogError(usecase, fmt.Sprintf("Failed to find %s", ptype))
+		nxtLogError(usecase, fmt.Sprintf("Failed to find %s, error - %v", ptype, err))
 		return
 	}
 	if err = cursor.All(ctx, &policy); err != nil {
-		nxtLogError(usecase, fmt.Sprintf("%s read failure", ptype))
+		nxtLogError(usecase, fmt.Sprintf("%s read failure - %v", ptype, err))
 		return
 	}
 
@@ -413,7 +432,7 @@ func nxtReadPolicyLocalFile(ucase string) []byte {
 	// Read policy file and return the data read
 	bs, err := ioutil.ReadFile(QStateMap[ucase].PStruct.Fname)
 	if err != nil {
-		tstr := fmt.Sprintf("Local policy file %s read failure", QStateMap[ucase].PStruct.Fname)
+		tstr := fmt.Sprintf("Local policy file %s read failure - %v", QStateMap[ucase].PStruct.Fname, err)
 		nxtLogError(ucase, tstr)
 	}
 	return bs
@@ -431,11 +450,11 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 	coll := qs.DColl
 	cursor, err := CollMap[coll].Find(ctx, bson.M{"_id": qs.DataType})
 	if err != nil {
-		nxtLogError(ucase, fmt.Sprintf("Failed to find header doc for %s", qs.DataType))
+		nxtLogError(ucase, fmt.Sprintf("Failed to find %s header doc - %v", qs.DataType, err))
 		return false
 	}
 	if err = cursor.All(ctx, &hdr); err != nil {
-		nxtLogError(ucase, fmt.Sprintf("%s header doc read failure", qs.DataType))
+		nxtLogError(ucase, fmt.Sprintf("%s header doc read failure - %v", qs.DataType, err))
 		return false
 	}
 
@@ -459,7 +478,8 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 	return false
 }
 
-// Read refdata from mongoDB collection and return bytes read
+// Read refdata from mongoDB collection. All data documents are read and combined
+// into a JSON string for feeding into OPA
 func nxtReadRefDataDoc(ctx context.Context, ucase string) {
 
 	switch QStateMap[ucase].DataType {
@@ -467,6 +487,9 @@ func nxtReadRefDataDoc(ctx context.Context, ucase string) {
 	case dataType[1]:
 	case dataType[2]:
 		QStateMap[ucase].RefData = nxtCreateBundleAttrCollJSON(ctx, ucase)
+		return
+	case dataType[3]:
+		QStateMap[ucase].RefData = nxtCreateHostAttrCollJSON(ctx, ucase)
 		return
 	}
 }
@@ -499,8 +522,16 @@ type UserAttrPlusBid struct {
 	Bid      string   `bson:"bid" json:"bid"` // target app bundle ID
 }
 
-var inpRefHdr DataHdr
-var userAttr map[string]string
+var usrAttrHdr DataHdr
+
+// Cache of user attributes for all active users. Cache is updated whenever
+// the collection version changes. Cache entries are purged when a user disconnects.
+type usrCache struct {
+	uastruct UserAttr
+	uajson   string
+}
+
+var userAttr map[string]usrCache
 var userAttrLock bool
 
 func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
@@ -512,11 +543,11 @@ func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 	coll := CollMap[userAttrCollection]
 	cursor, err := coll.Find(ctx, bson.M{"_id": inpType})
 	if err != nil {
-		nxtLogError(inpType, "Failed to find header doc")
+		nxtLogError(inpType, fmt.Sprintf("Failed to find header doc - %v", err))
 		return errhdr
 	}
 	if err = cursor.All(ctx, &uahdr); err != nil {
-		nxtLogError(inpType, "Header doc read failure")
+		nxtLogError(inpType, fmt.Sprintf("Header doc read failure - %v", err))
 		return errhdr
 	}
 
@@ -528,41 +559,48 @@ func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 	return uahdr[0]
 }
 
-// Read one user's attr data from mongoDB collection and return json version
-// with header info added. Called when user connects to service pod.
+// Read one user's attr data from mongoDB collection and return it together
+// with the json version with header info added. Called when user connects to service pod.
 //export nxtGetUserAttrJSON
 func nxtGetUserAttrJSON(uuid string) string {
-	ua, ok := nxtReadUserAttrCache(uuid)
+	var uaC usrCache
+
+	_, ua, ok := nxtReadUserAttrCache(uuid)
 	if ok {
 		return ua // cached version
 	}
 
-	ua, ok = nxtReadUserAttrDB(uuid)
-	if ok && (userAttrLock != true) {
-		userAttr[uuid] = ua
-		nxtLogDebug(uuid, "Added attributes for user to local cache")
+	uastruct, ok := nxtReadUserAttrDB(uuid)
+	if ok {
+		ua = nxtUserAttrJSON(&uastruct)
+		if userAttrLock != true {
+			uaC.uastruct = uastruct
+			uaC.uajson = ua
+			userAttr[uuid] = uaC
+			nxtLogDebug(uuid, "Added attributes for user to local cache")
+		}
+		return ua
 	}
-	return ua
+	return ""
 }
 
-func nxtReadUserAttrCache(uuid string) (string, bool) {
+func nxtReadUserAttrCache(uuid string) (UserAttr, string, bool) {
 	if userAttrLock {
-		// TODO: should we read from DB directly if cache locked ?
 		nxtLogDebug(uuid, "Local cache locked while retieving attributes for user")
-		return "", false // force a read from the DB
+		return UserAttr{}, "", false // force a read from the DB
 	}
 	// Check in cache if user's attributes exist. If yes, return value.
-	uaDoc, ok := userAttr[uuid]
+	uaC, ok := userAttr[uuid]
 	if ok == true {
 		nxtLogDebug(uuid, "Retrieved attributes for user from local cache")
-		return uaDoc, true
+		return uaC.uastruct, uaC.uajson, true
 	}
 	nxtLogDebug(uuid, "Failed to find attributes for user in local cache")
-	return "", false
+	return UserAttr{}, "", false
 }
 
-// Read a user attribute doc, add header document info, and convert it all to JSON
-func nxtReadUserAttrDB(uuid string) (string, bool) {
+// Read a user attribute doc from the DB and add header document info
+func nxtReadUserAttrDB(uuid string) (UserAttr, bool) {
 	var usera []UserAttr
 
 	ctx := context.Background()
@@ -571,20 +609,20 @@ func nxtReadUserAttrDB(uuid string) (string, bool) {
 	coll := CollMap[userAttrCollection]
 	cursor, err := coll.Find(ctx, bson.M{"_id": uuid})
 	if err != nil {
-		nxtLogError(uuid, "Failed to find attributes doc for user")
-		return "", false
+		nxtLogError(uuid, fmt.Sprintf("Failed to find attributes doc for user - %v", err))
+		return UserAttr{}, false
 	}
 	if err = cursor.All(ctx, &usera); err != nil {
-		nxtLogError(uuid, "Attributes doc read failure for user")
-		return "", false
+		nxtLogError(uuid, fmt.Sprintf("Attributes doc read failure for user - %v", err))
+		return UserAttr{}, false
 	}
 	if len(usera) <= 0 {
 		nxtLogError(uuid, "Read zero bytes of attributes doc for user")
-		return "", false
+		return UserAttr{}, false
 	}
 
 	nxtAddVerToUserAttr(&usera[0])
-	return nxtUserAttrJSON(&usera[0]), true // json string with version nfo
+	return usera[0], true
 }
 
 // Remove user attributes for a user on disconnect
@@ -597,28 +635,103 @@ func nxtPurgeUserAttrJSON(uuid string) {
 
 // We need this since the versions and tenant are in a separate header document
 func nxtAddVerToUserAttr(ua *UserAttr) {
-
-	ua.Majver = inpRefHdr.Majver
-	ua.Minver = inpRefHdr.Minver
-	ua.Tenant = inpRefHdr.Tenant
+	ua.Majver = usrAttrHdr.Majver
+	ua.Minver = usrAttrHdr.Minver
+	ua.Tenant = usrAttrHdr.Tenant
 }
 
+// Return JSON string of user attributes
 func nxtUserAttrJSON(user *UserAttr) string {
 	jsonResp, merr := json.Marshal(user)
 	if merr != nil {
-		nxtLogError(user.Uid, "JSON marshal error for user")
+		nxtLogError(user.Uid, fmt.Sprintf("JSON marshal error for user - %v", merr))
 		return ""
 	}
 	return string(jsonResp)
 }
 
+// Update cache because version info changed for collection
 func nxtUpdateUserAttrCache() {
+	var uaC usrCache
+
 	userAttrLock = true
 	for id, _ := range userAttr {
-		userAttr[id], _ = nxtReadUserAttrDB(id)
+		uaC.uastruct, _ = nxtReadUserAttrDB(id)
+		uaC.uajson = nxtUserAttrJSON(&uaC.uastruct)
+		userAttr[id] = uaC
 	}
 	userAttrLock = false
 	nxtLogDebug("UserAttrCache", fmt.Sprintf("Updated %v entries in local cache", len(userAttr)))
+}
+
+// Extended (runtime) user attributes. The mongoDB doc specifies the HTTP headers
+// as a JSON string of key-value pairs in Attrlist. The key is seen by OPA. The
+// value is the HTTP header name used to retrieve the attribute value from the
+// user packet.
+type UserExtAttr struct {
+	Uid      string `bson:"_id" json:"uid"`
+	Attrlist string `bson:"attrlist" json:"attrlist"`
+}
+
+var extUAttr map[string]interface{}
+
+const maxExtUAttr = 10 // assume max 10 such attributes
+
+// For eg., in extUAttr:
+//  ["devOS"] -> "x-nxt-devOS"
+//  ["osver"] -> "x-nxt-osver"
+//  ["loc"]   -> "x-nxt-location"
+//
+// In extUAValues:
+//  ["devOS"] -> "<devOS string value>"
+//  ["osver"] -> <osver float64 value>
+//  ["loc"]   -> "<location string value>"
+
+func nxtGetUserAttrFromHTTP(uid string, hdr *http.Header) string {
+	extUAValues := make(map[string]interface{}, maxExtUAttr)
+	for idx, val := range extUAttr {
+		hval := hdr.Get(fmt.Sprintf("%s", val))
+		fval, err := strconv.ParseFloat(hval, 64)
+		if err != nil {
+			extUAValues[idx] = hval
+		} else {
+			extUAValues[idx] = fval
+		}
+	}
+	uajson, err := json.Marshal(&extUAValues)
+	if err != nil {
+		nxtLogError(uid, fmt.Sprintf("Extended attributes JSON marshal error - %v", err))
+		return ""
+	}
+	return string(uajson)
+}
+
+// Read spec document for extended attributes from mongoDB
+func nxtReadUserExtAttrDoc(ctx context.Context) {
+	// read document for extended (runtime) user attr list
+
+	var uahdr []UserExtAttr
+
+	coll := CollMap[userAttrCollection]
+	cursor, err := coll.Find(ctx, bson.M{"_id": inp2Type})
+	if err != nil {
+		nxtLogError(inp2Type, fmt.Sprintf("Failed to find doc for extended user attributes - %v", err))
+		return
+	}
+	if err = cursor.All(ctx, &uahdr); err != nil {
+		nxtLogError(inp2Type, fmt.Sprintf("Extended user attributes doc read failure - %v", err))
+		return
+	}
+
+	if len(uahdr) <= 0 {
+		nxtLogError(inp2Type, "Read zero bytes of extended user attributes doc")
+		return
+	}
+
+	extUAttr = make(map[string]interface{})
+	if err := json.Unmarshal([]byte(uahdr[0].Attrlist), &extUAttr); err != nil {
+		nxtLogError(inp2Type, fmt.Sprintf("Unmarshal error for extended user attributes - %v", err))
+	}
 }
 
 //
@@ -637,7 +750,7 @@ type AppAttr struct {
 // Combo of AppAttr + DataHdr that is fed as refdata to OPA
 // All App Bundle Attribute documents for a tenant are concatenated together to be fed
 // to OPA as reference data where required
-type bundleAttr struct {
+type BundleAttr struct {
 	Bid         string   `bson:"_id" json:"bid"`
 	Team        []string `bson:"team" json:"team"`
 	Dept        []string `bson:"dept" json:"dept"`
@@ -655,16 +768,16 @@ type bundleAttr struct {
 func nxtCreateBundleAttrCollJSON(ctx context.Context, ucase string) []byte {
 
 	var attrstr string
-	var bundles []bundleAttr
+	var bundles []BundleAttr
 
 	coll := QStateMap[ucase].DColl
 	cursor, err := CollMap[coll].Find(ctx, bson.M{})
 	if err != nil {
-		nxtLogError(ucase, "Failed to find any app bundle attribute docs")
+		nxtLogError(ucase, fmt.Sprintf("Failed to find any app bundle attribute docs - %v", err))
 		return []byte("")
 	}
 	if err = cursor.All(ctx, &bundles); err != nil {
-		nxtLogError(ucase, "Read failure for app bundle attributes")
+		nxtLogError(ucase, fmt.Sprintf("Read failure for app bundle attributes - %v", err))
 		return []byte("")
 	}
 
@@ -695,17 +808,17 @@ func nxtCreateBundleAttrCollJSON(ctx context.Context, ucase string) []byte {
 	return []byte(attrstr)
 }
 
-func nxtBundleAttrDocJSON(bun *bundleAttr) string {
+func nxtBundleAttrDocJSON(bun *BundleAttr) string {
 	jsonResp, merr := json.Marshal(bun)
 	if merr != nil {
-		nxtLogError(bun.Bid, "JSON marshal error for app bundle")
+		nxtLogError(bun.Bid, fmt.Sprintf("JSON marshal error for app bundle - %v", merr))
 		return ""
 	}
 	return string(jsonResp)
 }
 
 // We need this since the versions and tenant are in a separate header document
-func nxtAddVerToBundleAttrDoc(ucase string, ba *bundleAttr) {
+func nxtAddVerToBundleAttrDoc(ucase string, ba *BundleAttr) {
 
 	ba.Majver = QStateMap[ucase].RefHdr.Majver
 	ba.Minver = QStateMap[ucase].RefHdr.Minver
@@ -783,6 +896,166 @@ func nxtUserAttrPlusBidJSON(user *UserAttrPlusBid) []byte {
 	return jsonResp
 }
 
+//-----------------------------Host Attributes functions--------------------------
+
+// HostAttrOnly struct without the Host field - only attributes
+type HostAttrOnly struct {
+	Tag   string    `bson:"tag" json:"tag"`
+	Team  []string  `bson:"team" json:"team"`
+	Dept  []string  `bson:"dept" json:"dept"`
+	Catg  []string  `bson:"category" json:"category"`
+	Type  []string  `bson:"type" json:"type"`
+	ICLvl int       `bson:"IClvl" json:"IClvl"`
+	MLvl  int       `bson:"mlvl" json:"mlvl"`
+	DevOS []string  `bson:"devOS" json:"devOS"` // Device OS type
+	OSVer []float64 `bson:"osver" json:"osver"` // Device OS version
+	Loc   []string  `bson:"loc" json:"loc"`
+}
+
+// Schema of document in NxtHostAttr Collection
+type HostAttr struct {
+	Host string         `bson:"_id" json:"host"`
+	Attr []HostAttrOnly `bson:"attr" json:"attr"`
+}
+
+// Combo of HostAttr + DataHdr that is fed as refdata to OPA
+// All Host Attribute documents for a tenant are concatenated together to be fed
+// to OPA as reference data where required
+type HostAttrExt struct {
+	Host   string         `bson:"_id" json:"host"`
+	Majver int            `bson:"majver" json:"maj_ver"`
+	Minver int            `bson:"minver" json:"min_ver"`
+	Tenant string         `bson:"tenant" json:"tenant"`
+	Attr   []HostAttrOnly `bson:"attr" json:"attr"`
+}
+
+// Read all host attribute records (documents) from collection in DB
+// Add header document fields (versions, tenant, ...) to each attribute doc
+// Convert to json and return a consolidated attributes file (collection)
+func nxtCreateHostAttrCollJSON(ctx context.Context, ucase string) []byte {
+
+	var attrstr string
+	var hosts []HostAttrExt
+
+	coll := QStateMap[ucase].DColl
+	cursor, err := CollMap[coll].Find(ctx, bson.M{})
+	if err != nil {
+		nxtLogError(ucase, fmt.Sprintf("Failed to find any host attribute docs - %v", err))
+		return []byte("")
+	}
+	if err = cursor.All(ctx, &hosts); err != nil {
+		nxtLogError(ucase, fmt.Sprintf("Read failure for host attributes - %v", err))
+		return []byte("")
+	}
+
+	attrstr = "{ \"hosts\":  ["
+	nhosts := len(hosts)
+	testHostCnt = 0
+	addComma := false
+	for i := 0; i < nhosts; i++ {
+
+		if hosts[i].Host == QStateMap[ucase].DataType { // Version doc
+			testHosts[i] = QStateMap[ucase].DataType
+			testHostCnt = testHostCnt + 1
+			continue
+		}
+
+		// Convert Go structure to json
+		// Concatenate json strings for attributes of each app bundle
+		testHosts[i] = hosts[i].Host
+		testHostCnt = testHostCnt + 1
+		nxtAddVerToHostAttrDoc(ucase, &hosts[i])
+		if addComma == true {
+			attrstr = attrstr + ",\n"
+		}
+		attrstr = attrstr + nxtHostAttrDocJSON(&hosts[i])
+		addComma = true
+	}
+	attrstr = attrstr + "\n]\n}"
+	return []byte(attrstr)
+}
+
+func nxtHostAttrDocJSON(ho *HostAttrExt) string {
+	jsonResp, merr := json.Marshal(ho)
+	if merr != nil {
+		nxtLogError(ho.Host, "JSON marshal error for host")
+		return ""
+	}
+	return string(jsonResp)
+}
+
+// We need this since the versions and tenant are in a separate header document
+func nxtAddVerToHostAttrDoc(ucase string, ho *HostAttrExt) {
+
+	ho.Majver = QStateMap[ucase].RefHdr.Majver
+	ho.Minver = QStateMap[ucase].RefHdr.Minver
+	ho.Tenant = QStateMap[ucase].RefHdr.Tenant
+}
+
+//
+//--------------------------------- User Routing ----------------------------------
+//
+// User Route Policy
+// Evaluate the user routing query using a user's attributes and a destination host.
+// When the minion code in an apod receives a packet to be forwarded, it calls the
+// API for routing policy with the user id, destination host and the HTTP headers.
+// API returns a string tag which may be null for default case. Minion uses the tag
+// to determine the routing.
+
+//export nxtEvalUserRouting
+func nxtEvalUserRouting(ucase string, uid string, host string, hdr *http.Header) string {
+	// Use uid to get user attributes from local cache, hdr to get runtime attributes
+	// from HTTP headers. Combine these attributes with host to generate a unified json
+	// string of the form:
+	// {"host": "<url>", "dbattr": {<attributes from DB>}, "dynattr": {<attributes from HTTP headers>}}
+	// Call nxtEvalUserRoutingCore() with json string
+
+	if ucase != QStateMap[ucase].QUCase {
+		return ""
+	}
+	if QStateMap[ucase].QError {
+		return ""
+	}
+	uajson := nxtGetUserAttrJSON(uid)
+	ueajson := nxtGetUserAttrFromHTTP(uid, hdr)
+	return nxtEvalUserRoutingCore(nxtEvalUserRoutingJSON(host, uajson, ueajson), ucase)
+}
+
+func nxtEvalUserRoutingCore(inp []byte, ucase string) string {
+	// Rego object is pre-created and query prepared for evaluation.
+	// Here we only evaluate the prepared query with the input data
+
+	var input interface{}
+
+	ctx := context.Background()
+
+	if err := json.Unmarshal(inp, &input); err != nil {
+		nxtLogError(ucase, fmt.Sprintf("Eval input JSON unmarshal error - %v", err))
+		return ""
+	}
+
+	// for each prepared query, execute the evaluation.
+	rs, err := QStateMap[ucase].PrepQry.Eval(ctx, rego.EvalInput(input))
+	if err != nil {
+		nxtLogError(ucase, fmt.Sprintf("Evaluation error - %v", err))
+		return ""
+	}
+	if rs == nil {
+		nxtLogError(ucase, fmt.Sprintf("Evaluation with Nil result - %v", err))
+		return ""
+	}
+	retval := fmt.Sprintf("%v", rs[0].Expressions[0].Value)
+	return retval
+}
+
+func nxtEvalUserRoutingJSON(host string, uajson string, ueajson string) []byte {
+	str1 := "{\"host\": \""
+	str2 := "\", \"dbattr\": "
+	str3 := ", \"dynattr\": "
+	jsonResp := fmt.Sprintf("%s%s%s%s%s%s }", str1, host, str2, uajson, str3, ueajson)
+	return []byte(jsonResp)
+}
+
 //
 //------------------------------- Agent Authz -----------------------------------
 
@@ -857,16 +1130,15 @@ func nxtPrimeLoadDir(ucase string) {
 	dirname := QStateMap[ucase].LDir
 	err := ioutil.WriteFile(dirname+"/policyfile.rego", QStateMap[ucase].RegoPol, 0644)
 	if err != nil {
-		nxtLogError(ucase, fmt.Sprintf("Error while loading policy in dir %s", dirname))
+		nxtLogError(ucase, fmt.Sprintf("Policy loading in dir %s failed - %v", dirname, err))
 		// TODO: Can we avoid this ?
 		log.Fatal(err)
 	}
 
 	// Write reference data to load directory
-	//
 	err = ioutil.WriteFile(dirname+"/refdata.json", QStateMap[ucase].RefData, 0644)
 	if err != nil {
-		nxtLogError(ucase, fmt.Sprintf("Error while loading refdata in dir %s", dirname))
+		nxtLogError(ucase, fmt.Sprintf("Refdata loading in dir %s failed - %v", dirname, err))
 		log.Fatal(err)
 	}
 }
@@ -905,13 +1177,14 @@ var testBidCnt int
 func nxtTestUserAccess(ctx context.Context) {
 
 	var res [500]bool // 5 * 100 max
-	var users []UserAttr
+	var users *[]UserAttr
 
 	users = nxtReadUserAttrCollection(ctx) // user attributes from mongoDB
 
-	for _, val := range users {
+	for _, val := range *users {
 
-		if val.Uid == inpType { // skip header document
+		// skip header document and spec document for extended attributes
+		if (val.Uid == inpType) || (val.Uid == inp2Type) {
 			continue
 		}
 
@@ -922,20 +1195,23 @@ func nxtTestUserAccess(ctx context.Context) {
 				continue
 			}
 			res[k] = nxtEvalAppAccessAuthz(opaUseCases[2], nxtUserAttrJSON(&val), testBids[k])
-			nxtLogDebug(val.Uid+" accessing "+testBids[k], fmt.Sprintf("Result = %v", res[k]))
+			nxtLogInfo(val.Uid+" accessing "+testBids[k], fmt.Sprintf("Result = %v", res[k]))
 		}
 	}
 }
 
+var tstRefHdr DataHdr
+
 // Read header and user attr documents from collection. Build input from query for
 // each user document.
-func nxtReadUserAttrCollection(ctx context.Context) []UserAttr {
-	inpRefHdr = nxtReadUserAttrHdr(ctx)
+func nxtReadUserAttrCollection(ctx context.Context) *[]UserAttr {
+	tstRefHdr = nxtReadUserAttrHdr(ctx)
+	nxtReadUserExtAttrDoc(ctx)
 	return nxtReadAllUserAttrDocuments(ctx)
 }
 
 // Read user attr data from mongoDB collection and return bytes read
-func nxtReadAllUserAttrDocuments(ctx context.Context) []UserAttr {
+func nxtReadAllUserAttrDocuments(ctx context.Context) *[]UserAttr {
 
 	var users []UserAttr
 
@@ -950,11 +1226,58 @@ func nxtReadAllUserAttrDocuments(ctx context.Context) []UserAttr {
 
 	nusers := len(users)
 	for i := 0; i < nusers; i++ {
-		if users[i].Uid != inpType { // Ignore version document
-			nxtAddVerToUserAttr(&users[i])
+		// Ignore header doc and extended (runtime) attributes doc
+		if (users[i].Uid != inpType) && (users[i].Uid != inp2Type) {
+			nxtAddVerToTestUserAttr(&users[i])
 		}
 	}
-	return users
+	return &users
+}
+
+func nxtAddVerToTestUserAttr(ua *UserAttr) {
+	ua.Majver = tstRefHdr.Majver
+	ua.Minver = tstRefHdr.Minver
+	ua.Tenant = tstRefHdr.Tenant
+}
+
+var testHosts [500]string
+var testHostCnt int
+
+func nxtTestUserRouting(ctx context.Context) {
+
+	var res [500]string // 5 * 100 max
+	var users *[]UserAttr
+
+	hdr := make(http.Header, maxExtUAttr)
+	aval := make(map[string]string, maxExtUAttr)
+
+	aval["devOS"] = "MacOS"
+	aval["osver"] = "14.1"
+	aval["loc"] = "SJC"
+
+	for idx, val := range extUAttr {
+		hdr.Add(fmt.Sprintf("%s", val), aval[idx])
+	}
+
+	users = nxtReadUserAttrCollection(ctx) // user requests from mongoDB
+
+	for _, val := range *users {
+
+		// Ignore header doc and extended (runtime) attributes doc
+		if (val.Uid == inpType) || (val.Uid == inp2Type) {
+			continue
+		}
+
+		// Evaluate query for each user trying to access each app
+		//
+		for k := 0; k < testHostCnt; k = k + 1 {
+			if testHosts[k] == "HostAttr" {
+				continue
+			}
+			res[k] = nxtEvalUserRouting(opaUseCases[3], val.Uid, testHosts[k], &hdr)
+			nxtLogInfo(val.Uid+" accessing "+testHosts[k], fmt.Sprintf("Result = %v", res[k]))
+		}
+	}
 }
 
 //--------------------------------------End------------------------------------
