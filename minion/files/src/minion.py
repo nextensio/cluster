@@ -306,7 +306,7 @@ async def route_http_pak(pak, counter, uuid):
         tag = aaa.goRouteLookup(UUID, m[1], log)
    
     if tag is not None:
-        rt = tag + "-" + rt
+        rt = tag + "." + rt
     if writer.get(rt) == None or writer[rt].is_closed:
         comps = rt.split(':', 1)
         host = comps[0]
@@ -343,6 +343,7 @@ async def route_http_pak(pak, counter, uuid):
         reader[rt] = myr;
     if not fwd['local']:
         nnpak = re.sub(b'(Host:\s?[a-z.]+\r\n)', b'Host: ' + fwd['dest'].encode('utf-8') + b'\r\n', npak, count=1)
+        nnpak = re.sub(b'(x-nextensio-for:.*\r\n)', b'x-nextensio-for: ' + rt.encode('utf-8') + b'\r\n', nnpak, count=1)
         log.debug(nnpak)
         pak_len = len(nnpak)
         writer[rt].now = datetime.now()
