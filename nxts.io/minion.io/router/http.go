@@ -198,7 +198,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 				left.send <- item
 			} else {
 				drop = true
-				stats.PakDrop(p, "lookup left failure", s)
+				stats.PakDrop(p, "LookupFailedLeft", s)
 			}
 		} else {
 			if fwd.DestType == common.RemoteDest {
@@ -222,7 +222,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 				right.send <- item
 			} else {
 				drop = true
-				stats.PakDrop(p, "lookup right failure", s)
+				stats.PakDrop(p, "LookupFailedRight", s)
 			}
 		}
 		if drop == false {

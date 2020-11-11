@@ -317,12 +317,12 @@ async def route_http_pak(pak, counter, uuid):
             if use_consul_http:
                 complete_rt = await consul_http_lookup(consul_key)
                 if complete_rt is None:
-                    await stats.pak_drop(pak, "lookup failure", log)
+                    await stats.pak_drop(pak, "LookupFailed", log)
                     return
             elif use_consul_dns:
                 complete_rt = await consul_dns_lookup(consul_key)
                 if complete_rt is None:
-                    await stats.pak_drop(pak, "lookup failure", log)
+                    await stats.pak_drop(pak, "LookupFailed", log)
                     return
             else:
                 complete_rt = host + '-in.' + my_info['namespace'] + suffix
@@ -469,7 +469,7 @@ async def q_worker(pin):
                 if access:
                     await handles[pin].send(pak)
                 else:
-                    await stats.pak_drop(pak, "access denied", log)
+                    await stats.pak_drop(pak, "AccessDenied", log)
             queues[pin].task_done()
         except:
             traceback.print_exc()
