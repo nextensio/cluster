@@ -97,3 +97,17 @@ func AaaStart(ns string, uri string, s *zap.SugaredLogger) {
 
 	AaaInit(myns, myuri, s)
 }
+
+func RouteLookup(pod string, uid string, host string, s *zap.SugaredLogger) string {
+	if mocklib {
+		s.Debugf("aaa: Route lookup for user %s to host %s with mocklib\n", uid, host)
+		return ""
+	}
+	if pod != "agent" {
+		s.Debugf("aaa: Route lookup for user %s to host %s in pod != agent\n", uid, host)
+		return ""
+	}
+	tag := authz.NxtRouteLookup(uid, host)
+	s.Debugf("aaa: Route lookup for user %s to host %s : result %s\n", uid, host, tag)
+	return tag
+}

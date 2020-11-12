@@ -46,7 +46,7 @@ import (
 //--------------------------------Data Structures, Variables, etc ----------------------------------
 
 const maxOpaUseCases = 5 // we currently have 4
-const maxMongoColls = 10 // assume max 10 MongoDB collections, currently 6
+const maxMongoColls = 10 // assume max 10 MongoDB collections, currently 6+1
 const maxUsers = 10000   // max per tenant
 
 /*****************************
@@ -61,6 +61,7 @@ const appAttrCollection = "NxtAppAttr"
 const userAttrCollection = "NxtUserAttr"
 const policyCollection = "NxtPolicies"
 const hostAttrCollection = "NxtHostAttr"
+const RouteCollection = "NxtRoutes"
 
 const AAuthzQry = "data.app.access.allow"
 const CAuthzQry = "data.app.access.allow"
@@ -148,7 +149,7 @@ var initDone = make(chan bool, 1)
 var evalDone = make(chan bool, 1)
 var libInitialized bool
 var tenant string
-var slog *zap.Logger
+var slog *zap.SugaredLogger
 var st, sg, sm zap.Field // for tenant, gateway, module
 
 var DColls = []string{userInfoCollection, connInfoCollection, appAttrCollection, hostAttrCollection}
@@ -206,6 +207,30 @@ func NxtAccessOk(bundleid string, userattr string) bool {
 	return nxtEvalAppAccessAuthz(opaUseCases[2], userattr, bundleid)
 }
 
+// export NxtRoutePolicy
+func NxtRoutePolicy(uuid string) string {
+	// To be done after controller support is available and API parameters
+	// are finalized
+	return ""
+}
+
+const RouteTag = "tag"
+
+//export NxtRouteLookup
+func NxtRouteLookup(uid string, routeid string) string {
+	// For parity with python version of minion
+	var route bson.M
+	var key = uid + ":" + routeid
+	err := CollMap[RouteCollection].FindOne(
+		context.TODO(),
+		bson.M{"_id": key},
+	).Decode(&route)
+	if err == nil {
+		return fmt.Sprintf("%s", route[RouteTag])
+	}
+	return ""
+}
+
 /*********************************************************************/
 
 func authzMain() {
@@ -249,7 +274,7 @@ func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
 	}
 
 	ctx := context.Background()
-	slog = sl.Desugar()
+	slog = sl
 	tenant = ns
 	st = zap.String("Tenant", tenant)
 	// TODO: need cluster name for initializing below
@@ -324,6 +349,8 @@ func nxtMongoDBInit(ctx context.Context, ns string, mURI string) (*mongo.Client,
 	CollMap[hostAttrCollection] = db.Collection(hostAttrCollection)
 	// Required on apod. Required on cpod for testing app-access authz
 	CollMap[userAttrCollection] = db.Collection(userAttrCollection)
+
+	CollMap[RouteCollection] = db.Collection(RouteCollection) // temporary
 
 	return cl, nil
 }
