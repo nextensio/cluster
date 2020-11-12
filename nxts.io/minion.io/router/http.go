@@ -171,9 +171,15 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 			fwd.Dest = host
 			fwd.DestType = common.LocalDest
 		} else {
+			var consul_key string
+			tag := aaa.RouteLookup(c.clitype, c.uuid, host, s)
 			host = strings.ReplaceAll(host, ".", "-")
-			consul_key := strings.Join([]string{host, common.MyInfo.Namespace}, "-")
-			s.Debugw("http", "key", consul_key)
+			if tag == "" {
+				consul_key = strings.Join([]string{host, common.MyInfo.Namespace}, "-")
+			} else {
+				consul_key = strings.Join([]string{tag, host, common.MyInfo.Namespace}, "-")
+			}
+			s.Debugf("http Consul key after RouteLookup: %s", consul_key)
 			// do consul lookup
 			fwd, _ = consul.ConsulDnsLookup(consul_key, s)
 		}
