@@ -167,6 +167,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 		s.Debugw("http", "dest", dest)
 		destinfo := strings.Split(dest, ":")
 		host := destinfo[0]
+		savedhost := host
 		if isIpv4Net(host) {
 			fwd.Dest = host
 			fwd.DestType = common.LocalDest
@@ -178,8 +179,9 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 				consul_key = strings.Join([]string{host, common.MyInfo.Namespace}, "-")
 			} else {
 				consul_key = strings.Join([]string{tag, host, common.MyInfo.Namespace}, "-")
+				savedhost = tag + "." + savedhost
 			}
-			s.Debugf("http Consul key after RouteLookup: %s", consul_key)
+			s.Debugf("http Consul key %s for host %s after RouteLookup", consul_key, savedhost)
 			// do consul lookup
 			fwd, _ = consul.ConsulDnsLookup(consul_key, s)
 		}
@@ -195,6 +197,8 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 				newhost = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
 			}
 			p = bytes.Join([][]byte{z[0], newhost, attrb, z[2]}, []byte("\r\n"))
+			// Set x-nextensio-for to savedhost with tag
+			r.Header.Set("x-nextensio-for", savedhost)
 		}
 		drop = false
 		if fwd.DestType == common.SelfDest {
