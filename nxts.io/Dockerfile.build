@@ -9,5 +9,7 @@ RUN go get -d -v ./... \
     && \rm -r -f /go/src/app/* \
     && \rm -r -f /go/pkg/mod \
     && \rm -r -f /go/pkg/sumdb
+RUN mkdir -p authz
+RUN mkdir -p authz/app-access
 EXPOSE 80/tcp 8002/tcp
 CMD ["/go/bin/minion.io", "-tunnel", "-consul_dns", "-register", "-ip", "127.0.0.1", "-iport", "80"]

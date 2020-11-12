@@ -4,5 +4,7 @@ MAINTAINER Davi Gupta <davigupta@gmail.com>
 COPY files /go
 WORKDIR /go/bin
 COPY bin .
+RUN mkdir -p authz
+RUN mkdir -p authz/app-access
 EXPOSE 80/tcp 8002/tcp
 CMD ["/go/bin/minion.io", "-tunnel", "-consul_dns", "-register", "-ip", "127.0.0.1", "-iport", "80"]
