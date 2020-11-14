@@ -27,6 +27,7 @@ import (
 	"log"
 	"os"
 	"time"
+
 	//"strings"
 
 	"github.com/open-policy-agent/opa/rego"
@@ -62,6 +63,7 @@ var mongoClient *mongo.Client
 
 var initDone, evalDone chan bool
 var inpType string
+var appType string
 
 /******************************** Calls from minion ******************/
 //export AaaInit
@@ -160,15 +162,26 @@ func nxtOpaProcess(ctx context.Context, egress bool) int {
 				nxtSetupUseCase(ctx, i, ucase)
 			}
 		}
+		changed := false
 		// Monitoring for new version of UserAttr collection
 		tmphdr := nxtReadUserAttrHdr(ctx)
 		if (tmphdr.Majver > inpRefHdr.Majver) || (tmphdr.Minver > inpRefHdr.Minver) {
 			inpRefHdr = tmphdr
 			nxtUpdateUserAttrCache()
+			changed = true
+		}
+		// Monitoring for new version of AppAttr collection
+		tmphdr = nxtReadAppAttrHdr(ctx)
+		if (tmphdr.Majver > appRefHdr.Majver) || (tmphdr.Minver > appRefHdr.Minver) {
+			appRefHdr = tmphdr
+			changed = true
+		}
+		if changed {
+			nxtWriteAttrVersions()
 		}
 
-		// sleep(5 secs)
-		time.Sleep(5 * 1000 * time.Millisecond)
+		// sleep(1 secs)
+		time.Sleep(1 * 1000 * time.Millisecond)
 	}
 
 	evalDone <- true // Done with all evaluations
@@ -240,6 +253,14 @@ var opaQuery = []string{AAuthzQry, CAuthzQry, AccessQry}
 var loadDir = []string{agentldir, connldir, accessldir}
 var policyfile = []string{agentauthzpolicy, connauthzpolicy, appaccesspolicy}
 
+// TODO: Route and policy versions need to be updated
+func nxtWriteAttrVersions() {
+	versions := fmt.Sprintf("USER=%d.%d\nBUNDLE=%d.%d\nPOLICY=0.0\nROUTE=0.0",
+		inpRefHdr.Majver, inpRefHdr.Minver,
+		appRefHdr.Majver, appRefHdr.Minver)
+	ioutil.WriteFile("/tmp/opa_attr_versions", []byte(versions), 0644)
+}
+
 // API to init nxt OPA interface
 //export nxtOpaInit
 func nxtOpaInit(egress int) error {
@@ -251,6 +272,7 @@ func nxtOpaInit(egress int) error {
 	evalDone = make(chan bool, 1)
 	initDone = make(chan bool, 1)
 	inpType = "UserAttr"
+	appType = "AppAttr"
 	go nxtOpaProcess(ctx, egress == 1)
 
 	QStateMap = make(map[string]*QState, maxOpaUseCases) // assume max 5 OPA use cases
@@ -273,7 +295,9 @@ func nxtOpaInit(egress int) error {
 	}
 	// Read header document for user attributes collection
 	inpRefHdr = nxtReadUserAttrHdr(ctx)
+	appRefHdr = nxtReadAppAttrHdr(ctx)
 	userAttr = make(map[string]string, maxUsers)
+	nxtWriteAttrVersions()
 
 	initDone <- true
 	return nil
@@ -629,6 +653,29 @@ type bundleAttr struct {
 	Majver      int      `bson:"majver" json:"maj_ver"`
 	Minver      int      `bson:"minver" json:"min_ver"`
 	Tenant      string   `bson:"tenant" json:"tenant"`
+}
+
+var appRefHdr DataHdr
+
+func nxtReadAppAttrHdr(ctx context.Context) DataHdr {
+
+	// read header document for app attr collection used as input
+	var apphdr []DataHdr
+	coll := CollMap[appAttrCollection]
+	cursor, err := coll.Find(ctx, bson.M{"_id": appType})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err = cursor.All(ctx, &apphdr); err != nil {
+		log.Fatal(err)
+	}
+
+	if len(apphdr) <= 0 {
+		fmt.Printf("Could not read %v in nxtReadAppAttrHdr\n", appType)
+		log.Fatal(err)
+	}
+
+	return apphdr[0]
 }
 
 // Read all app bundle attribute records (documents) from collection in DB
