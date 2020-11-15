@@ -317,21 +317,8 @@ func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
 // Do everything needed to set up mongoDB access
 func nxtMongoDBInit(ctx context.Context, ns string, mURI string) (*mongo.Client, error) {
 
-	// Set client options
-	mongoclientOptions := options.Client().ApplyURI(mURI)
-
-	// Connect to MongoDB
-	cl, err := mongo.Connect(ctx, mongoclientOptions)
+	cl, err := nxtMongoConnect(ctx, ns, mURI)
 	if err != nil {
-		nxtLogError(nxtMongoDBName, fmt.Sprintf("DB connect failure - %v", err))
-		return nil, err
-	}
-
-	// Check the connection
-	err = cl.Ping(ctx, nil)
-	if err != nil {
-		_ = cl.Disconnect(ctx)
-		nxtLogError(nxtMongoDBName, fmt.Sprintf("Connection closed. DB ping failure - %v", err))
 		return nil, err
 	}
 
@@ -353,6 +340,38 @@ func nxtMongoDBInit(ctx context.Context, ns string, mURI string) (*mongo.Client,
 	CollMap[RouteCollection] = db.Collection(RouteCollection) // temporary
 
 	return cl, nil
+}
+
+func nxtMongoConnect(ctx context.Context, ns string, mURI string) (*mongo.Client, error) {
+	var err error
+
+	// Set client options
+	mongoclientOptions := options.Client().ApplyURI(mURI)
+
+	// Connection to mongoDB is critical, so be persistent and retry in case of failure.
+	// We are seeing random mongodb connect failures due to DNS resolution latency.
+	for rtry1 := 0; rtry1 < 3; rtry1 = rtry1 + 1 {
+		// Connect to MongoDB
+		cl, err1 := mongo.Connect(ctx, mongoclientOptions)
+		err = err1
+		if err == nil { // Connected
+			var err2 error
+			for rtry2 := 0; rtry2 < 3; rtry2 = rtry2 + 1 {
+				// Check the connection
+				err2 = cl.Ping(ctx, nil)
+				if err2 == nil {
+					return cl, nil // Success
+				}
+				time.Sleep(1 * 1000 * time.Millisecond)
+			}
+			_ = cl.Disconnect(ctx)
+			nxtLogError(nxtMongoDBName, fmt.Sprintf("Connection closed. DB ping failure - %v", err2))
+		} else {
+			nxtLogError(nxtMongoDBName, fmt.Sprintf("DB connect failure - %v", err))
+		}
+		time.Sleep(2 * 1000 * time.Millisecond)
+	}
+	return nil, err
 }
 
 func nxtGetMongoEnv(key string, defaultValue string) string {
