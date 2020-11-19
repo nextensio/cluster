@@ -61,20 +61,21 @@ func addService(c *WsClient, s *zap.SugaredLogger) {
 	for i := 0; i < c.num; i++ {
 		v := serviceLeft[c.name[i]]
 		if v != nil {
-			s.Debugf("tracker: duplicate service %v\n", c.name[i])
 			c.name_reg[i] = false
+			s.Debugf("tracker: duplicate serviceLeft %v\n", c.name[i])
 		} else {
 			// Do not register last one (which is localhost)
 			if i < c.num-1 {
 				c.name_reg[i] = true
 				consul.RegisterConsul([common.MaxService]string{c.name[i]}, s)
+				s.Debugf("tracker: registered service %v in Consul", c.name[i])
 			}
 			mL.Lock()
 			serviceLeft[c.name[i]] = c
 			mL.Unlock()
+			s.Debugf("tracker: added serviceLeft %v", c.name[i])
 		}
 	}
-	s.Debugf("tracker: services %v", serviceLeft)
 }
 
 func delService(c *WsClient, s *zap.SugaredLogger) {
@@ -82,14 +83,15 @@ func delService(c *WsClient, s *zap.SugaredLogger) {
 	for i := 0; i < c.num; i++ {
 		if c.name_reg[i] {
 			delete(serviceLeft, c.name[i])
+			s.Debugf("tracker: deleted serviceLeft %v", c.name[i])
 		}
 	}
 	mL.Unlock()
-	s.Debugf("tracker: services %v", serviceLeft)
 	// deregister with Consul, skip last entry (which is localhost)
 	for i := 0; i < c.num-1; i++ {
 		if c.name_reg[i] {
 			consul.DeRegisterConsul([common.MaxService]string{c.name[i]}, s)
+			s.Debugf("tracker: deregistered service %v from Consul", c.name[i])
 		}
 	}
 }
@@ -97,20 +99,20 @@ func delService(c *WsClient, s *zap.SugaredLogger) {
 func addDest(c *TcpClConn, s *zap.SugaredLogger) {
 	v := destRight[c.name]
 	if v != nil {
-		s.Debugf("tracker: duplicate dest %v\n", c.name)
+		s.Debugf("tracker: duplicate destRight %v\n", c.name)
 		return
 	}
 	mR.Lock()
 	destRight[c.name] = c
 	mR.Unlock()
-	s.Debugf("tracker: dest %v", destRight)
+	s.Debugf("tracker: added destRight %v", c.name)
 }
 
 func delDest(c *TcpClConn, s *zap.SugaredLogger) {
 	mR.Lock()
 	delete(destRight, c.name)
 	mR.Unlock()
-	s.Debugf("tracker: dest %v", destRight)
+	s.Debugf("tracker: deleted destRight %v", c.name)
 }
 
 func LookupLeftService(name string) *WsClient {
@@ -131,32 +133,30 @@ func (t *Tracker) run(s *zap.SugaredLogger) {
 	for {
 		select {
 		case client := <-t.register:
-			s.Debug("tracker: registering client")
 			t.ws[client] = true
+			s.Debug("tracker: registering client")
 		case client := <-t.unregister:
-			s.Debug("tracker: unregistering client")
 			if _, ok := t.ws[client]; ok {
 				delete(t.ws, client)
 				close(client.send)
 			}
+			s.Debug("tracker: unregistering client")
 		case client := <-t.add:
-			s.Debug("tracker: registering services")
 			addService(client, s)
 		case client := <-t.del:
-			s.Debug("tracker: deregistering services")
 			delService(client, s)
 		case name := <-t.connect:
-			s.Debugf("tracker: connect to %s", name)
 			tcpConn, e := TcpClient(t, name, s)
 			if e == nil {
 				t.tcpTx[tcpConn] = true
 				addDest(tcpConn, s)
+				s.Debugf("tracker: connected to %v", tcpConn.name)
 			}
 			t.conn <- tcpConn
 		case tcpConn := <-t.close:
-			s.Debugf("tracker: connect to %v", tcpConn.name)
 			delDest(tcpConn, s)
 			if _, ok := t.tcpTx[tcpConn]; ok {
+				s.Debugf("tracker: deleting connection to %v", tcpConn.name)
 				delete(t.tcpTx, tcpConn)
 				close(tcpConn.send)
 			}
@@ -176,13 +176,13 @@ func (t *TcpRxTracker) run(s *zap.SugaredLogger) {
 	for {
 		select {
 		case client := <-t.register:
-			s.Debug("tracker: registering tcp rx client")
 			t.tcpRx[client] = true
+			s.Debug("tracker: registering tcp rx client")
 		case client := <-t.unregister:
-			s.Debug("tracker: unregistering tcp rx client")
 			if _, ok := t.tcpRx[client]; ok {
 				delete(t.tcpRx, client)
 			}
+			s.Debug("tracker: unregistering tcp rx client")
 		}
 	}
 }

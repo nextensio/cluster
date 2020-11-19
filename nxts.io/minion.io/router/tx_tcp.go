@@ -50,29 +50,29 @@ func (c *TcpClConn) txHandler(t *Tracker, s *zap.SugaredLogger) {
 			if !ok {
 				return
 			}
-			s.Debugf("tx_tcp: packet sent %v\n", c.counter)
 			UtilWrite(c.conn, msg.Pak)
+			s.Debugf("tx_tcp: packet %v sent to %v\n", c.counter, c.conn.RemoteAddr())
 			_, e := c.conn.Read(tmp)
 			if e != nil {
 				if e != io.EOF {
-					s.Errorw("tx_tcp:", "err", e)
+					s.Errorf("tx_tcp: connection read err %v", e)
 				}
 			} else {
-				s.Debugf("tx_tcp: got ack %v\n", c.counter)
+				s.Debugf("tx_tcp: got ack %v from %v\n", c.counter, c.conn.RemoteAddr())
 			}
 			c.counter++
 			n := len(c.send)
 			for i := 0; i < n; i++ {
-				s.Debugf("tx_tcp: packet sent %v\n", c.counter)
 				msg, _ = <-c.send
 				UtilWrite(c.conn, msg.Pak)
+				s.Debugf("tx_tcp: packet %v sent to %v\n", c.counter, c.conn.RemoteAddr())
 				_, e := c.conn.Read(tmp)
 				if e != nil {
 					if e != io.EOF {
-						s.Errorw("tx_tcp:", "err", e)
+						s.Errorf("tx_tcp: connection read err %v", e)
 					}
 				} else {
-					s.Debugf("tx_tcp: got ack %v\n", c.counter)
+					s.Debugf("tx_tcp: got ack %v from %v\n", c.counter, c.conn.RemoteAddr())
 				}
 				c.counter++
 			}
@@ -91,7 +91,7 @@ func TcpClient(t *Tracker, name string, s *zap.SugaredLogger) (*TcpClConn, error
 	servAddr := strings.Join([]string{name, portStr}, ":")
 	conn, e := net.Dial("tcp", servAddr)
 	if e != nil {
-		s.Errorw("tx_tcp:", "err", e)
+		s.Errorf("tx_tcp: TCP dial err to %s - %v", servAddr, e)
 		return nil, e
 	}
 	v := TcpClConn{conn: conn, last: time.Now(),

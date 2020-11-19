@@ -61,14 +61,17 @@ func GetUsrAttr(pod string, id string, s *zap.SugaredLogger) (string, bool) {
 	var val bool
 
 	if mocklib {
-		if pod == "controller" {
+		if pod == "connector" {
 			return "", false
 		}
 		usrAttr = "{ dept: computer-science, team: blue }"
 	} else {
+		if pod == "connector" {
+			return "", false
+		}
 		usrAttr, val = authz.NxtGetUsrAttr(id)
 	}
-	s.Debugf("aaa: usr attr %v of type %v : attr %v, val %v\n",
+	s.Debugf("aaa: usr %s of type %s : attr %s, val %v\n",
 		id, pod, usrAttr, val)
 	return usrAttr, val
 }
@@ -104,7 +107,6 @@ func RouteLookup(pod string, uid string, host string, s *zap.SugaredLogger) stri
 		return ""
 	}
 	if pod != "agent" {
-		s.Debugf("aaa: Route lookup for user %s to host %s in pod != agent\n", uid, host)
 		return ""
 	}
 	tag := authz.NxtRouteLookup(uid, host)

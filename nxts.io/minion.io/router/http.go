@@ -11,7 +11,7 @@ import (
 	"bytes"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
-	"io/ioutil"
+	//"io/ioutil"
 	"minion.io/aaa"
 	"minion.io/common"
 	"minion.io/consul"
@@ -97,7 +97,6 @@ func isIpv4Net(host string) bool {
 
 func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 	var fwd common.Fwd
-	var rewrite bool
 
 	defer func() {
 		c.track.del <- c
@@ -113,21 +112,20 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 	// Read client info and send welcome
 	messageType, p, e := c.conn.ReadMessage()
 	if e != nil {
-		s.Errorw("http", "err", e)
+		s.Errorf("http rxHandler: %v", e)
 	}
-	s.Debugw("http", "type", messageType)
-	s.Debugw("http", "body", string(p))
 	words := bytes.Split(p, space)
 	if bytes.Equal(words[0], []byte("NCTR")) {
 		c.clitype = "connector"
 	} else {
 		c.clitype = "agent"
 	}
-	s.Debugw("http", "clitype", c.clitype)
+	s.Debugf("http type %v received from %s", messageType, c.clitype)
 	if bytes.Equal(words[0], []byte("NCTR")) || bytes.Equal(words[0], []byte("NAGT")) {
 		e = c.conn.WriteMessage(messageType, bytes.Join([][]byte{[]byte("Hello"), words[0]}, space))
 		if e != nil {
-			s.Errorw("http", "err", e)
+			s.Errorf("http hello send error to %s: %v", c.clitype, e)
+			// Do we continue ?
 		}
 	}
 	// Register services to consul
@@ -152,26 +150,25 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 			s.Errorw("http", "err", e)
 			break
 		}
-		s.Debugw("http", "type", messageType)
 		// forward the packet
 		// get the destination to foward to
 		reader := bufio.NewReader(strings.NewReader(string(p)))
 		r, e := http.ReadRequest(reader)
 		if e != nil {
 			s.Errorw("http", "err", e)
+			// Do we continue ?
 		}
-		s.Debugw("http", "header", r.Header)
-		body, _ := ioutil.ReadAll(r.Body)
-		s.Debugw("http", "type", string(body))
 		dest := r.Header.Get("x-nextensio-for")
-		s.Debugw("http", "dest", dest)
 		destinfo := strings.Split(dest, ":")
 		host := destinfo[0]
 		savedhost := host
+		drop = false
 		if isIpv4Net(host) {
 			fwd.Dest = host
 			fwd.DestType = common.LocalDest
+			s.Debugf("http type=%v, dest=%s, host:%s (LocalDest)", messageType, dest, host)
 		} else {
+			s.Debugf("http type=%v, dest=%s, host:%s", messageType, dest, host)
 			var consul_key string
 			tag := aaa.RouteLookup(c.clitype, c.uuid, host, s)
 			host = strings.ReplaceAll(host, ".", "-")
@@ -181,62 +178,69 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 				consul_key = strings.Join([]string{tag, host, common.MyInfo.Namespace}, "-")
 				savedhost = tag + "." + savedhost
 			}
-			s.Debugf("http Consul key %s for host %s after RouteLookup", consul_key, savedhost)
 			// do consul lookup
-			fwd, _ = consul.ConsulDnsLookup(consul_key, s)
-		}
-		usr, ok := aaa.GetUsrAttr(c.clitype, c.uuid, s)
-		rewrite = false
-		if ok {
-			attr := "x-nextensio-attr: " + usr
-			attrb := []byte(attr)
-			z := bytes.SplitN(p, []byte("\r\n"), 3)
-			newhost := z[1]
-			if fwd.DestType == common.RemoteDest {
-				rewrite = true
-				newhost = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
+			var err error
+			fwd, err = consul.ConsulDnsLookup(consul_key, s)
+			if err != nil {
+				s.Debugf("http: Consul lookup error with key %s - %v", consul_key, err)
+			} else {
+				s.Debugf("http: Consul lookup with key %s gave %v", consul_key, fwd)
 			}
-			p = bytes.Join([][]byte{z[0], newhost, attrb, z[2]}, []byte("\r\n"))
-			// Set x-nextensio-for to savedhost with tag
-			r.Header.Set("x-nextensio-for", savedhost)
 		}
-		drop = false
+		usrattr, attrok := aaa.GetUsrAttr(c.clitype, c.uuid, s)
+		nhdrs := len(r.Header)
+		s.Debugf("http: pak from %s has %v headers", c.clitype, nhdrs)
+		z := bytes.SplitN(p, []byte("\r\n"), nhdrs+1)
+		p = z[0]
+		// Try to improve this later
+		for i := 1; i < nhdrs; i = i + 1 {
+			if bytes.Contains(z[i], []byte("host:")) {
+				z[i] = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
+			} else if bytes.Contains(z[i], []byte("Host:")) {
+				z[i] = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
+			} else if bytes.Contains(z[i], []byte("x-nextensio-for:")) {
+				z[i] = bytes.Join([][]byte{[]byte("X-Nextensio-For:"), []byte(savedhost)}, []byte(" "))
+			} else if bytes.Contains(z[i], []byte("X-Nextensio-For:")) {
+				z[i] = bytes.Join([][]byte{[]byte("X-Nextensio-For:"), []byte(savedhost)}, []byte(" "))
+			}
+			p = bytes.Join([][]byte{p, z[i]}, []byte("\r\n"))
+		}
+		if attrok {
+			attrb := []byte("x-nextensio-attr: " + usrattr)
+			p = bytes.Join([][]byte{p, attrb, z[nhdrs]}, []byte("\r\n"))
+		} else {
+			p = bytes.Join([][]byte{p, z[nhdrs]}, []byte("\r\n"))
+		}
+
 		if fwd.DestType == common.SelfDest {
 			left := LookupLeftService(fwd.Dest)
 			if left != nil {
 				item := common.Queue{Id: c.counter, Pak: p}
 				left.send <- item
+				s.Debugf("http: pak %v for %v put into Q after LookupLeftService", c.counter, fwd.Dest)
 			} else {
 				drop = true
 				stats.PakDrop(p, "LookupFailedLeft", s)
 			}
 		} else {
-			if fwd.DestType == common.RemoteDest {
-				// rewrite HOST part in GET
-				if rewrite == false {
-					z := bytes.SplitN(p, []byte("\r\n"), 3)
-					rewrite = true
-					newhost := bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
-					p = bytes.Join([][]byte{z[0], newhost, z[2]}, []byte("\r\n"))
-				}
-			}
-
 			// open a TCP connection if not opened
 			right := LookupRightDest(fwd.Dest)
 			if right == nil {
 				c.track.connect <- fwd.Dest
 				right = <-c.track.conn
+				s.Debugf("http: pak %v for %v needs TCP conn opened after LookupRightDest", c.counter, fwd.Dest)
 			}
 			if right != nil {
 				item := common.Queue{Id: c.counter, Pak: p}
 				right.send <- item
+				s.Debugf("http: pak %v for %v put into Q after LookupRightDest", c.counter, fwd.Dest)
 			} else {
 				drop = true
 				stats.PakDrop(p, "LookupFailedRight", s)
 			}
 		}
 		if drop == false {
-			s.Debugw("http:", "pak", c.counter)
+			s.Debugw("http:", "pak rxcount", c.counter)
 			c.counter++
 		}
 	}
@@ -254,7 +258,6 @@ func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
 	}
 
 	codec := r.Header.Get("x-nextensio-codec")
-	s.Debugw("http", "codec", codec)
 	//TODO: Check for supported codec
 
 	ws, e := upgrader.Upgrade(w, r, nil)
@@ -263,13 +266,11 @@ func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	s.Debug("http: Client connected")
-
 	uuid := r.Header.Get("x-nextensio-uuid")
-	s.Debugw("http", "uuid", uuid)
+	s.Debugf("http: Client connected for uuid=%s with codec=%s", uuid, codec)
 	allowed := aaa.UsrAllowed(uuid, s)
 	if allowed == false {
-		s.Infow("http", "uuid", uuid, "access", allowed)
+		s.Infof("http access for uuid %s denied", uuid)
 		ws.Close()
 		return
 	}
@@ -279,6 +280,7 @@ func wsEndpoint(t *Tracker, w http.ResponseWriter, r *http.Request,
 		codec: codec, clitype: "connector",
 		uuid: uuid}
 	client.track.register <- client
+	s.Infof("http access for uuid %s allowed", uuid)
 
 	go client.txHandler(s)
 	go client.rxHandler(s)
@@ -298,11 +300,11 @@ func HttpStart(s *zap.SugaredLogger) error {
 	setupRoutes(track, s)
 	portStr := strconv.Itoa(common.MyInfo.Oport)
 	addr := strings.Join([]string{common.MyInfo.ListenIp, portStr}, ":")
-	s.Debug("http", string(addr))
 	e := http.ListenAndServe(addr, nil)
 	if e != nil {
-		s.Errorw("http", "err", e)
+		s.Errorw("http server start failure", "err", e)
 	}
+	s.Debugf("http: Server set up to listen at %s", string(addr))
 
 	return e
 }

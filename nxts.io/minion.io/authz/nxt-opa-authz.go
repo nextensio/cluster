@@ -144,6 +144,7 @@ var dataType = []string{"UserInfo", "AppInfo", "AppAttr", "HostAttr"}           
 var opaQuery = []string{AAuthzQry, CAuthzQry, AccessQry, RouteQry}
 var loadDir = []string{agentldir, connldir, accessldir, routeldir}
 var policyfile = []string{agentauthzpolicy, connauthzpolicy, appaccesspolicy, userroutepolicy}
+var keyID = []string{"userid", "connid", "bid", "hostid"}
 
 var initDone = make(chan bool, 1)
 var evalDone = make(chan bool, 1)
@@ -508,10 +509,10 @@ func nxtReadRefDataDoc(ctx context.Context, ucase string) {
 	case dataType[1]:
 		return
 	case dataType[2]:
-		QStateMap[ucase].RefData = nxtCreateCollJSON(ctx, ucase, "{ \"bundles\":  [")
+		QStateMap[ucase].RefData = nxtCreateCollJSON(ctx, ucase, keyID[2], "{ \"bundles\":  [")
 		return
 	case dataType[3]:
-		QStateMap[ucase].RefData = nxtCreateCollJSON(ctx, ucase, "{ \"hosts\":  [")
+		QStateMap[ucase].RefData = nxtCreateCollJSON(ctx, ucase, keyID[3], "{ \"hosts\":  [")
 		return
 	}
 }
@@ -607,8 +608,9 @@ func nxtReadUserAttrDB(uuid string) (bson.M, bool) {
 		nxtLogError(uuid, fmt.Sprintf("Failed to find attributes doc for user - %v", err))
 		return bson.M{}, false
 	}
-	nusera := nxtAddVerToDoc(&usera, usrAttrHdr)
-	return nusera, true
+	usera = nxtFixupAttrID(usera, keyID[0])
+	usera = nxtAddVerToDoc(usera, usrAttrHdr)
+	return usera, true
 }
 
 // Remove user attributes for a user on disconnect
@@ -704,7 +706,7 @@ func nxtGetUserAttrFromHTTP(uid string, hdr *http.Header) string {
 // Read all records (documents) from collection in DB
 // Add header document fields (versions, tenant, ...) to each attribute doc
 // Convert to json and return a consolidated attributes file (collection)
-func nxtCreateCollJSON(ctx context.Context, ucase string, istr string) []byte {
+func nxtCreateCollJSON(ctx context.Context, ucase string, keyid string, istr string) []byte {
 
 	var attrstr string
 	var docs []bson.M
@@ -714,11 +716,11 @@ func nxtCreateCollJSON(ctx context.Context, ucase string, istr string) []byte {
 	coll := qsm.DColl
 	cursor, err := CollMap[coll].Find(ctx, bson.M{})
 	if err != nil {
-		nxtLogError(ucase, fmt.Sprintf("Failed to find any app bundle attribute docs - %v", err))
+		nxtLogError(ucase, fmt.Sprintf("Failed to find any attribute docs - %v", err))
 		return []byte("")
 	}
 	if err = cursor.All(ctx, &docs); err != nil {
-		nxtLogError(ucase, fmt.Sprintf("Read failure for app bundle attributes - %v", err))
+		nxtLogError(ucase, fmt.Sprintf("Read failure for attributes - %v", err))
 		return []byte("")
 	}
 
@@ -738,7 +740,8 @@ func nxtCreateCollJSON(ctx context.Context, ucase string, istr string) []byte {
 		// Concatenate json strings for attributes of each app bundle
 		tsm.Keys[i] = fmt.Sprintf("%s", docs[i]["_id"])
 		tsm.Count = tsm.Count + 1
-		docs[i] = nxtAddVerToDoc(&docs[i], qsm.RefHdr)
+		docs[i] = nxtFixupAttrID(docs[i], keyid)
+		docs[i] = nxtAddVerToDoc(docs[i], qsm.RefHdr)
 		if addComma == true {
 			attrstr = attrstr + ",\n"
 		}
@@ -785,7 +788,8 @@ func nxtEvalAppAccessAuthz(ucase string, uattr string, bid string) bool {
 		retval := fmt.Sprintf("%v", rs[0].Expressions[0].Value)
 		return retval == "true"
 	}
-	nxtLogError(ucase, fmt.Sprintf("Query execution failure for %s to %s", ua["_id"], bid))
+	ukey := keyID[0]
+	nxtLogError(ucase, fmt.Sprintf("Query execution failure for %s access to %s", ua[ukey], bid))
 	return false
 }
 
@@ -940,19 +944,24 @@ func nxtExecOpaQry(inp []byte, ucase string) (rego.ResultSet, bool) {
 
 //---------------------------------Utility functions----------------------------------
 // We need this since the versions and tenant are in a separate header document
-func nxtAddVerToDoc(ua *bson.M, hdr DataHdr) bson.M {
-	tmp := *ua
-	tmp[kmajver] = hdr.Majver
-	tmp[kminver] = hdr.Minver
-	tmp[ktnt] = hdr.Tenant
-	return tmp
+func nxtAddVerToDoc(doc bson.M, hdr DataHdr) bson.M {
+	doc[kmajver] = hdr.Majver
+	doc[kminver] = hdr.Minver
+	doc[ktnt] = hdr.Tenant
+	return doc
+}
+
+func nxtFixupAttrID(attr bson.M, keyid string) bson.M {
+	tmp := attr["_id"]
+	attr[keyid] = tmp
+	delete(attr, "_id")
+	return attr
 }
 
 func nxtConvertToJSON(inp bson.M) string {
 	jsonResp, merr := json.Marshal(inp)
 	if merr != nil {
-		id := fmt.Sprintf("%s", inp["_id"])
-		nxtLogError(id, fmt.Sprintf("JSON marshal error for user - %v", merr))
+		nxtLogError("JSON-marshal", fmt.Sprintf("%v for %v", merr, inp))
 		return ""
 	}
 	return string(jsonResp)
@@ -996,7 +1005,7 @@ func nxtTestUserAccess(ctx context.Context) {
 			continue
 		}
 
-		// Evaluate query for each user trying at access each app bundle
+		// Evaluate query for each user trying to access each app bundle
 		//
 		for k := 0; k < tsm.Count; k = k + 1 {
 			if tsm.Keys[k] == dataType[idx] {
@@ -1043,7 +1052,8 @@ func nxtTestUserRouting(ctx context.Context) {
 			if tsm.Keys[k] == dataType[idx] {
 				continue
 			}
-			res[k] = nxtEvalUserRouting(ucase, uid, tsm.Keys[k], &hdr)
+			user := fmt.Sprintf("%s", val[keyID[0]])
+			res[k] = nxtEvalUserRouting(ucase, user, tsm.Keys[k], &hdr)
 			nxtLogInfo(uid+" accessing "+tsm.Keys[k], fmt.Sprintf("Result = %v", res[k]))
 		}
 	}
@@ -1076,7 +1086,9 @@ func nxtReadAllUserAttrDocuments(ctx context.Context) *[]bson.M {
 		// Ignore header doc and extended (runtime) attributes doc
 		uid := fmt.Sprintf("%s", users[i]["_id"])
 		if (uid != inpType) && (uid != inp2Type) {
-			users[i] = nxtAddVerToDoc(&users[i], tstRefHdr)
+			// Change "_id" only for attribute docs, not header or ext attr spec
+			users[i] = nxtFixupAttrID(users[i], keyID[0])
+			users[i] = nxtAddVerToDoc(users[i], tstRefHdr)
 		}
 	}
 	return &users
