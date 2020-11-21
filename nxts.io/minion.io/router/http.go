@@ -58,6 +58,7 @@ func (c *WsClient) txHandler(s *zap.SugaredLogger) {
 			s.Debug("http: send ping message")
 			c.conn.SetWriteDeadline(time.Now().Add(common.WriteWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				s.Debugf("http: ping message error - %v", err)
 				return
 			}
 		case msg, ok := <-c.send:
@@ -68,25 +69,35 @@ func (c *WsClient) txHandler(s *zap.SugaredLogger) {
 			}
 			w, err := c.conn.NextWriter(websocket.BinaryMessage)
 			if err != nil {
+				s.Debugf("http: txHandler failed to get NextWriter - %v", err)
 				break
 			}
 			w.Write(msg.Pak)
+			s.Debug("http: txHandler called write for pak")
 			if err := w.Close(); err != nil {
+				s.Debugf("http: txHandler could not close write - %v", err)
 				break
 			}
 
 			n := len(c.send)
+			if n > 0 {
+				s.Debugf("http: txHandler has %v more paks to send", n)
+			}
 			for i := 0; i < n; i++ {
 				msg, _ = <-c.send
 				w, err := c.conn.NextWriter(websocket.BinaryMessage)
 				if err != nil {
+					s.Debugf("http: txHandler failed to get NextWriter for pak %v", i+1)
 					break
 				}
 				w.Write(msg.Pak)
+				s.Debugf("http: txHandler called write for pak %v", i+1)
 				if err := w.Close(); err != nil {
+					s.Debugf("http: txHandler failed to close write for pak %v", i+1)
 					break
 				}
 			}
+			s.Debugf("http: txHandler sent %v more paks in loop", n)
 		}
 	}
 }
@@ -114,6 +125,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 	if e != nil {
 		s.Errorf("http rxHandler: %v", e)
 	}
+	s.Debugf("http: Hello rcvd: %s", string(p))
 	words := bytes.Split(p, space)
 	if bytes.Equal(words[0], []byte("NCTR")) {
 		c.clitype = "connector"
@@ -129,10 +141,19 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 		}
 	}
 	// Register services to consul
+	j := 0
 	for i := 1; i < len(words); i++ {
-		c.name[i-1] = string(words[i])
+		// The agent is currently inserting 2 spaces between NAGT and the agent id
+		// This was resulting in registering a bogus Consul service with name " " (one space)
+		nstr := string(bytes.TrimLeft(words[i], " "))
+		if nstr == "" {
+			continue
+		}
+		c.name[j] = nstr
+		j = j + 1
 	}
-	c.num = len(words) - 1
+	c.num = j
+	s.Debugf("http: received %v services from %s", c.num, c.clitype)
 	// add loopback service
 	c.name[c.num] = "127-0-0-1"
 	c.num += 1
@@ -140,7 +161,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 	aaa.UsrJoin(c.clitype, c.uuid, s)
 
 	var drop bool
-	// Read the packet and forward
+	// Read packets and forward
 	for {
 		messageType, p, e = c.conn.ReadMessage()
 		if e != nil {
@@ -194,11 +215,14 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 		p = z[0]
 		// Try to improve this later
 		for i := 1; i < nhdrs; i = i + 1 {
-			if bytes.Contains(z[i], []byte("host:")) {
-				z[i] = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
-			} else if bytes.Contains(z[i], []byte("Host:")) {
-				z[i] = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
-			} else if bytes.Contains(z[i], []byte("x-nextensio-for:")) {
+			if fwd.DestType == common.RemoteDest {
+				if bytes.Contains(z[i], []byte("host:")) {
+					z[i] = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
+				} else if bytes.Contains(z[i], []byte("Host:")) {
+					z[i] = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
+				}
+			}
+			if bytes.Contains(z[i], []byte("x-nextensio-for:")) {
 				z[i] = bytes.Join([][]byte{[]byte("X-Nextensio-For:"), []byte(savedhost)}, []byte(" "))
 			} else if bytes.Contains(z[i], []byte("X-Nextensio-For:")) {
 				z[i] = bytes.Join([][]byte{[]byte("X-Nextensio-For:"), []byte(savedhost)}, []byte(" "))

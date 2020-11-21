@@ -62,20 +62,21 @@ func addService(c *WsClient, s *zap.SugaredLogger) {
 		v := serviceLeft[c.name[i]]
 		if v != nil {
 			c.name_reg[i] = false
-			s.Debugf("tracker: duplicate serviceLeft %v\n", c.name[i])
+			s.Debugf("tracker: addService detected duplicate ws serviceLeft %s\n", c.name[i])
 		} else {
 			// Do not register last one (which is localhost)
 			if i < c.num-1 {
 				c.name_reg[i] = true
 				consul.RegisterConsul([common.MaxService]string{c.name[i]}, s)
-				s.Debugf("tracker: registered service %v in Consul", c.name[i])
+				s.Debugf("tracker: registered ws service %v in Consul", c.name[i])
 			}
 			mL.Lock()
 			serviceLeft[c.name[i]] = c
 			mL.Unlock()
-			s.Debugf("tracker: added serviceLeft %v", c.name[i])
+			s.Debugf("tracker: addService added %s to ws serviceLeft", c.name[i])
 		}
 	}
+	s.Debugf("tracker: addService added %v ws service(s) for %s %s", c.num, c.clitype, c.uuid)
 }
 
 func delService(c *WsClient, s *zap.SugaredLogger) {
@@ -83,7 +84,7 @@ func delService(c *WsClient, s *zap.SugaredLogger) {
 	for i := 0; i < c.num; i++ {
 		if c.name_reg[i] {
 			delete(serviceLeft, c.name[i])
-			s.Debugf("tracker: deleted serviceLeft %v", c.name[i])
+			s.Debugf("tracker: deleted ws serviceLeft %v", c.name[i])
 		}
 	}
 	mL.Unlock()
@@ -91,7 +92,7 @@ func delService(c *WsClient, s *zap.SugaredLogger) {
 	for i := 0; i < c.num-1; i++ {
 		if c.name_reg[i] {
 			consul.DeRegisterConsul([common.MaxService]string{c.name[i]}, s)
-			s.Debugf("tracker: deregistered service %v from Consul", c.name[i])
+			s.Debugf("tracker: deregistered ws service %v from Consul", c.name[i])
 		}
 	}
 }
@@ -105,14 +106,14 @@ func addDest(c *TcpClConn, s *zap.SugaredLogger) {
 	mR.Lock()
 	destRight[c.name] = c
 	mR.Unlock()
-	s.Debugf("tracker: added destRight %v", c.name)
+	s.Debugf("tracker: added %v TCP conn to destRight", c.name)
 }
 
 func delDest(c *TcpClConn, s *zap.SugaredLogger) {
 	mR.Lock()
 	delete(destRight, c.name)
 	mR.Unlock()
-	s.Debugf("tracker: deleted destRight %v", c.name)
+	s.Debugf("tracker: deleted %v TCP conn from destRight", c.name)
 }
 
 func LookupLeftService(name string) *WsClient {

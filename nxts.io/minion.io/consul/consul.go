@@ -25,19 +25,22 @@ import (
  */
 var myClient = &http.Client{Timeout: 10 * time.Second}
 
+const consulRetries = 5
+
 /*
  * Register DNS entry and key value pair for the service
  */
 func RegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger) (e error) {
 	if common.MyInfo.Sim == true {
+		// In sim mode
 		return nil
 	}
 
 	if common.MyInfo.Register == false {
+		// Don't register service with Consul as per cmd line arg
 		return nil
 	}
 
-	sugar.Infof("Registering...")
 	entryJson := `{"ID":"candy-com-default", "Name":"candy-com-default", "Address":"10.50.128.5", "Meta":{"cluster":"sjc", "pod":"candy.com.default"}}`
 	var dns common.Entry
 	json.Unmarshal([]byte(entryJson), &dns)
@@ -56,36 +59,62 @@ func RegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger)
 		}
 		h = strings.Replace(val, ".", "-", -1)
 		url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + common.MyInfo.Namespace
-		sugar.Debugf("%s", url)
+		sugar.Debugf("Consul: registering service %s at %s", h, url)
 		data = common.MyInfo.Id
 		r, _ = http.NewRequest("PUT", url+"/cluster", strings.NewReader(data))
-		_, e = myClient.Do(r)
+		i := 1
+		_, e := myClient.Do(r)
 		if e != nil {
-			sugar.Errorw("http", "err", e)
+			for ; i < consulRetries; i = i + 1 {
+				time.Sleep(1 * 1000 * time.Millisecond)
+				_, e = myClient.Do(r)
+				if e == nil {
+					break
+				}
+			}
+		}
+		if i < consulRetries && e == nil {
+			sugar.Debugf("Consul: http PUT %s at %s after %v tries", data, url+"/cluster", i+1)
+		} else {
+			sugar.Debugf("Consul: http PUT %s at %s failed with 5 retries", data, url+"/cluster")
 		}
 		data = strings.Replace(common.MyInfo.Pod, ".", "-", -1)
 		r, _ = http.NewRequest("PUT", url+"/pod", strings.NewReader(data))
-		_, e = myClient.Do(r)
-		if e != nil {
-			sugar.Errorw("http", "err", e)
+		i = 0
+		for ; i < consulRetries; i = i + 1 {
+			_, e = myClient.Do(r)
+			if e == nil {
+				break
+			}
+			time.Sleep(1 * 1000 * time.Millisecond)
+		}
+		if i < consulRetries && e == nil {
+			sugar.Debugf("Consul: http PUT %s at %s after %v tries", data, url+"/pod", i+1)
+		} else {
+			sugar.Debugf("Consul: http PUT %s at %s failed with 5 retries", data, url+"/pod")
 		}
 		dns.Meta.Pod = data
 		dns.ID = h + "-" + common.MyInfo.Namespace
 		dns.Name = h + "-" + common.MyInfo.Namespace
-		sugar.Debugw("json", "Meta.Pod:", dns.Meta.Pod)
-		sugar.Debugw("json", "ID:", dns.ID)
-		sugar.Debugw("json", "Name:", dns.Name)
-		sugar.Debugw("json", "Address:", dns.Address)
-		sugar.Debugw("json", "Meta.Cluster:", dns.Meta.Cluster)
 		url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/agent/service/register"
-		sugar.Debugf("%s", url)
 		js, _ = json.Marshal(dns)
 		r, _ = http.NewRequest("PUT", url, bytes.NewReader(js))
 		r.Header.Add("Content-Type", "application/json")
-		r.Header.Add("Accpet-Charset", "UTF-8")
-		_, e = myClient.Do(r)
-		if e != nil {
-			sugar.Errorw("http", "err", e)
+		r.Header.Add("Accept-Charset", "UTF-8")
+		i = 0
+		for ; i < consulRetries; i = i + 1 {
+			_, e = myClient.Do(r)
+			if e == nil {
+				break
+			}
+			time.Sleep(1 * 1000 * time.Millisecond)
+		}
+		if i < consulRetries && e == nil {
+			sugar.Debugf("Consul: registered via http PUT at %s", url)
+			sugar.Debugf("Consul: registered service json %s", js)
+		} else {
+			sugar.Debugf("Consul: failed to register via http PUT at %s", url)
+			sugar.Debugf("Consul: failed to register service json %s", js)
 		}
 	}
 
@@ -104,8 +133,6 @@ func DeRegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogge
 		return nil
 	}
 
-	sugar.Infof("DeRegistering...")
-
 	var url string
 	var h string
 	var r *http.Request
@@ -115,23 +142,52 @@ func DeRegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogge
 		}
 		h = strings.Replace(val, ".", "-", -1)
 		url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + common.MyInfo.Namespace
-		sugar.Debugf("%s", url)
+		sugar.Debugf("Consul: Deregistering service %s at %s", h, url)
 		r, _ = http.NewRequest("DELETE", url+"/cluster", nil)
-		_, e = myClient.Do(r)
+		i := 1
+		_, e := myClient.Do(r)
 		if e != nil {
-			sugar.Errorw("http", "err", e)
+			for ; i < consulRetries; i = i + 1 {
+				time.Sleep(1 * 1000 * time.Millisecond)
+				_, e = myClient.Do(r)
+				if e == nil {
+					break
+				}
+			}
+		}
+		if i < consulRetries && e == nil {
+			sugar.Debugf("Consul: http DELETED %s at %s after %v tries", h, url+"/cluster", i+1)
+		} else {
+			sugar.Debugf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/cluster", consulRetries)
 		}
 		r, _ = http.NewRequest("DELETE", url+"/pod", nil)
-		_, e = myClient.Do(r)
-		if e != nil {
-			sugar.Errorw("http", "err", e)
+		i = 0
+		for ; i < consulRetries; i = i + 1 {
+			_, e = myClient.Do(r)
+			if e == nil {
+				break
+			}
+			time.Sleep(1 * 1000 * time.Millisecond)
+		}
+		if i < consulRetries && e == nil {
+			sugar.Debugf("Consul: http DELETED %s at %s after %v tries", h, url+"/pod", i+1)
+		} else {
+			sugar.Debugf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/pod", consulRetries)
 		}
 		url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + h + "-" + common.MyInfo.Namespace
-		sugar.Debugf("%s", url)
 		r, _ = http.NewRequest("PUT", url, nil)
-		_, e = myClient.Do(r)
-		if e != nil {
-			sugar.Errorw("http", "err", e)
+		i = 0
+		for ; i < consulRetries; i = i + 1 {
+			_, e = myClient.Do(r)
+			if e == nil {
+				break
+			}
+			time.Sleep(1 * 1000 * time.Millisecond)
+		}
+		if i < consulRetries && e == nil {
+			sugar.Debugf("Consul: http PUT nil at %s after %v tries", url, i+1)
+		} else {
+			sugar.Debugf("Consul: http PUT of nil at %s failed with %v retries", url, consulRetries)
 		}
 	}
 
@@ -162,28 +218,40 @@ func DeRegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogge
 // Reply we get is top level array instead of a full JSON object. So we need to handle it
 // differently when unmarshalling it
 func ConsulHttpLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e error) {
-	sugar.Infow("consul kv lookup", "name:", name)
+	sugar.Infof("consul kv lookup for %s", name)
 
 	h := strings.Replace(name, ".", "-", -1)
 	url := "http://" + common.MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "?recurse"
-	sugar.Debugf("%s", url)
+	sugar.Debugf("Consul: HTTP lookup at %s", url)
+	i := 1
 	resp, e := myClient.Get(url)
 	if e != nil {
-		sugar.Errorw("http", "err", e)
+		for ; i < consulRetries; i = i + 1 {
+			time.Sleep(1 * 1000 * time.Millisecond)
+			resp, e = myClient.Get(url)
+			if e == nil {
+				break
+			}
+		}
+	}
+	if i < consulRetries && e == nil {
+		sugar.Debugf("Consul: http GET for %s at %s after %v tries", h, url, i+1)
+	} else {
+		sugar.Debugf("Consul: http GET for %s at %s failed with %v retries", h, url, consulRetries)
 		return fwd, e
 	}
 
 	defer resp.Body.Close()
 	r, e := ioutil.ReadAll(resp.Body)
 	if e != nil {
-		sugar.Errorw("http", "err", e)
+		sugar.Errorf("Consul: http response read err %v", e)
 		return fwd, e
 	}
 	// create a slice for storing JSON array
 	kvs := make([]common.Kv, 0)
 	e = json.Unmarshal(r, &kvs)
 	if e != nil {
-		sugar.Errorw("json", "err", e)
+		sugar.Errorf("Consul: json response unmarshal err %v", e)
 		return fwd, e
 	}
 	tmp, _ := base64.StdEncoding.DecodeString(kvs[0].Value)
@@ -191,16 +259,23 @@ func ConsulHttpLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e 
 	tmp, _ = base64.StdEncoding.DecodeString(kvs[1].Value)
 	fwd.Pod = string(tmp)
 	if fwd.Id == common.MyInfo.Id {
+		// Same cluster
 		if fwd.Pod == common.MyInfo.Pod {
+			// Same pod
 			fwd.DestType = common.SelfDest
 			fwd.Dest = name
+			sugar.Debugf("Consul: destination %s of type SelfDest", name)
 		} else {
+			// Different pod
 			fwd.DestType = common.LocalDest
 			fwd.Dest = fwd.Pod + "-in." + common.MyInfo.Namespace + common.LocalSuffix
+			sugar.Debugf("Consul: destination %s of type LocalDest", fwd.Dest)
 		}
 	} else {
+		// Different cluster
 		fwd.DestType = common.RemoteDest
 		fwd.Dest = common.RemotePrePrefix + fwd.Id + common.RemotePostPrefix
+		sugar.Debugf("Consul: destination %s of type RemoteDest", fwd.Dest)
 	}
 
 	return fwd, nil
@@ -234,19 +309,30 @@ func ConsulHttpLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e 
 //;; MSG SIZE  rcvd: 170
 
 func ConsulDnsLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e error) {
-	sugar.Infow("consul dns lookup", "name:", name)
+	sugar.Infof("consul dns lookup for %s", name)
 
 	qType, _ := dns.StringToType["SRV"]
 	fqdn_name := name + ".query.consul."
 	client := new(dns.Client)
 	msg := &dns.Msg{}
 	msg.SetQuestion(fqdn_name, qType)
+	i := 1
 	resp, _, e := client.Exchange(msg, common.MyInfo.DnsIp+":53")
 	if e != nil {
-		sugar.Errorw("dns", "err", e)
+		for ; i < consulRetries; i = i + 1 {
+			time.Sleep(1 * 1000 * time.Millisecond)
+			resp, _, e = client.Exchange(msg, common.MyInfo.DnsIp+":53")
+			if e == nil {
+				break
+			}
+		}
+	}
+	if i < consulRetries && e == nil {
+		sugar.Debugf("Consul: dns lookup for %s at %s after %v tries", name, common.MyInfo.DnsIp, i+1)
+	} else {
+		sugar.Debugf("Consul: dns lookup for %s at %s failed with %v retries", name, common.MyInfo.DnsIp, consulRetries)
 		return fwd, e
 	}
-	sugar.Debugw("dns", "resp:", resp)
 
 	for _, v := range resp.Answer {
 		if srv, ok := v.(*dns.SRV); ok {
@@ -262,6 +348,7 @@ func ConsulDnsLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e e
 				fwd.DestType = common.RemoteDest
 				fwd.Dest = common.RemotePrePrefix + s[2] + common.RemotePostPrefix
 				fwd.Pod = ""
+				sugar.Debugf("Consul: destination %s of type RemoteDest", fwd.Dest)
 				return fwd, nil
 			}
 		}

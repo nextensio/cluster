@@ -29,7 +29,7 @@ func httpSendOk(handle *TcpSeConn, s *zap.SugaredLogger) {
 	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
 	_, e := UtilWrite(handle.conn, resp)
 	if e != nil {
-		s.Errorw("rx_tcp:", "SendOk err", e)
+		s.Errorf("rx_tcp: SendOk err %v", e)
 	}
 	s.Debugf("rx_tcp: http ok %v\n", handle.counter)
 }
