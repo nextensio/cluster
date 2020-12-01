@@ -73,10 +73,8 @@ func RegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger)
 				}
 			}
 		}
-		if i < consulRetries && e == nil {
-			sugar.Debugf("Consul: http PUT %s at %s after %v tries", data, url+"/cluster", i+1)
-		} else {
-			sugar.Debugf("Consul: http PUT %s at %s failed with 5 retries", data, url+"/cluster")
+		if e != nil {
+			sugar.Errorf("Consul: http PUT %s at %s failed with %v retries", data, url+"/cluster", consulRetries)
 		}
 		data = strings.Replace(common.MyInfo.Pod, ".", "-", -1)
 		r, _ = http.NewRequest("PUT", url+"/pod", strings.NewReader(data))
@@ -88,10 +86,8 @@ func RegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger)
 			}
 			time.Sleep(1 * 1000 * time.Millisecond)
 		}
-		if i < consulRetries && e == nil {
-			sugar.Debugf("Consul: http PUT %s at %s after %v tries", data, url+"/pod", i+1)
-		} else {
-			sugar.Debugf("Consul: http PUT %s at %s failed with 5 retries", data, url+"/pod")
+		if e != nil {
+			sugar.Errorf("Consul: http PUT %s at %s failed with %v retries", data, url+"/pod", consulRetries)
 		}
 		dns.Meta.Pod = data
 		dns.ID = h + "-" + common.MyInfo.Namespace
@@ -113,8 +109,8 @@ func RegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger)
 			sugar.Debugf("Consul: registered via http PUT at %s", url)
 			sugar.Debugf("Consul: registered service json %s", js)
 		} else {
-			sugar.Debugf("Consul: failed to register via http PUT at %s", url)
-			sugar.Debugf("Consul: failed to register service json %s", js)
+			sugar.Errorf("Consul: failed to register via http PUT at %s", url)
+			sugar.Errorf("Consul: failed to register service json %s", js)
 		}
 	}
 
@@ -155,10 +151,8 @@ func DeRegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogge
 				}
 			}
 		}
-		if i < consulRetries && e == nil {
-			sugar.Debugf("Consul: http DELETED %s at %s after %v tries", h, url+"/cluster", i+1)
-		} else {
-			sugar.Debugf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/cluster", consulRetries)
+		if e != nil {
+			sugar.Errorf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/cluster", consulRetries)
 		}
 		r, _ = http.NewRequest("DELETE", url+"/pod", nil)
 		i = 0
@@ -169,10 +163,8 @@ func DeRegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogge
 			}
 			time.Sleep(1 * 1000 * time.Millisecond)
 		}
-		if i < consulRetries && e == nil {
-			sugar.Debugf("Consul: http DELETED %s at %s after %v tries", h, url+"/pod", i+1)
-		} else {
-			sugar.Debugf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/pod", consulRetries)
+		if e != nil {
+			sugar.Errorf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/pod", consulRetries)
 		}
 		url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + h + "-" + common.MyInfo.Namespace
 		r, _ = http.NewRequest("PUT", url, nil)
@@ -184,10 +176,8 @@ func DeRegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogge
 			}
 			time.Sleep(1 * 1000 * time.Millisecond)
 		}
-		if i < consulRetries && e == nil {
-			sugar.Debugf("Consul: http PUT nil at %s after %v tries", url, i+1)
-		} else {
-			sugar.Debugf("Consul: http PUT of nil at %s failed with %v retries", url, consulRetries)
+		if e != nil {
+			sugar.Errorf("Consul: http PUT of nil at %s failed with %v retries", url, consulRetries)
 		}
 	}
 
@@ -234,10 +224,8 @@ func ConsulHttpLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e 
 			}
 		}
 	}
-	if i < consulRetries && e == nil {
-		sugar.Debugf("Consul: http GET for %s at %s after %v tries", h, url, i+1)
-	} else {
-		sugar.Debugf("Consul: http GET for %s at %s failed with %v retries", h, url, consulRetries)
+	if e != nil {
+		sugar.Errorf("Consul: http GET for %s at %s failed with %v retries", h, url, consulRetries)
 		return fwd, e
 	}
 
@@ -327,10 +315,8 @@ func ConsulDnsLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e e
 			}
 		}
 	}
-	if i < consulRetries && e == nil {
-		sugar.Debugf("Consul: dns lookup for %s at %s after %v tries", name, common.MyInfo.DnsIp, i+1)
-	} else {
-		sugar.Debugf("Consul: dns lookup for %s at %s failed with %v retries", name, common.MyInfo.DnsIp, consulRetries)
+	if e != nil {
+		sugar.Errorf("Consul: dns lookup for %s at %s failed with %v retries", name, common.MyInfo.DnsIp, consulRetries)
 		return fwd, e
 	}
 
