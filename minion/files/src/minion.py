@@ -342,7 +342,7 @@ async def route_http_pak(pak, counter, uuid):
         writer[rt].is_closed = False
         reader[rt] = myr;
     if not fwd['local']:
-        nnpak = re.sub(b'(Host:\s?[a-z.]+\r\n)', b'Host: ' + fwd['dest'].encode('utf-8') + b'\r\n', npak, count=1)
+        nnpak = re.sub(b'(Host:\s?[a-z0-9.]+\r\n)', b'Host: ' + fwd['dest'].encode('utf-8') + b'\r\n', npak, count=1)
         nnpak = re.sub(b'(x-nextensio-for:.*\r\n)', b'x-nextensio-for: ' + rt.encode('utf-8') + b'\r\n', nnpak, count=1)
         log.debug(nnpak)
         pak_len = len(nnpak)
