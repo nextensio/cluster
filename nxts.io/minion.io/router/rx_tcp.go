@@ -73,7 +73,7 @@ func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
 		c.conn.Close()
 	}()
 	for {
-		rlen, e := c.conn.Read(buf)
+		rlen, e := c.conn.Read(buf[pLen:])
 		if e == io.EOF {
 			s.Info("rx_tcp: conn EOF received in handleHttpRequests")
 			break
@@ -81,19 +81,31 @@ func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
 		if e != nil {
 			s.Errorf("rx_tcp: err while reading connection in handleHttpRequests - %v", e)
 		} else {
-			pLen += Execute(state, buf, rlen, s)
+			uLen := Execute(state, buf, pLen+rlen, s)
 			if IsBodyComplete(state) == true {
 				s.Debugf("rx_tcp: got pak %v\n", c.counter)
 				httpSendOk(c, s)
 				pak := append(GetHeaders(state), GetBody(state)...)
 				httpForLeft(c, pak, s)
 				c.counter++
+				if uLen < (pLen + rlen) {
+					// Didn't use up all data in buf. Move unused data to start of buf.
+					// Set pLen so next read gets data after this unused data.
+					diff := pLen + rlen - uLen
+					for i := 0; i < diff; i++ {
+						buf[i] = buf[uLen+i]
+					}
+					pLen = diff
+				} else {
+					// All data used up. Reset pLen to 0
+					pLen = 0
+				}
 			} else if IsHeaderComplete(state) == true {
 				s.Debugf("rx_tcp: rcvd Hdr (%v), not body, clen=%v, plen=%v, cursor=%v",
 					len(state.header), state.clen, state.plen, state.cursor)
 			} else {
-				s.Debugf("rx_tcp: rcvd neither hdr nor body, pLen=%v, cursor=%v",
-					pLen, state.cursor)
+				s.Debugf("rx_tcp: rcvd neither hdr nor body, rlen=%v, pLen=%v, uLen=%v, cursor=%v",
+					rlen, pLen, uLen, state.cursor)
 			}
 		}
 	}
