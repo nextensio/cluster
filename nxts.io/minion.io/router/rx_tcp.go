@@ -38,12 +38,13 @@ func httpForLeft(handle *TcpSeConn, pak []byte, s *zap.SugaredLogger) {
 	reader := bufio.NewReader(strings.NewReader(string(pak)))
 	r, e := http.ReadRequest(reader)
 	if e != nil {
+		stats.PakDrop(pak, "ReaderFailure", s)
 		s.Errorf("rx_tcp: httpForLeft ReadRequest err - %v", e)
+		return
 	}
 	dest := r.Header.Get("x-nextensio-for")
 	destinfo := strings.Split(dest, ":")
 	host := destinfo[0]
-	s.Debugf("rx_tcp: httpForLeft rcvd x-nextensio-for=%s, host=%s", dest, host)
 	host = strings.ReplaceAll(host, ".", "-")
 	left := LookupLeftService(host)
 	if left != nil {
@@ -51,9 +52,9 @@ func httpForLeft(handle *TcpSeConn, pak []byte, s *zap.SugaredLogger) {
 		// Check whether it is allowed
 		// TODO Do we need to check clitype ? Should not happen for return traffic
 		usr := r.Header.Get("x-nextensio-attr")
-		s.Debugf("rx_tcp: x-nextensio-attr = %s", usr)
 		if aaa.AccessOk(left.clitype, left.uuid, usr, s) == false {
 			stats.PakDrop(pak, "AccessDenied", s)
+			return
 		}
 		item := common.Queue{Id: handle.counter, Pak: pak}
 		left.send <- item
@@ -72,7 +73,7 @@ func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
 		c.conn.Close()
 	}()
 	for {
-		len, e := c.conn.Read(buf)
+		rlen, e := c.conn.Read(buf)
 		if e == io.EOF {
 			s.Info("rx_tcp: conn EOF received in handleHttpRequests")
 			break
@@ -80,13 +81,19 @@ func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
 		if e != nil {
 			s.Errorf("rx_tcp: err while reading connection in handleHttpRequests - %v", e)
 		} else {
-			pLen += Execute(state, buf, len, s)
+			pLen += Execute(state, buf, rlen, s)
 			if IsBodyComplete(state) == true {
 				s.Debugf("rx_tcp: got pak %v\n", c.counter)
 				httpSendOk(c, s)
 				pak := append(GetHeaders(state), GetBody(state)...)
 				httpForLeft(c, pak, s)
 				c.counter++
+			} else if IsHeaderComplete(state) == true {
+				s.Debugf("rx_tcp: rcvd Hdr (%v), not body, clen=%v, plen=%v, cursor=%v",
+					len(state.header), state.clen, state.plen, state.cursor)
+			} else {
+				s.Debugf("rx_tcp: rcvd neither hdr nor body, pLen=%v, cursor=%v",
+					pLen, state.cursor)
 			}
 		}
 	}
@@ -110,7 +117,7 @@ func TcpServer(t *TcpRxTracker, s *zap.SugaredLogger) error {
 		conn, e := l.Accept()
 		if e != nil {
 			s.Errorf("rx_tcp: Server accept err - %v", e)
-			return e
+			continue
 		}
 
 		// Handle connections in a new goroutine

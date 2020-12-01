@@ -58,46 +58,22 @@ func (c *WsClient) txHandler(s *zap.SugaredLogger) {
 			s.Debug("http: send ping message")
 			c.conn.SetWriteDeadline(time.Now().Add(common.WriteWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				s.Debugf("http: ping message error - %v", err)
+				s.Errorf("http: ping message error - %v", err)
 				return
 			}
 		case msg, ok := <-c.send:
-			c.conn.SetWriteDeadline(time.Now().Add(common.WriteWait))
 			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
+				break
 			}
-			w, err := c.conn.NextWriter(websocket.BinaryMessage)
+			c.conn.SetWriteDeadline(time.Now().Add(common.WriteWait))
+			err := c.conn.WriteMessage(websocket.BinaryMessage, msg.Pak)
 			if err != nil {
-				s.Debugf("http: txHandler failed to get NextWriter - %v", err)
-				break
-			}
-			w.Write(msg.Pak)
-			s.Debug("http: txHandler called write for pak")
-			if err := w.Close(); err != nil {
-				s.Debugf("http: txHandler could not close write - %v", err)
-				break
-			}
-
-			n := len(c.send)
-			if n > 0 {
-				s.Debugf("http: txHandler has %v more paks to send", n)
-			}
-			for i := 0; i < n; i++ {
-				msg, _ = <-c.send
-				w, err := c.conn.NextWriter(websocket.BinaryMessage)
-				if err != nil {
-					s.Debugf("http: txHandler failed to get NextWriter for pak %v", i+1)
-					break
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
+					s.Errorf("http: unexpected ws closure during write to %v %v - %v", c.clitype, c.uuid, err)
+					return
 				}
-				w.Write(msg.Pak)
-				s.Debugf("http: txHandler called write for pak %v", i+1)
-				if err := w.Close(); err != nil {
-					s.Debugf("http: txHandler failed to close write for pak %v", i+1)
-					break
-				}
+				s.Errorf("http: txHandler write error to %s %s - error=%v", c.clitype, c.uuid, err)
 			}
-			s.Debugf("http: txHandler sent %v more paks in loop", n)
 		}
 	}
 }
@@ -124,8 +100,8 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 	messageType, p, e := c.conn.ReadMessage()
 	if e != nil {
 		s.Errorf("http rxHandler: %v", e)
+		return
 	}
-	s.Debugf("http: Hello rcvd: %s", string(p))
 	words := bytes.Split(p, space)
 	if bytes.Equal(words[0], []byte("NCTR")) {
 		c.clitype = "connector"
@@ -137,7 +113,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 		e = c.conn.WriteMessage(messageType, bytes.Join([][]byte{[]byte("Hello"), words[0]}, space))
 		if e != nil {
 			s.Errorf("http hello send error to %s: %v", c.clitype, e)
-			// Do we continue ?
+			return
 		}
 	}
 	// Register services to consul
@@ -163,21 +139,22 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 	var drop bool
 	// Read packets and forward
 	for {
-		messageType, p, e = c.conn.ReadMessage()
+		messageType, p, e := c.conn.ReadMessage()
 		if e != nil {
 			if websocket.IsUnexpectedCloseError(e, websocket.CloseGoingAway) {
-				s.Errorw("http", "err", e)
+				s.Errorf("http: ws unexpected closure during read - %v", e)
+				break
 			}
-			s.Errorw("http", "err", e)
-			break
+			s.Errorf("http: ws read message error - %v", e)
+			continue
 		}
 		// forward the packet
 		// get the destination to foward to
 		reader := bufio.NewReader(strings.NewReader(string(p)))
 		r, e := http.ReadRequest(reader)
 		if e != nil {
-			s.Errorw("http", "err", e)
-			// Do we continue ?
+			s.Errorf("http: message header/body parsing error - %v", e)
+			continue
 		}
 		dest := r.Header.Get("x-nextensio-for")
 		destinfo := strings.Split(dest, ":")
@@ -203,14 +180,13 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 			var err error
 			fwd, err = consul.ConsulDnsLookup(consul_key, s)
 			if err != nil {
-				s.Debugf("http: Consul lookup error with key %s - %v", consul_key, err)
-			} else {
-				s.Debugf("http: Consul lookup with key %s gave %v", consul_key, fwd)
+				s.Errorf("http: Consul lookup error with key %s - %v", consul_key, err)
+				stats.PakDrop(p, "DNSLookupFailed", s)
+				continue
 			}
 		}
 		usrattr, attrok := aaa.GetUsrAttr(c.clitype, c.uuid, s)
 		nhdrs := len(r.Header)
-		s.Debugf("http: pak from %s has %v headers", c.clitype, nhdrs)
 		z := bytes.SplitN(p, []byte("\r\n"), nhdrs+1)
 		p = z[0]
 		// Try to improve this later
@@ -264,7 +240,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 			}
 		}
 		if drop == false {
-			s.Debugw("http:", "pak rxcount", c.counter)
+			s.Debugf("http: pak rxcount %v", c.counter)
 			c.counter++
 		}
 	}

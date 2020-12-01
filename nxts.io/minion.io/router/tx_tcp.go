@@ -48,34 +48,27 @@ func (c *TcpClConn) txHandler(t *Tracker, s *zap.SugaredLogger) {
 			// if c.last > IDLE time, then close the connection
 		case msg, ok := <-c.send:
 			if !ok {
+				break
+			}
+			plen, err := c.conn.Write(msg.Pak)
+			if err != nil {
+				s.Errorf("tx_tcp: error sending pak of len=%v to %s - %v", plen, c.name, err)
 				return
 			}
-			UtilWrite(c.conn, msg.Pak)
-			s.Debugf("tx_tcp: packet %v sent to %v\n", c.counter, c.conn.RemoteAddr())
-			_, e := c.conn.Read(tmp)
+			s.Debugf("tx_tcp: packet %v of len=%v sent to %s", c.counter, plen, c.name)
+			c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+			alen, e := c.conn.Read(tmp)
 			if e != nil {
 				if e != io.EOF {
-					s.Errorf("tx_tcp: connection read err %v", e)
+					s.Errorf("tx_tcp: connection read error - %v", e)
+				} else {
+					s.Errorf("tx_tcp: EOF rcvd, closing connection to %v", c.name)
+					return
 				}
 			} else {
-				s.Debugf("tx_tcp: got ack %v from %v\n", c.counter, c.conn.RemoteAddr())
+				s.Debugf("tx_tcp: got ACK %v (len=%v) from %s", c.counter, alen, c.name)
 			}
 			c.counter++
-			n := len(c.send)
-			for i := 0; i < n; i++ {
-				msg, _ = <-c.send
-				UtilWrite(c.conn, msg.Pak)
-				s.Debugf("tx_tcp: packet %v sent to %v\n", c.counter, c.conn.RemoteAddr())
-				_, e := c.conn.Read(tmp)
-				if e != nil {
-					if e != io.EOF {
-						s.Errorf("tx_tcp: connection read err %v", e)
-					}
-				} else {
-					s.Debugf("tx_tcp: got ack %v from %v\n", c.counter, c.conn.RemoteAddr())
-				}
-				c.counter++
-			}
 			c.last = time.Now()
 		}
 	}
