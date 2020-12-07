@@ -2,7 +2,7 @@
 # Author: Davi Gupta (davigupta@gmail.com), Sep 2020
 #
 
-VERSION=1.08
+VERSION=1.09
 NAME=minion
 USER=registry.gitlab.com/nextensio/cluster
 image=$(shell docker images $(USER)/$(NAME):$(VERSION) -q)

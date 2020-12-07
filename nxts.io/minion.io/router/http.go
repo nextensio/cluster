@@ -92,7 +92,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 		aaa.UsrLeave(c.clitype, c.uuid, s)
 	}()
 
-	c.conn.SetReadLimit(common.MaxMessageSize)
+	c.conn.SetReadLimit(common.WsReadLimit)
 	c.conn.SetReadDeadline(time.Now().Add(common.PongWait))
 	c.conn.SetPongHandler(func(string) error { c.conn.SetReadDeadline(time.Now().Add(common.PongWait)); return nil })
 
@@ -146,7 +146,7 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 				break
 			}
 			s.Errorf("http: ws read message error - %v", e)
-			continue
+			break
 		}
 		// forward the packet
 		// get the destination to foward to

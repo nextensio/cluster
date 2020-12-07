@@ -21,6 +21,7 @@ const (
 	PongWait         = 60 * time.Second
 	PingPeriod       = (PongWait * 9) / 10
 	MaxMessageSize   = 64 * 1024
+	WsReadLimit      = 72 * 1024 // MaxMessageSize + 8K
 	Period           = 1000
 	SelfDest         = 1
 	LocalDest        = 2
