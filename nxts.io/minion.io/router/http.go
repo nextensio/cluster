@@ -187,25 +187,28 @@ func (c *WsClient) rxHandler(s *zap.SugaredLogger) {
 		}
 		usrattr, attrok := aaa.GetUsrAttr(c.clitype, c.uuid, s)
 		nhdrs := len(r.Header)
+		// Split up the http headers. Get \r\n (blank line) plus body into last split.
 		z := bytes.SplitN(p, []byte("\r\n"), nhdrs+1)
 		p = z[0]
-		// Try to improve this later
+		hostfound := false
+		forfound := false
 		for i := 1; i < nhdrs; i = i + 1 {
-			if fwd.DestType == common.RemoteDest {
-				if bytes.Contains(z[i], []byte("host:")) {
-					z[i] = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
-				} else if bytes.Contains(z[i], []byte("Host:")) {
-					z[i] = bytes.Join([][]byte{[]byte("Host:"), []byte(fwd.Dest)}, []byte(" "))
+			if (hostfound == false) && (fwd.DestType == common.RemoteDest) {
+				if bytes.Contains(z[i], []byte("host:")) || bytes.Contains(z[i], []byte("Host:")) {
+					z[i] = []byte("Host:" + " " + fwd.Dest)
+					hostfound = true
 				}
 			}
-			if bytes.Contains(z[i], []byte("x-nextensio-for:")) {
-				z[i] = bytes.Join([][]byte{[]byte("X-Nextensio-For:"), []byte(savedhost)}, []byte(" "))
-			} else if bytes.Contains(z[i], []byte("X-Nextensio-For:")) {
-				z[i] = bytes.Join([][]byte{[]byte("X-Nextensio-For:"), []byte(savedhost)}, []byte(" "))
+			if forfound == false {
+				if bytes.Contains(z[i], []byte("sio-for:")) {
+					z[i] = []byte("x-nextensio-for:" + " " + savedhost)
+					forfound = true
+				}
 			}
 			p = bytes.Join([][]byte{p, z[i]}, []byte("\r\n"))
 		}
 		if attrok {
+			// Add user attributes header in apod to cpod direction only
 			attrb := []byte("x-nextensio-attr: " + usrattr)
 			p = bytes.Join([][]byte{p, attrb, z[nhdrs]}, []byte("\r\n"))
 		} else {
