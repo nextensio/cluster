@@ -71,8 +71,7 @@ func GetUsrAttr(pod string, id string, s *zap.SugaredLogger) (string, bool) {
 		}
 		usrAttr, val = authz.NxtGetUsrAttr(id)
 	}
-	s.Debugf("aaa: usr %s of type %s : attr %s, val %v\n",
-		id, pod, usrAttr, val)
+	//s.Debugf("aaa: usr %s of type %s : attr %s, val %v\n", id, pod, usrAttr, val)
 	return usrAttr, val
 }
 
@@ -88,9 +87,9 @@ func AccessOk(pod string, id string, attr string, s *zap.SugaredLogger) bool {
 		val = authz.NxtAccessOk(id, attr)
 	}
 
-	s.Debugf("aaa: access %v of type %v with attr %v : resullt %v\n",
-		id, pod, attr, val)
-
+	if val != true {
+		s.Debugf("aaa: user %v with attr %v denied access\n", id, attr)
+	}
 	return val
 }
 
@@ -110,6 +109,8 @@ func RouteLookup(pod string, uid string, host string, s *zap.SugaredLogger) stri
 		return ""
 	}
 	tag := authz.NxtRouteLookup(uid, host)
-	s.Debugf("aaa: Route lookup for user %s to host %s : result %s\n", uid, host, tag)
+	if tag != "" {
+		s.Debugf("aaa: Route lookup for user %s to host %s : result %s\n", uid, host, tag)
+	}
 	return tag
 }

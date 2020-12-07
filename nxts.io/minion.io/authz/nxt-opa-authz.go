@@ -572,7 +572,7 @@ func nxtGetUserAttrJSON(uuid string) string {
 		if userAttrLock != true {
 			uaC.uajson = ua
 			userAttr[uuid] = uaC
-			nxtLogDebug(uuid, "Added attributes for user to local cache")
+			//nxtLogDebug(uuid, "Added attributes for user to local cache")
 		}
 		return ua
 	}
@@ -588,10 +588,10 @@ func nxtReadUserAttrCache(uuid string) (string, bool) {
 	// Check in cache if user's attributes exist. If yes, return value.
 	uaC, ok := userAttr[uuid]
 	if ok == true {
-		nxtLogDebug(uuid, "Retrieved attributes for user from local cache")
+		//nxtLogDebug(uuid, "Retrieved attributes for user from local cache")
 		return uaC.uajson, true
 	}
-	nxtLogDebug(uuid, "Failed to find attributes for user in local cache")
+	//nxtLogDebug(uuid, "Failed to find attributes for user in local cache")
 	return "", false
 }
 
@@ -666,7 +666,8 @@ func nxtReadUserExtAttrDoc(ctx context.Context) {
 	coll := CollMap[userAttrCollection]
 	err := coll.FindOne(ctx, bson.M{"_id": inp2Type}).Decode(&uahdr)
 	if err != nil {
-		nxtLogError(inp2Type, fmt.Sprintf("Failed to read user extended attributes doc - %v", err))
+		// Disable this error until it's fully implemented
+		//nxtLogError(inp2Type, fmt.Sprintf("Failed to read user extended attributes doc - %v", err))
 		return
 	}
 
@@ -692,6 +693,9 @@ func nxtGetUserAttrFromHTTP(uid string, hdr *http.Header) string {
 		} else {
 			extUAValues[idx] = fval
 		}
+	}
+	if len(extUAValues) == 0 {
+		return ""
 	}
 	uajson, err := json.Marshal(&extUAValues)
 	if err != nil {
