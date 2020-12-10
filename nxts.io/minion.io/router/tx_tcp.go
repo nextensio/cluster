@@ -50,7 +50,7 @@ func (c *TcpClConn) txHandler(t *Tracker, s *zap.SugaredLogger) {
 			if !ok {
 				break
 			}
-			plen, err := c.conn.Write(msg.Pak)
+			plen, err := UtilWrite(c.conn, msg.Pak)
 			if err != nil {
 				s.Errorf("tx_tcp: error sending pak of len=%v to %s - %v", plen, c.name, err)
 				return

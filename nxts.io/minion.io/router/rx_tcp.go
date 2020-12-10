@@ -80,6 +80,7 @@ func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
 		}
 		if e != nil {
 			s.Errorf("rx_tcp: err while reading connection in handleHttpRequests - %v", e)
+			break
 		} else {
 			uLen := Execute(state, buf, pLen+rlen, s)
 			if IsBodyComplete(state) == true {
@@ -106,6 +107,15 @@ func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
 			} else {
 				s.Debugf("rx_tcp: rcvd neither hdr nor body, rlen=%v, pLen=%v, uLen=%v, cursor=%v",
 					rlen, pLen, uLen, state.cursor)
+				// Discard received data and start from scratch if headers don't end within
+				// 1K bytes. Seems like some ghost non-http frame gets in once in a while.
+				// TODO: Need more debugging to figure out why this is happening.
+				if state.cursor > 1024 {
+					s.Errorf("rx_tcp: discarded frame w/o http headers end after %v bytes",
+						state.cursor)
+					stateInit(state)
+					pLen = 0
+				}
 			}
 		}
 	}
