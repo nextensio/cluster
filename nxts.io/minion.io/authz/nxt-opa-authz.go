@@ -112,6 +112,9 @@ type DataHdr struct {
 // Data object to track every use case
 type QState struct {
 	NewVer   bool                   // new version of policy or refdata
+	NewPol   bool                   // new version of rego poloicy
+	NewData  bool                   // new version of reference data
+	WrVer    bool                   // write versions to file (for testing infra)
 	QCreated bool                   // query object created
 	QError   bool                   // error in query state
 	Qry      string                 // the OPA Rego query
@@ -255,8 +258,12 @@ func nxtOpaProcess(ctx context.Context) int {
 		// Process if new version of UserAttr collection
 		nxtProcessUserAttrChanges(ctx)
 
+		if (QStateMap[opaUseCases[0]].WrVer == true) || (QStateMap[opaUseCases[2]].WrVer == true) {
+			nxtWriteAttrVersions()
+		}
+
 		// sleep(5 secs)
-		time.Sleep(5 * 1000 * time.Millisecond)
+		time.Sleep(1 * 1000 * time.Millisecond)
 	}
 
 	evalDone <- true // Done with all evaluations
@@ -309,6 +316,7 @@ func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
 	usrAttrHdr = nxtReadUserAttrHdr(ctx)
 	nxtReadUserExtAttrDoc(ctx)
 
+	nxtWriteAttrVersions()
 	libInitialized = true
 	go nxtOpaProcess(ctx)
 	initDone <- true
@@ -448,6 +456,8 @@ func nxtReadPolicyDocument(ctx context.Context, usecase string, ptype string) {
 		// New policy. Store it in QStateMap
 		qs.PStruct = policy
 		qs.NewVer = true
+		qs.NewPol = true
+		qs.WrVer = true
 		if qs.PStruct.Fname != "" {
 			// Read policy from local file, not mongoDB
 			qs.RegoPol = nxtReadPolicyLocalFile(usecase)
@@ -494,6 +504,8 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 	if (hdr.Majver > qs.RefHdr.Majver) || (hdr.Minver > qs.RefHdr.Minver) {
 		qs.RefHdr = hdr
 		qs.NewVer = true
+		qs.NewData = true
+		qs.WrVer = true
 		return true
 	}
 	return false
@@ -535,6 +547,7 @@ func nxtProcessUserAttrChanges(ctx context.Context) {
 	tmphdr := nxtReadUserAttrHdr(ctx)
 	if (tmphdr.Majver > usrAttrHdr.Majver) || (tmphdr.Minver > usrAttrHdr.Minver) {
 		usrAttrHdr = tmphdr
+		QStateMap[opaUseCases[0]].WrVer = true // for testing infra
 		nxtReadUserExtAttrDoc(ctx)
 		nxtUpdateUserAttrCache()
 	}
@@ -878,18 +891,24 @@ func nxtEvalUserRoutingJSON(host string, uajson string, ueajson string) []byte {
 func nxtPrimeLoadDir(ucase string) {
 
 	dirname := QStateMap[ucase].LDir
-	err := ioutil.WriteFile(dirname+"/policyfile.rego", QStateMap[ucase].RegoPol, 0644)
-	if err != nil {
-		nxtLogError(ucase, fmt.Sprintf("Policy loading in dir %s failed - %v", dirname, err))
-		// TODO: Can we avoid this ?
-		log.Fatal(err)
+	if QStateMap[ucase].NewPol == true {
+		QStateMap[ucase].NewPol = false
+		err := ioutil.WriteFile(dirname+"/policyfile.rego", QStateMap[ucase].RegoPol, 0644)
+		if err != nil {
+			nxtLogError(ucase, fmt.Sprintf("Policy loading in dir %s failed - %v", dirname, err))
+			// TODO: Can we avoid this ?
+			log.Fatal(err)
+		}
 	}
 
-	// Write reference data to load directory
-	err = ioutil.WriteFile(dirname+"/refdata.json", QStateMap[ucase].RefData, 0644)
-	if err != nil {
-		nxtLogError(ucase, fmt.Sprintf("Refdata loading in dir %s failed - %v", dirname, err))
-		log.Fatal(err)
+	if QStateMap[ucase].NewData == true {
+		QStateMap[ucase].NewData = false
+		// Write reference data to load directory
+		err := ioutil.WriteFile(dirname+"/refdata.json", QStateMap[ucase].RefData, 0644)
+		if err != nil {
+			nxtLogError(ucase, fmt.Sprintf("Refdata loading in dir %s failed - %v", dirname, err))
+			log.Fatal(err)
+		}
 	}
 	// Free up memory held in RefData and RegoPol once written to disk.
 	var nullb []byte
@@ -1096,6 +1115,16 @@ func nxtReadAllUserAttrDocuments(ctx context.Context) *[]bson.M {
 		}
 	}
 	return &users
+}
+
+func nxtWriteAttrVersions() {
+	qsm := QStateMap[opaUseCases[2]]
+	versions := fmt.Sprintf("USER=%d.%d\nBUNDLE=%d.%d\nPOLICY=%d.%d\nROUTE=0.0",
+		usrAttrHdr.Majver, usrAttrHdr.Minver, qsm.RefHdr.Majver, qsm.RefHdr.Minver,
+		qsm.PStruct.Majver, qsm.PStruct.Minver)
+	ioutil.WriteFile("/tmp/opa_attr_versions", []byte(versions), 0644)
+	QStateMap[opaUseCases[0]].WrVer = false
+	QStateMap[opaUseCases[2]].WrVer = false
 }
 
 //--------------------------------------End------------------------------------
