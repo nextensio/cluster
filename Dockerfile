@@ -9,4 +9,4 @@ RUN go get -d -v ./... \
 RUN mkdir -p authz
 RUN mkdir -p authz/app-access
 EXPOSE 80/tcp 8002/tcp
-CMD ["/go/src/app/wait.sh"]
+CMD ["tail -f /dev/null"]
