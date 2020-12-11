@@ -1,13 +1,39 @@
-**Cluster Software**
-- minion       : handles forwarding of packets - written in python
-- nxts.io      : handles forwarding of packets - written in go
-- istio_client : test software and certificates
-- istio_yaml   : Yaml files for gateway, virtual service
-- docs         : Describes how the minion interacts with agent and connector
-- mocklib      : Build mock libraries needed by minion code written in python
+# minion
+Humble workers
 
-**Pushing docker images to registry**
+Put pre-commit file in .git/hooks/pre-commit
 
-- make
-- docker login registry.gitlab.com
-- docker push registry.gitlab.com/nextensio/cluster/minion:0.80
+Environment
+
+mkdir -p ${HOME}/work/go/src
+export GOPATH=${HOME}/work/go
+cd ${HOME}/work
+git clone git@gitlab.com:nextensio/cluster.git
+cd ${HOME}/work/go/src
+ln -s ${HOME}/work/cluster/nxts.io/minion.io
+go build
+
+# Running test for a particular module
+cd nxts.io/minion.io/router
+go test -v
+
+# Running a program
+cd nxts.io/minion.io
+go run minion.go
+
+Debug
+
+Use make debug to generate a debug version of container. It does not run
+minion code by default. We need to start it manually.
+
+To run container in local environment
+
+docker run --net host -it davigupta/minion:1.04 /go/bin/minion.io -tunnel
+
+or
+
+docker run --net host -it davigupta/minion-build:1.04 /go/bin/minion.io -tunnel
+
+or
+
+docker run --net host -it davigupta/minion-debug:1.04 /go/bin/minion.io -tunnel

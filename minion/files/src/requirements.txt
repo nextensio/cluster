@@ -1,4 +1,0 @@
-websockets==7.0
-python-consul==1.1.0
-aiohttp==3.5.4
-async-dns==1.0.0

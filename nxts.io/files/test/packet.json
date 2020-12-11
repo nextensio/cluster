@@ -1,7 +1,0 @@
-{
-    "NxtSrcIP" : "192.168.1.1",
-    "NextSrcPort" : 10000,
-    "NxtDstHost" : "movie.kismis.org",
-    "NxtDstPort" : 80,
-    "Data" : "R0VUIC9idW5ueSBIVFRQLzEuMQ0KSG9zdDogbW92aWUua2lzbWlzLm9yZw0KVXNlci1BZ2VudDogY3VybC83LjU4LjANCkFjY2VwdDogKi8qDQoNCg=="
-}
