@@ -262,7 +262,7 @@ func nxtOpaProcess(ctx context.Context) int {
 			nxtWriteAttrVersions()
 		}
 
-		// sleep(5 secs)
+		// sleep(1 sec)
 		time.Sleep(1 * 1000 * time.Millisecond)
 	}
 
