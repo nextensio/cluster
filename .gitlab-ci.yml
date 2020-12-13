@@ -21,6 +21,5 @@ stages:
 compile-and-test:
   stage: build
   script:
-    - cd $CI_PROJECT_DIR/nxts.io; docker build -t minion-go .
+    - cd $CI_PROJECT_DIR/; docker build -t minion-go .
     - docker run minion-go sh -c 'go fmt $(go list ./... | grep -v /vendor/); go vet $(go list ./... | grep -v /vendor/); go test -race $(go list ./... | grep -v /vendor/ | grep -v consul)'
-    - cd $CI_PROJECT_DIR/minion; docker build -t minion-py .
