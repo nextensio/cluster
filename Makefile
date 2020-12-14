@@ -14,7 +14,7 @@ adcontid=$(shell docker ps -a --filter ancestor=$(USER)/$(NAME)-debug:$(VERSION)
 bcontid=$(shell docker ps -a --filter ancestor=$(USER)/$(NAME)-build:$(VERSION) -q | head -n 1)
 
 .PHONY: all
-all: build copy
+all: build copy slim
 
 .PHONY: build
 build:
@@ -34,6 +34,12 @@ copy:
 	-rm -r -f bin/$(NAME).io
 	docker cp $(bcontid):/go/bin/$(NAME).io bin
 	cp files/version bin
+
+.PHONY: slim
+slim:
+	rm -r -f files/version
+	echo $(VERSION) > files/version
+	docker build -f Dockerfile.slim -t $(USER)/$(NAME):$(VERSION) .
 
 .PHONY: clean
 clean:
