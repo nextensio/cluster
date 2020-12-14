@@ -149,9 +149,13 @@ var loadDir = []string{agentldir, connldir, accessldir, routeldir}
 var policyfile = []string{agentauthzpolicy, connauthzpolicy, appaccesspolicy, userroutepolicy}
 var keyID = []string{"userid", "connid", "bid", "hostid"}
 
-var initDone = make(chan bool, 1)
-var evalDone = make(chan bool, 1)
-var libInitialized bool
+var initExit = make(chan bool, 1)
+var initDone bool
+var procStarted bool
+var mongoCheck bool
+var mongoFailures int
+var mongoInitDone bool
+var mongoDBAddr string
 var tenant string
 var slog *zap.SugaredLogger
 var st, sg, sm zap.Field // for tenant, gateway, module
@@ -173,7 +177,7 @@ func NxtAaaInit(namespace string, mongouri string, sl *zap.SugaredLogger) int {
 
 //export NxtUsrJoin
 func NxtUsrJoin(userid string) {
-	if libInitialized == false {
+	if initDone == false || mongoInitDone == false {
 		return
 	}
 	_ = nxtGetUserAttrJSON(userid)
@@ -181,23 +185,26 @@ func NxtUsrJoin(userid string) {
 
 //export NxtUsrLeave
 func NxtUsrLeave(userid string) {
-	if libInitialized == false {
+	if initDone == false {
 		return
 	}
+	// Don't check mongoInitDone as we purge the data in local cache
 	nxtPurgeUserAttrJSON(userid)
 }
 
 //export NxtGetUsrAttr
 func NxtGetUsrAttr(userid string) (string, bool) {
-	if libInitialized == false {
+	if initDone == false {
 		return "", false
 	}
+	// Don't check mongoInitDone as we may have the data in local cache
+	// The call handles the case where mongo init not done and data not in local cache
 	return nxtGetUserAttrJSON(userid), true
 }
 
 //export NxtUsrAllowed
 func NxtUsrAllowed(userid string) bool {
-	if libInitialized == false {
+	if initDone == false {
 		return false
 	}
 	return true
@@ -205,7 +212,7 @@ func NxtUsrAllowed(userid string) bool {
 
 //export NxtAccessOk
 func NxtAccessOk(bundleid string, userattr string) bool {
-	if libInitialized == false {
+	if initDone == false {
 		return false
 	}
 	return nxtEvalAppAccessAuthz(opaUseCases[2], userattr, bundleid)
@@ -222,6 +229,9 @@ const RouteTag = "tag"
 
 //export NxtRouteLookup
 func NxtRouteLookup(uid string, routeid string) string {
+	if initDone == false || mongoInitDone == false {
+		return ""
+	}
 	// For parity with python version of minion
 	var route bson.M
 	var key = uid + ":" + routeid
@@ -232,6 +242,7 @@ func NxtRouteLookup(uid string, routeid string) string {
 	if err == nil {
 		return fmt.Sprintf("%s", route[RouteTag])
 	}
+	nxtMongoError()
 	return ""
 }
 
@@ -245,11 +256,89 @@ func authzMain() {
 // to reinitialize any OPA stuff
 func nxtOpaProcess(ctx context.Context) int {
 
+	// First, wait until the code exits nxtOpaInit()
 	select {
-	case <-initDone:
+	case <-initExit:
+		nxtLogDebug("OpaProcess", "InitExit set- init done")
 	}
 
+	var err error
+	// Next, loop until all initialization is done in case nxtOpaInit() failed
+	nxtLogDebug("OpaProcess", fmt.Sprintf("1. initDone=%v, mongoInitDone=%v, mongoCheck=%v",
+		initDone, mongoInitDone, mongoCheck))
 	for {
+		if initDone == true {
+			break
+		}
+		time.Sleep(2 * 1000 * time.Millisecond)
+		if mongoInitDone == false {
+			nxtLogDebug("OpaProcess", "Calling mongoDB init as it wasn't done")
+			mongoClient, err = nxtMongoDBInit(ctx, tenant, mongoDBAddr)
+			if err != nil {
+				nxtLogError(nxtMongoDBName, fmt.Sprintf("DB init retry error - %v", err))
+				continue
+			}
+			mongoInitDone = true
+			nxtOpaUseCaseInit(ctx)
+		}
+	}
+
+	// Finally, loop forever
+	// 1. checking if mongoDB connection is still alive if any mongoDB access failed
+	// 2. to reinitialize mongoDB connection if it has failed
+	// 3. checking for and processing any DB collection version changes
+	nxtLogDebug("OpaProcess", fmt.Sprintf("2. initDone=%v, mongoInitDone=%v, mongoCheck=%v",
+		initDone, mongoInitDone, mongoCheck))
+	for {
+		if mongoInitDone == false {
+			// No connection to mongoDB. Try to reconnect.
+			nxtLogDebug("OpaProcess", "Calling mongoDB init - mongoInitDone false")
+			mongoClient, err = nxtMongoDBInit(ctx, tenant, mongoDBAddr)
+			if err != nil {
+				nxtLogError(nxtMongoDBName, fmt.Sprintf("DB init retry error - %v", err))
+				time.Sleep(2 * 1000 * time.Millisecond)
+				continue
+			}
+			mongoInitDone = true
+			mongoCheck = false
+		}
+		if mongoCheck == true {
+			// There has been a mongoDB access failure.
+			// Do a ping and see if DB is accessible. If not, reinit.
+			err = mongoClient.Ping(ctx, nil)
+			if err != nil {
+				_ = mongoClient.Disconnect(ctx)
+				mongoClient, err = nxtMongoDBInit(ctx, tenant, mongoDBAddr)
+				if err == nil {
+					// We have a new mongoDB connection.
+					mongoInitDone = true
+					mongoCheck = false
+					mongoFailures = 0
+				} else {
+					// Failed to reconnect to mongoDB. Keep retrying.
+					nxtLogError(nxtMongoDBName,
+						fmt.Sprintf("Failed to reinit DB after ping failure - %v",
+							err))
+					nxtLogError(nxtMongoDBName,
+						fmt.Sprintf("Total %d DB access failures", mongoFailures))
+					mongoInitDone = false
+				}
+			} else {
+				// Ping to mongoDB works fine. Reset flag.
+				mongoCheck = false
+				nxtLogDebug(nxtMongoDBName,
+					fmt.Sprintf("%d DB access failures seen but ping is fine",
+						mongoFailures))
+			}
+		}
+		// sleep(1 sec)
+		time.Sleep(1 * 1000 * time.Millisecond)
+
+		if mongoInitDone == false {
+			// Skip any further code if mongoDB not accessible
+			continue
+		}
+
 		for i, ucase := range opaUseCases {
 			if initUseCase[i] > 0 {
 				nxtSetupUseCase(ctx, i, ucase)
@@ -262,11 +351,7 @@ func nxtOpaProcess(ctx context.Context) int {
 			nxtWriteAttrVersions()
 		}
 
-		// sleep(1 sec)
-		time.Sleep(1 * 1000 * time.Millisecond)
 	}
-
-	evalDone <- true // Done with all evaluations
 	return 0
 }
 
@@ -274,10 +359,13 @@ func nxtOpaProcess(ctx context.Context) int {
 // API to init nxt OPA interface
 //export nxtOpaInit
 func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
+	defer func() {
+		initExit <- true
+	}()
 
 	var err error
 
-	if libInitialized {
+	if procStarted {
 		return nil
 	}
 
@@ -288,15 +376,26 @@ func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
 	// TODO: need cluster name for initializing below
 	sg = zap.String("GW", "sj-nextensio.net")
 	sm = zap.String("Module", "NxtOPA")
-
 	// TODO: nxtMongoDBName needs to be derived from ns
 	nxtMongoDBName = nxtMongoDB
+	mongoDBAddr = mongouri
+
+	go nxtOpaProcess(ctx)
+	procStarted = true
 
 	mongoClient, err = nxtMongoDBInit(ctx, ns, mongouri)
 	if err != nil {
 		nxtLogError(nxtMongoDBName, fmt.Sprintf("DB init error - %v", err))
 		return err
 	}
+	mongoInitDone = true
+
+	nxtOpaUseCaseInit(ctx)
+	nxtLogDebug("OpaInit", "Exiting OpaInit()")
+	return nil
+}
+
+func nxtOpaUseCaseInit(ctx context.Context) {
 
 	// Initialize for each OPA use case as required. Initialization involves reading the
 	// associated policy and reference data document or collection, ensuring their major
@@ -317,10 +416,7 @@ func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
 	nxtReadUserExtAttrDoc(ctx)
 
 	nxtWriteAttrVersions()
-	libInitialized = true
-	go nxtOpaProcess(ctx)
-	initDone <- true
-	return nil
+	initDone = true
 }
 
 // Do everything needed to set up mongoDB access
@@ -381,6 +477,11 @@ func nxtMongoConnect(ctx context.Context, ns string, mURI string) (*mongo.Client
 		time.Sleep(2 * 1000 * time.Millisecond)
 	}
 	return nil, err
+}
+
+func nxtMongoError() {
+	mongoCheck = true
+	mongoFailures++
 }
 
 func nxtGetMongoEnv(key string, defaultValue string) string {
@@ -449,6 +550,7 @@ func nxtReadPolicyDocument(ctx context.Context, usecase string, ptype string) {
 	err := CollMap[policyCollection].FindOne(ctx, bson.M{"_id": ptype}).Decode(&policy)
 	if err != nil {
 		nxtLogError(usecase, fmt.Sprintf("Failed to find %s, error - %v", ptype, err))
+		nxtMongoError()
 		return
 	}
 	qs := QStateMap[usecase]
@@ -492,6 +594,7 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 	err := CollMap[coll].FindOne(ctx, bson.M{"_id": qs.DataType}).Decode(&hdr)
 	if err != nil {
 		nxtLogError(ucase, fmt.Sprintf("Failed to find %s header doc - %v", qs.DataType, err))
+		nxtMongoError()
 		return false
 	}
 	// If data collection majver < policy document majver, ignore data collection and return
@@ -563,6 +666,7 @@ func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 	err := coll.FindOne(ctx, bson.M{"_id": inpType}).Decode(&uahdr)
 	if err != nil {
 		nxtLogError(inpType, fmt.Sprintf("Failed to find header doc - %v", err))
+		nxtMongoError()
 		return errhdr
 	}
 	return uahdr
@@ -612,6 +716,10 @@ func nxtReadUserAttrCache(uuid string) (string, bool) {
 func nxtReadUserAttrDB(uuid string) (bson.M, bool) {
 	var usera bson.M
 
+	if mongoInitDone == false {
+		return bson.M{}, false
+	}
+
 	ctx := context.Background()
 
 	// Read user attributes from DB, cache json version, and return it
@@ -619,6 +727,7 @@ func nxtReadUserAttrDB(uuid string) (bson.M, bool) {
 	err := coll.FindOne(ctx, bson.M{"_id": uuid}).Decode(&usera)
 	if err != nil {
 		nxtLogError(uuid, fmt.Sprintf("Failed to find attributes doc for user - %v", err))
+		nxtMongoError()
 		return bson.M{}, false
 	}
 	usera = nxtFixupAttrID(usera, keyID[0])
@@ -681,6 +790,7 @@ func nxtReadUserExtAttrDoc(ctx context.Context) {
 	if err != nil {
 		// Disable this error until it's fully implemented
 		//nxtLogError(inp2Type, fmt.Sprintf("Failed to read user extended attributes doc - %v", err))
+		//nxtMongoError()
 		return
 	}
 
@@ -734,6 +844,7 @@ func nxtCreateCollJSON(ctx context.Context, ucase string, keyid string, istr str
 	cursor, err := CollMap[coll].Find(ctx, bson.M{})
 	if err != nil {
 		nxtLogError(ucase, fmt.Sprintf("Failed to find any attribute docs - %v", err))
+		nxtMongoError()
 		return []byte("")
 	}
 	if err = cursor.All(ctx, &docs); err != nil {
@@ -1098,10 +1209,13 @@ func nxtReadAllUserAttrDocuments(ctx context.Context) *[]bson.M {
 	coll := CollMap[userAttrCollection]
 	cursor, err := coll.Find(ctx, bson.M{})
 	if err != nil {
-		log.Fatal(err)
+		nxtLogError("All users", fmt.Sprintf("Failed to find user attributes docs - %v", err))
+		nxtMongoError()
+		return &users
 	}
 	if err = cursor.All(ctx, &users); err != nil {
-		log.Fatal(err)
+		nxtLogError("All users", fmt.Sprintf("Failed to read user attributes docs - %v", err))
+		return &users
 	}
 
 	nusers := len(users)
