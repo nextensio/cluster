@@ -242,7 +242,6 @@ func NxtRouteLookup(uid string, routeid string) string {
 	if err == nil {
 		return fmt.Sprintf("%s", route[RouteTag])
 	}
-	nxtMongoError()
 	return ""
 }
 
