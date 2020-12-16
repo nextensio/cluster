@@ -11,13 +11,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"github.com/miekg/dns"
-	"go.uber.org/zap"
 	"io/ioutil"
-	"minion.io/common"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/miekg/dns"
+	"go.uber.org/zap"
+	"minion.io/common"
 )
 
 /*

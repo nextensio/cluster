@@ -16,6 +16,8 @@ package main
 
 import (
 	"fmt"
+	"time"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -24,7 +26,6 @@ import (
 	"minion.io/common"
 	"minion.io/env"
 	"minion.io/router"
-	"time"
 )
 
 var lumlog = &lumberjack.Logger{
@@ -46,8 +47,9 @@ func main() {
 	sugar := logger.Sugar()
 	args.ArgHandler(sugar)
 	env.EnvHandler(sugar)
-	go router.HttpStart(sugar)
-	go router.TcpRxStart(sugar)
+	router.ClientInit()
+	go router.HttpExternalStart(sugar)
+	go router.HttpInternalStart(sugar)
 	go aaa.AaaStart(common.MyInfo.Namespace, common.MyInfo.MongoUri, sugar)
 	for {
 		time.Sleep(86400 * time.Second)

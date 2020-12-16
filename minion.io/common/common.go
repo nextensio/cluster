@@ -7,7 +7,13 @@
 package common
 
 import (
+	"fmt"
+	"io/ioutil"
+	"net/http"
+	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Constants used by this program
@@ -16,18 +22,13 @@ const (
 	LocalSuffix      = ".svc.cluster.local"
 	RemotePrePrefix  = "gateway."
 	RemotePostPrefix = ".nextensio.net"
-	TcpBuffSize      = 65536
-	WriteWait        = 10 * time.Second
 	PongWait         = 60 * time.Second
 	PingPeriod       = (PongWait * 9) / 10
 	MaxMessageSize   = 64 * 1024
 	WsReadLimit      = 72 * 1024 // MaxMessageSize + 8K
-	Period           = 1000
 	SelfDest         = 1
 	LocalDest        = 2
 	RemoteDest       = 3
-	MaxQueueSize     = 256
-	IdlePeriod       = 60
 )
 
 // Structure for storing various parameters for this program
@@ -96,8 +97,16 @@ type Fwd struct {
 	Dest     string
 }
 
-// Structure for passing packet
-type Queue struct {
-	Id  int
-	Pak []byte
+func HttpToBytes(s *zap.SugaredLogger, r *http.Request) []byte {
+	header := fmt.Sprintf("GET %s HTTP/1.1\r\n", r.URL.String())
+	for name, values := range r.Header {
+		header = header + fmt.Sprintf("%s:%s\r\n", name, strings.Join(values, ","))
+	}
+	header = header + fmt.Sprintf("\r\n")
+
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return nil
+	}
+	return append([]byte(header), body...)
 }
