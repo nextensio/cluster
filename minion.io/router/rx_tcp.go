@@ -82,7 +82,7 @@ func (c *TcpSeConn) handleHttpRequest(s *zap.SugaredLogger) {
 			s.Errorf("rx_tcp: err while reading connection in handleHttpRequests - %v", e)
 			break
 		} else {
-			uLen := Execute(state, buf, pLen+rlen, s)
+			uLen := Execute(state, buf[0:pLen+rlen], pLen+rlen, s)
 			if IsBodyComplete(state) == true {
 				s.Debugf("rx_tcp: got pak %v\n", c.counter)
 				httpSendOk(c, s)
