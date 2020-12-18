@@ -112,8 +112,8 @@ models (1 thread and 2 thread), finally we block, except that in the two thread 
 up a lot of memory, and that extra memory usually does not buy any additional performance gains, the 
 buffer bloat research on internet has proved that it infacts degrades performance
 
-NOTE: A DESIGN CHOICE CONCLUSION: For the above mentioned reason, in our code we have the single thread
-reader+writer model
+**NOTE: A DESIGN CHOICE CONCLUSION: For the above mentioned reason, in our code we have the single thread
+reader+writer model**
 
 ##### Packet drops
 
@@ -194,8 +194,8 @@ will dowload data at 1gbps all the way to proxy1 and hence it is GUARANTEED that
 every time we do a speedtest ! So if drop the packet, then every single speedtest session will get closed and 
 speedtest will never complete.
 
-NOTE: A DESIGN CHOICE CONCLUSION: If we multiplex sessions in a proxy, a slow session can block a fast session.
-Additional queueing / multi threading does not help, it just causes buffer bloat and then ends up blocking anyways.
+**NOTE: A DESIGN CHOICE CONCLUSION: If we multiplex sessions in a proxy, a slow session can block a fast session.
+Additional queueing / multi threading does not help, it just causes buffer bloat and then ends up blocking anyways.**
 
 ###### HTTP2 and multiplexed streams
 
