@@ -282,3 +282,18 @@ sessions going to connector2 need to be terminated" and Minion1 relays that mess
 "these sessions A, B, C, D need to be closed" - the agent has no idea about "connectors", so agent needs to
 be told about the exact sessions. Its a TBD on how exactly we will implement this, who will keep track of what
 sessions are on what connectors etc.. This certainly needs a lot more thinking and design.
+
+### Nextension and socket read/write timeouts
+
+Read timeouts are absolutely not required, we block till there is data thats it !!! Unix systems have evolved
+to be perfect enough to ensure that the ONLY reason to block is lack of data, any kind of error will come out
+of the blocking state with an error
+
+Write timeouts are also unnecessary, if we ask a tcp socket to write a data, the ONLY reason it blocks is 
+because it cant transmit it, like not enough TCP buffer/window size etc.. Again Unix systems have evolved to
+perfection in that matter, there is no case of "uknown hang/block", any kind of errors will come out of the
+block with an error. And given our threading model where we have a goroutine per reader and we have a write
+socket 1:1 corresponding to the reader, a "read block if no data" "write block if cant transmit, leading to
+automatic read backpressure" are both the correct things to do.
+
+So to re-emphasise, we DO NOT want any kind of read/write socket timeouts to be configured
