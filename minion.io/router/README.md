@@ -7,9 +7,11 @@ cluster, or a completely different cluster. The picture below hopefully clarifie
 and right with the direction of flow of packet, its just based on "who" is connected to the other end of
 that session (agent/connector(L) or pod/cluster(R))
 
+```
 Agent---(L)Minion-Pod1(R)---(R)Minion-Pod2(L)----Connector
 
 Agent---(L)Minion-Pod1(R)---Remote cluster
+```
 
 The one thing to keep in mind is that we are from a high level nothing but a tcp proxy - we terminate
 tcp sessions from agents and then proxy it via multiple tcp sessions all the way to the connector and then
@@ -45,7 +47,9 @@ left side and right side session and so eventually the client/server session is 
 
 Consider a traditional web proxy like below
 
+```
 Client--conn1--Proxy1--conn2--Proxy2--conn3--Server
+```
 
 In this case client thinks its talking to server directtly, but is actually going via two proxies, 
 so "conn1" and "conn2" and "conn3" are independent TCP connections which are "cross connected", that is,
@@ -69,15 +73,18 @@ so it will pull out data at 1Gbps and try to send it via conn1. But conn1 is a 1
 some point the Proxy1's tcp stack will stop getting ACKs from the client side because the connection is 
 slow, so the proxy1 conn2 reader thread will stall trying to write the data to conn1
 
+```
 Proxy1_Reader() {
     for {
         data = read(conn2)
         write(conn1, data) <======== This will block if the agent is slow
     }
 }
+```
 
 Now lets say the proxy had an alternate design as below with seperate reader and writer threads
 
+```
 Queue = make_Queue(1Mb)
 
 Proxy1_Reader() {
@@ -93,6 +100,7 @@ Proxy1_Writer() {
         write(conn1, data)
     }
 }
+```
 
 In the two threads + queue model, what will happen is that the queue acts as an additional buffer on top
 of the kernel tcp buffers. So the speedtest.net server will pump data for maybe a few milli seconds more
@@ -117,9 +125,11 @@ too
 
 #### Multiplexed
 
+```
 Client1--conn1--Proxy1--conn2--Proxy2--conn3--Server1
                 |                   |
 Client2--conn4--+                   +--conn5--Server2
+```
 
 In the above diagram, we can see that the conn2 connection is being used by the proxies to multiplex
 two sessions - Client1<-->Server1 and Client2<-->Server2. Lets think about the two cases we are interested in
@@ -130,6 +140,7 @@ As we can see here, the problem that we will face is that a client with a bad 1M
 up blocking a fast client with a 1Gbps connection - same principles as explained in the section about 
 1:1 connections
 
+```
 Proxy1_Reader() {
     for {
         data = read(conn2)
@@ -140,10 +151,11 @@ Proxy1_Reader() {
         }
     }
 }
-
+```
 We can see aboe that if conn1 hangs, then conn4 also hangs ! Now we may think that adding a queue in between
 like the two thread model will solve the problem here, lets look at that
 
+```
 Queue1 = make_Queue(1Mb)
 Queue2 = make_Queue(1Mb)
 
@@ -171,6 +183,7 @@ Proxy1_Writer_Client2() {
         write(conn4, data)
     }
 }
+```
 
 As in the previous 1:1 section discussion, we can see that eventually the slow Client1 queue will fill
 up and the reader thread will block anyways. So one can ask "why not just drop the client1 packet instead of blocking".
@@ -209,9 +222,11 @@ but crafting a packet indicating what session to close etc..
 Using the light from the above discussions, let us see how we can translate those learnings to the nextensio
 design. Lets look at a single cluster case first as below
 
+```
 Agent1---conn1----Minion1==[conn2, conn3]==Minion2---[conn4, conn5]---Connector1
                   |                        
 Agent2---conn6----+                        
+```
 
 All the learnings tell us that if we multiplex all the agents using one session between the minions, that will 
 result in slow agent blocking fast agent. So each agent that wants to talk from minion to minion will end up
@@ -230,9 +245,11 @@ applications to these four sessions, so we get some degress of fairness across t
 
 Now coming to the multi cluster scenario below
 
+```
 Agent1---conn1----Minion1==[conn3, conn4]===Remote cluster
                   |                        
 Agent2---conn2----+  
+```
 
 Here again, the minion will open unique sessions per agent to the remote cluster so that a slow agent does not
 head of line block a fast agent. Also please refer the section before about HTTP2 - using HTTP2 tunnel between
@@ -250,9 +267,10 @@ blocked it does not affect the conn6 goroutine which runs seperately (writing to
 
 ### Nextensio and packet drops
 
+```
 Agent1---conn1----Minion1==[conn2]==Minion2---conn3---Connector1
                                               conn4---Connector2
-    
+```    
 
 In the above picture, note that between Agent1 and Minion1, the connection conn1 is multiplexing multiple tcp 
 streams - lets say one application goes via connector1 and another goes via connector2.
