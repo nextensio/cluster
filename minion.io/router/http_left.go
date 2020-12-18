@@ -253,7 +253,7 @@ func wsEndpoint(w http.ResponseWriter, r *http.Request, s *zap.SugaredLogger) {
 }
 
 // Start http server to deal with http requests from outside this cluster
-func HttpExternalStart(s *zap.SugaredLogger) error {
+func HttpLeftStart(s *zap.SugaredLogger) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		wsEndpoint(w, r, s)

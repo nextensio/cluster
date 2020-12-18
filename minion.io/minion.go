@@ -48,8 +48,8 @@ func main() {
 	args.ArgHandler(sugar)
 	env.EnvHandler(sugar)
 	router.ClientInit()
-	go router.HttpExternalStart(sugar)
-	go router.HttpInternalStart(sugar)
+	go router.HttpLeftStart(sugar)
+	go router.HttpRightStart(sugar)
 	go aaa.AaaStart(common.MyInfo.Namespace, common.MyInfo.MongoUri, sugar)
 	for {
 		time.Sleep(86400 * time.Second)

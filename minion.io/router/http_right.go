@@ -100,7 +100,7 @@ func sendRight(s *zap.SugaredLogger, lname string, rname string, r *http.Request
 }
 
 // Start http server to deal with http requests from inside this cluster
-func HttpInternalStart(s *zap.SugaredLogger) {
+func HttpRightStart(s *zap.SugaredLogger) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		sendLeft(w, r, s)

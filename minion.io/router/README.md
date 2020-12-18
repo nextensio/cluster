@@ -10,7 +10,7 @@ that session (agent/connector(L) or pod/cluster(R))
 ```
 Agent---(L)Minion-Pod1(R)---(R)Minion-Pod2(L)----Connector
 
-Agent---(L)Minion-Pod1(R)---Remote cluster
+Agent---(L)Minion-Pod1(R)---Remote cluster--(R)Minion-PodN
 ```
 
 The one thing to keep in mind is that we are from a high level nothing but a tcp proxy - we terminate
@@ -254,6 +254,17 @@ Agent2---conn2----+
 Here again, the minion will open unique sessions per agent to the remote cluster so that a slow agent does not
 head of line block a fast agent. Also please refer the section before about HTTP2 - using HTTP2 tunnel between
 the clusters (instead of independent conn3, conn4 sessions) will not really solve the problem.
+
+**TODO**
+```
+Agent1---conn1----Minion1==[conn2]==Minion2---conn3---Connector1
+                                              conn4---Connector2
+```    
+
+In the above topology, even though we have a connection per agent from minion1 to minion2, if connector1 ends up
+being slow, it can affect connector2 also. So its almost like we need a session between minions not just per agent,
+but per (agent, connector) pair. Do we need to go thus far ? Maybe we just start off simple with connections 
+per agent and we have the flexibility to open it per (agent, connector) also but defer doing that till later/needed?
 
 ### Nextensio and threads (goroutines)
 
