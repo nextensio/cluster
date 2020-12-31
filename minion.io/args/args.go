@@ -8,11 +8,12 @@ package args
 
 import (
 	"flag"
+
 	"go.uber.org/zap"
-	"minion.io/common"
+	"minion.io/shared"
 )
 
-func ArgHandler(sugar *zap.SugaredLogger) {
+func ArgHandler(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
 	tunnelPtr := flag.Bool("tunnel", false, "run in tunnel mode")
 	consulDnsPtr := flag.Bool("consul_dns", false, "use consul dns")
 	consulHttpPtr := flag.Bool("consul_http", false, "use consul http")
@@ -31,11 +32,11 @@ func ArgHandler(sugar *zap.SugaredLogger) {
 	sugar.Infof("oport: %d", *outPortPtr)
 	sugar.Infof("ip: %s", *ipPtr)
 
-	common.MyInfo.Tunnel = *tunnelPtr
-	common.MyInfo.UseDns = *consulDnsPtr
-	common.MyInfo.UseHttp = *consulHttpPtr
-	common.MyInfo.Register = *registerPtr
-	common.MyInfo.Iport = *inPortPtr
-	common.MyInfo.Oport = *outPortPtr
-	common.MyInfo.ListenIp = *ipPtr
+	MyInfo.Tunnel = *tunnelPtr
+	MyInfo.UseDns = *consulDnsPtr
+	MyInfo.UseHttp = *consulHttpPtr
+	MyInfo.Register = *registerPtr
+	MyInfo.Iport = *inPortPtr
+	MyInfo.Oport = *outPortPtr
+	MyInfo.ListenIp = *ipPtr
 }

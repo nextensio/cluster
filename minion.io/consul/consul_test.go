@@ -15,9 +15,10 @@
 package consul
 
 import (
-	"go.uber.org/zap"
-	"minion.io/common"
 	"testing"
+
+	"go.uber.org/zap"
+	"minion.io/shared"
 )
 
 const (
@@ -27,15 +28,16 @@ const (
 
 var logger *zap.Logger
 var sugar *zap.SugaredLogger
+var MyInfo shared.Params
 
 func TestInit(t *testing.T) {
-	common.MyInfo.Id = "sjc"
-	common.MyInfo.Node = "k8s-worker1"
-	common.MyInfo.Namespace = "default"
-	common.MyInfo.DnsIp = "157.230.160.64"
-	common.MyInfo.Pod = "tom.com"
-	common.MyInfo.PodIp = "1.1.1.1"
-	common.MyInfo.Register = true
+	MyInfo.Id = "sjc"
+	MyInfo.Node = "k8s-worker1"
+	MyInfo.Namespace = "default"
+	MyInfo.DnsIp = "157.230.160.64"
+	MyInfo.Pod = "tom.com"
+	MyInfo.PodIp = "1.1.1.1"
+	MyInfo.Register = true
 	logger, _ = zap.NewProduction()
 	//logger, _ = zap.NewDevelopment()
 	sugar = logger.Sugar()
@@ -44,9 +46,9 @@ func TestInit(t *testing.T) {
 func TestConsulRegister(t *testing.T) {
 	defer logger.Sync()
 
-	testData := [common.MaxService]string{serviceName}
+	testData := []string{serviceName}
 
-	err := RegisterConsul(testData, sugar)
+	err := RegisterConsul(&MyInfo, testData, sugar)
 	if err != nil {
 		t.Error("Failure to register")
 	}
@@ -55,9 +57,9 @@ func TestConsulRegister(t *testing.T) {
 func TestConsulDnsLookupOne(t *testing.T) {
 	defer logger.Sync()
 
-	fwd, _ := ConsulDnsLookup(serviceNameNS, sugar)
+	fwd, _ := ConsulDnsLookup(&MyInfo, serviceNameNS, sugar)
 
-	if fwd.DestType != common.LocalDest {
+	if fwd.DestType != shared.LocalDest {
 		t.Error("expected local but not local")
 	}
 
@@ -69,10 +71,10 @@ func TestConsulDnsLookupOne(t *testing.T) {
 func TestConsulDnsLookupTwo(t *testing.T) {
 	defer logger.Sync()
 
-	common.MyInfo.Id = "ric"
-	fwd, _ := ConsulDnsLookup(serviceNameNS, sugar)
+	MyInfo.Id = "ric"
+	fwd, _ := ConsulDnsLookup(&MyInfo, serviceNameNS, sugar)
 
-	if fwd.DestType != common.RemoteDest {
+	if fwd.DestType != shared.RemoteDest {
 		t.Error("expected remote but local")
 	}
 
@@ -84,9 +86,9 @@ func TestConsulDnsLookupTwo(t *testing.T) {
 func TestConsulDeRegister(t *testing.T) {
 	defer logger.Sync()
 
-	testData := [common.MaxService]string{serviceName}
+	testData := []string{serviceName}
 
-	err := DeRegisterConsul(testData, sugar)
+	err := DeRegisterConsul(&MyInfo, testData, sugar)
 	if err != nil {
 		t.Error("Failure to Deregister")
 	}

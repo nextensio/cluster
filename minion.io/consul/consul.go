@@ -18,7 +18,7 @@ import (
 
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
-	"minion.io/common"
+	"minion.io/shared"
 )
 
 /*
@@ -26,28 +26,57 @@ import (
  */
 var myClient = &http.Client{Timeout: 10 * time.Second}
 
-const consulRetries = 5
+const (
+	consulRetries    = 5
+	LocalSuffix      = ".svc.cluster.local"
+	RemotePrePrefix  = "gateway."
+	RemotePostPrefix = ".nextensio.net"
+)
+
+// Json structure for registering consul service
+type Meta struct {
+	Cluster string
+	Pod     string
+}
+
+type Entry struct {
+	ID      string
+	Name    string
+	Address string
+	Meta    Meta
+}
+
+// Json structure for consul key-value result
+type Consul struct {
+	Kvs []Kv
+}
+
+type Kv struct {
+	LockIndex   int
+	Key         string
+	Flags       int
+	Value       string
+	CreateIndex int
+	ModifyIndex int
+}
 
 /*
  * Register DNS entry and key value pair for the service
  */
-func RegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger) (e error) {
-	if common.MyInfo.Sim == true {
+func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredLogger) (e error) {
+	if MyInfo.Sim == true {
 		// In sim mode
 		return nil
 	}
 
-	if common.MyInfo.Register == false {
+	if MyInfo.Register == false {
 		// Don't register service with Consul as per cmd line arg
 		return nil
 	}
 
-	entryJson := `{"ID":"candy-com-default", "Name":"candy-com-default", "Address":"10.50.128.5", "Meta":{"cluster":"sjc", "pod":"candy.com.default"}}`
-	var dns common.Entry
-	json.Unmarshal([]byte(entryJson), &dns)
-
-	dns.Address = common.MyInfo.PodIp
-	dns.Meta.Cluster = common.MyInfo.Id
+	var dns Entry
+	dns.Address = MyInfo.PodIp
+	dns.Meta.Cluster = MyInfo.Id
 
 	var url string
 	var data string
@@ -59,9 +88,9 @@ func RegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger)
 			break
 		}
 		h = strings.Replace(val, ".", "-", -1)
-		url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + common.MyInfo.Namespace
+		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + MyInfo.Namespace
 		sugar.Debugf("Consul: registering service %s at %s", h, url)
-		data = common.MyInfo.Id
+		data = MyInfo.Id
 		r, _ = http.NewRequest("PUT", url+"/cluster", strings.NewReader(data))
 		i := 1
 		_, e := myClient.Do(r)
@@ -77,7 +106,7 @@ func RegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger)
 		if e != nil {
 			sugar.Errorf("Consul: http PUT %s at %s failed with %v retries", data, url+"/cluster", consulRetries)
 		}
-		data = strings.Replace(common.MyInfo.Pod, ".", "-", -1)
+		data = strings.Replace(MyInfo.Pod, ".", "-", -1)
 		r, _ = http.NewRequest("PUT", url+"/pod", strings.NewReader(data))
 		i = 0
 		for ; i < consulRetries; i = i + 1 {
@@ -91,9 +120,9 @@ func RegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger)
 			sugar.Errorf("Consul: http PUT %s at %s failed with %v retries", data, url+"/pod", consulRetries)
 		}
 		dns.Meta.Pod = data
-		dns.ID = h + "-" + common.MyInfo.Namespace
-		dns.Name = h + "-" + common.MyInfo.Namespace
-		url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/agent/service/register"
+		dns.ID = h + "-" + MyInfo.Namespace
+		dns.Name = h + "-" + MyInfo.Namespace
+		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/register"
 		js, _ = json.Marshal(dns)
 		r, _ = http.NewRequest("PUT", url, bytes.NewReader(js))
 		r.Header.Add("Content-Type", "application/json")
@@ -121,12 +150,12 @@ func RegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger)
 /*
  * DeRegister DNS entry and key value pair for the service
  */
-func DeRegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogger) (e error) {
-	if common.MyInfo.Sim == true {
+func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredLogger) (e error) {
+	if MyInfo.Sim == true {
 		return nil
 	}
 
-	if common.MyInfo.Register == false {
+	if MyInfo.Register == false {
 		return nil
 	}
 
@@ -138,7 +167,7 @@ func DeRegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogge
 			break
 		}
 		h = strings.Replace(val, ".", "-", -1)
-		url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + common.MyInfo.Namespace
+		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + MyInfo.Namespace
 		sugar.Debugf("Consul: Deregistering service %s at %s", h, url)
 		r, _ = http.NewRequest("DELETE", url+"/cluster", nil)
 		i := 1
@@ -167,7 +196,7 @@ func DeRegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogge
 		if e != nil {
 			sugar.Errorf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/pod", consulRetries)
 		}
-		url = "http://" + common.MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + h + "-" + common.MyInfo.Namespace
+		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + h + "-" + MyInfo.Namespace
 		r, _ = http.NewRequest("PUT", url, nil)
 		i = 0
 		for ; i < consulRetries; i = i + 1 {
@@ -208,11 +237,11 @@ func DeRegisterConsul(service [common.MaxService]string, sugar *zap.SugaredLogge
 
 // Reply we get is top level array instead of a full JSON object. So we need to handle it
 // differently when unmarshalling it
-func ConsulHttpLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e error) {
+func ConsulHttpLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogger) (fwd shared.Fwd, e error) {
 	sugar.Infof("consul kv lookup for %s", name)
 
 	h := strings.Replace(name, ".", "-", -1)
-	url := "http://" + common.MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "?recurse"
+	url := "http://" + MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "?recurse"
 	sugar.Debugf("Consul: HTTP lookup at %s", url)
 	i := 1
 	resp, e := myClient.Get(url)
@@ -237,7 +266,7 @@ func ConsulHttpLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e 
 		return fwd, e
 	}
 	// create a slice for storing JSON array
-	kvs := make([]common.Kv, 0)
+	kvs := make([]Kv, 0)
 	e = json.Unmarshal(r, &kvs)
 	if e != nil {
 		sugar.Errorf("Consul: json response unmarshal err %v", e)
@@ -247,23 +276,23 @@ func ConsulHttpLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e 
 	fwd.Id = string(tmp)
 	tmp, _ = base64.StdEncoding.DecodeString(kvs[1].Value)
 	fwd.Pod = string(tmp)
-	if fwd.Id == common.MyInfo.Id {
+	if fwd.Id == MyInfo.Id {
 		// Same cluster
-		if fwd.Pod == common.MyInfo.Pod {
+		if fwd.Pod == MyInfo.Pod {
 			// Same pod
-			fwd.DestType = common.SelfDest
+			fwd.DestType = shared.SelfDest
 			fwd.Dest = name
 			sugar.Debugf("Consul: destination %s of type SelfDest", name)
 		} else {
 			// Different pod
-			fwd.DestType = common.LocalDest
-			fwd.Dest = fwd.Pod + "-in." + common.MyInfo.Namespace + common.LocalSuffix
+			fwd.DestType = shared.LocalDest
+			fwd.Dest = fwd.Pod + "-in." + MyInfo.Namespace + LocalSuffix
 			sugar.Debugf("Consul: destination %s of type LocalDest", fwd.Dest)
 		}
 	} else {
 		// Different cluster
-		fwd.DestType = common.RemoteDest
-		fwd.Dest = common.RemotePrePrefix + fwd.Id + common.RemotePostPrefix
+		fwd.DestType = shared.RemoteDest
+		fwd.Dest = RemotePrePrefix + fwd.Id + RemotePostPrefix
 		sugar.Debugf("Consul: destination %s of type RemoteDest", fwd.Dest)
 	}
 
@@ -297,7 +326,7 @@ func ConsulHttpLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e 
 //;; WHEN: Tue Jun 11 07:05:47 UTC 2019
 //;; MSG SIZE  rcvd: 170
 
-func ConsulDnsLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e error) {
+func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogger) (fwd shared.Fwd, e error) {
 	sugar.Infof("consul dns lookup for %s", name)
 
 	qType, _ := dns.StringToType["SRV"]
@@ -306,18 +335,18 @@ func ConsulDnsLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e e
 	msg := &dns.Msg{}
 	msg.SetQuestion(fqdn_name, qType)
 	i := 1
-	resp, _, e := client.Exchange(msg, common.MyInfo.DnsIp+":53")
+	resp, _, e := client.Exchange(msg, MyInfo.DnsIp+":53")
 	if e != nil {
 		for ; i < consulRetries; i = i + 1 {
 			time.Sleep(1 * 1000 * time.Millisecond)
-			resp, _, e = client.Exchange(msg, common.MyInfo.DnsIp+":53")
+			resp, _, e = client.Exchange(msg, MyInfo.DnsIp+":53")
 			if e == nil {
 				break
 			}
 		}
 	}
 	if e != nil {
-		sugar.Errorf("Consul: dns lookup for %s at %s failed with %v retries", name, common.MyInfo.DnsIp, consulRetries)
+		sugar.Errorf("Consul: dns lookup for %s at %s failed with %v retries", name, MyInfo.DnsIp, consulRetries)
 		return fwd, e
 	}
 
@@ -325,15 +354,15 @@ func ConsulDnsLookup(name string, sugar *zap.SugaredLogger) (fwd common.Fwd, e e
 		if srv, ok := v.(*dns.SRV); ok {
 			target := srv.Target
 			s := strings.Split(target, ".")
-			if s[2] == common.MyInfo.Id {
-				hfwd, e := ConsulHttpLookup(name, sugar)
+			if s[2] == MyInfo.Id {
+				hfwd, e := ConsulHttpLookup(MyInfo, name, sugar)
 				if e != nil {
 					return fwd, e
 				}
 				return hfwd, nil
 			} else {
-				fwd.DestType = common.RemoteDest
-				fwd.Dest = common.RemotePrePrefix + s[2] + common.RemotePostPrefix
+				fwd.DestType = shared.RemoteDest
+				fwd.Dest = RemotePrePrefix + s[2] + RemotePostPrefix
 				fwd.Pod = ""
 				sugar.Debugf("Consul: destination %s of type RemoteDest", fwd.Dest)
 				return fwd, nil

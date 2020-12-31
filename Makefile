@@ -20,14 +20,18 @@ all: build copy slim
 build:
 	rm -r -f files/version
 	echo $(VERSION) > files/version
+	cp ~/.ssh/gitlab_rsa files/
 	docker build -f Dockerfile.build -t $(USER)/$(NAME)-build:$(VERSION) .
 	docker create $(USER)/$(NAME)-build:$(VERSION)
+	rm files/gitlab_rsa
 
 .PHONY: debug
 debug:
 	rm -r -f files/version
 	echo $(VERSION) > files/version
+	cp ~/.ssh/gitlab_rsa files/
 	docker build -f Dockerfile -t $(USER)/$(NAME)-debug:$(VERSION) .
+	rm files/gitlab_rsa
 
 .PHONY: copy
 copy:
