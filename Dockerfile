@@ -15,4 +15,4 @@ RUN rm /go/gitlab_rsa
 RUN mkdir -p authz
 RUN mkdir -p authz/app-access
 EXPOSE 80/tcp 8002/tcp
-CMD ["tail", "-f", "/dev/null"]
+CMD /go/run.sh

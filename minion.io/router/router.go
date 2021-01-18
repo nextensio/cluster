@@ -242,6 +242,8 @@ func l3Fwd(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, onb
 				s.Debugf("agent access failed ", flow.DestAgent)
 				return
 			}
+			// Going to another agent/connector, we dont need the attributes anymore
+			flow.Usrattr = ""
 		}
 		err := dest.Write(hdr, agentBuf)
 		if err != nil {
@@ -321,6 +323,8 @@ func l4Fwd(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, onb
 			s.Debugf("agent access failed ", *bundle, flow.DestAgent)
 			return false
 		}
+		// Going to another agent/connector, we dont need the attributes anymore
+		flow.Usrattr = ""
 	}
 	err := (*dest).Write(hdr, agentBuf)
 	if err != nil {
@@ -425,6 +429,8 @@ func l3Local(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, h
 			s.Debugf("Interpod: l3 aaa access failed ", flow.DestAgent)
 			return
 		}
+		// Going to an agent/connector, we dont need the attributes anymore
+		flow.Usrattr = ""
 		err := dest.Write(hdr, podBuf)
 		if err != nil {
 			s.Debugf("Interpod l3 dest write failed", flow, err)
@@ -458,6 +464,8 @@ func l4Local(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, o
 		s.Debugf("Interpod:  aaa access failed ", flow.DestAgent)
 		return false
 	}
+	// Going to an agent/connector, we dont need the attributes anymore
+	flow.Usrattr = ""
 	err := (*dest).Write(hdr, podBuf)
 	if err != nil {
 		s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
