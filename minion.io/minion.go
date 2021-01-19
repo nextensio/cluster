@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -23,10 +24,12 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 	"minion.io/aaa"
 	"minion.io/args"
-	"minion.io/common"
 	"minion.io/env"
 	"minion.io/router"
+	"minion.io/shared"
 )
+
+var MyInfo shared.Params
 
 var lumlog = &lumberjack.Logger{
 	Filename:   "app_debug.log",
@@ -41,16 +44,15 @@ func lumberjackZapHook(e zapcore.Entry) error {
 }
 
 func main() {
+	ctx := context.Background()
 	//logger, _ := zap.NewProduction(zap.Hooks(lumberjackZapHook))
 	logger, _ := zap.NewDevelopment(zap.Hooks(lumberjackZapHook))
 	defer logger.Sync()
 	sugar := logger.Sugar()
-	args.ArgHandler(sugar)
-	env.EnvHandler(sugar)
-	router.ClientInit()
-	go router.HttpLeftStart(sugar)
-	go router.HttpRightStart(sugar)
-	go aaa.AaaStart(common.MyInfo.Namespace, common.MyInfo.MongoUri, sugar)
+	args.ArgHandler(sugar, &MyInfo)
+	env.EnvHandler(sugar, &MyInfo)
+	router.RouterInit(sugar, &MyInfo, ctx)
+	go aaa.AaaStart(MyInfo.Namespace, MyInfo.MongoUri, sugar)
 	for {
 		time.Sleep(86400 * time.Second)
 	}
