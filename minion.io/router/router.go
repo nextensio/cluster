@@ -398,7 +398,7 @@ func handleAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Contex
 			flow := hdr.Hdr.(*nxthdr.NxtHdr_Flow).Flow
 			if flow.Type != nxthdr.NxtFlow_L3 {
 				if first {
-					panic("We dont expect L4 flows on the first flow")
+					panic("We dont expect L4 flows on the first stream")
 				}
 				if !l4Fwd(s, MyInfo, ctx, onboard, hdr, &l4bundle, &l4dest, agentBuf) {
 					tunnel.Close()
@@ -409,7 +409,7 @@ func handleAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Contex
 				}
 			} else {
 				if !first {
-					panic("We expect L3 flows only on the first flow")
+					panic("We expect L3 flows only on the first stream")
 				}
 				// l3 fwd packet drops are a NO-OP
 				l3Fwd(s, MyInfo, ctx, onboard, hdr, agentBuf)
