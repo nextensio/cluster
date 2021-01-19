@@ -112,8 +112,7 @@ func localLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOnboard
 
 // Lookup a session to the local/remote pod/cluster + destAgent combo, if none exists then
 // create a new session to the pod on the local/remote cluster that hosts the agent/connector
-// identified by destAgent. This creates a session offline in a goroutine if one doesnt exist,
-// so that the first user flow triggering this can just abort rather than hang for long time.
+// identified by destAgent. The session creation is slow because of tcp/tls negotiation etc..
 // The next flow will find an existing session and just create a new stream over it, which is
 // a very fast operation compared to the tcp/tls negotiation for creating a session.
 // TODO1: We dont have to create a session to the destination pod + destAgent combo, we really want
