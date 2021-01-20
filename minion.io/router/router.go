@@ -208,7 +208,11 @@ func localRouteDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.
 
 func podDelete(key string) {
 	pLock.Lock()
-	pods[key] = nil
+	session := pods[key]
+	if session != nil {
+		session.tunnel.Close()
+		pods[key] = nil
+	}
 	pLock.Unlock()
 }
 
@@ -248,7 +252,8 @@ func l3Fwd(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, onb
 		if err != nil {
 			// L3 routing failures are just fine, packet is dropped and thats it.
 			// But if the dest tunnel is non local and it has a write failure, that means
-			// something is wrong with the tunnel and we need to remove it from the hash.
+			// something is wrong with the tunnel and we need to remove it from the hash,
+			// remember l3 pkts are just sent directly on the stream stored in the hash.
 			// Usually the goroutine reading from the tunnel will detect error and remove it,
 			// but interpod tunnels are unidirectional, no one reads from it on this end
 			if podKey != nil {
