@@ -68,7 +68,9 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	agents[onboard.Uuid] = tunnel
 	localRouteAdd(s, MyInfo, onboard)
 	consul.RegisterConsul(MyInfo, onboard.Services, s)
-	aaa.UsrJoin(atype(onboard), onboard.Userid, s)
+	if onboard.Agent {
+		aaa.UsrJoin(atype(onboard), onboard.Userid, s)
+	}
 	aLock.Unlock()
 }
 
@@ -78,7 +80,9 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 		delete(agents, onboard.Uuid)
 		localRouteDel(s, MyInfo, onboard)
 		consul.DeRegisterConsul(MyInfo, onboard.Services, s)
-		aaa.UsrLeave(atype(onboard), onboard.Userid, s)
+		if onboard.Agent {
+			aaa.UsrLeave(atype(onboard), onboard.Userid, s)
+		}
 	}
 	aLock.Unlock()
 }
@@ -280,7 +284,7 @@ func l4Lookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context,
 
 	fwd, err := consul.ConsulDnsLookup(MyInfo, consul_key, s)
 	if err != nil {
-		s.Debugf("Consul lookup failed for dest", flow.Dest)
+		s.Debugf("Consul lookup failed for dest", flow.DestAgent)
 		return nil, nil
 	}
 
