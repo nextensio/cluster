@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -18,6 +19,15 @@ import (
 
 	"github.com/google/uuid"
 )
+
+type zap2log struct {
+	s *zap.SugaredLogger
+}
+
+func (z *zap2log) Write(p []byte) (n int, err error) {
+	z.s.Debugf(string(p))
+	return len(p), nil
+}
 
 type podInfo struct {
 	pending bool
@@ -169,7 +179,8 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params, d
 	hdrs.Add("x-nextensio-for", destAgent)
 	// Just a value which lets the other end identify that this is a new "session"
 	hdrs.Add("x-nextensio-session", uuid.New().String())
-	client := nhttp2.NewClient(ctx, pubKey, podIP, podIP, MyInfo.Iport, hdrs)
+	lg := log.New(&zap2log{s: s}, "http2", 0)
+	client := nhttp2.NewClient(ctx, lg, pubKey, podIP, podIP, MyInfo.Iport, hdrs)
 	// For pod to pod connectivity, a pod will always dial-out another one,
 	// we dont expect a stream to come in from the other end on a dial-out session,
 	// and hence the reason we use the unusedChan on which no one is listening.
@@ -537,7 +548,8 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 // from agents, and for each agent connection, spawn a goroutine to handle that
 func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context) {
 	var pvtKey, pubKey []byte
-	server := websock.NewListener(ctx, pvtKey, pubKey, MyInfo.Oport)
+	lg := log.New(&zap2log{s: s}, "websock", 0)
+	server := websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport)
 	tchan := make(chan common.NxtStream)
 	go server.Listen(tchan)
 	for {
@@ -553,7 +565,8 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context) {
 	var pvtKey []byte
 	var pubKey []byte
-	server := nhttp2.NewListener(ctx, pvtKey, pubKey, MyInfo.Iport, "x-nextensio-session")
+	lg := log.New(&zap2log{s: s}, "http2", 0)
+	server := nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, "x-nextensio-session")
 	tchan := make(chan common.NxtStream)
 	go server.Listen(tchan)
 	for {

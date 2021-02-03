@@ -7,7 +7,7 @@ require (
 	github.com/gorilla/websocket v1.4.2
 	github.com/miekg/dns v1.1.31
 	github.com/open-policy-agent/opa v0.23.2
-	gitlab.com/nextensio/common v0.0.0-20210201201524-75a68de4eec9
+	gitlab.com/nextensio/common v0.0.0-20210203140253-98d837e71e47
 	go.mongodb.org/mongo-driver v1.4.1
 	go.uber.org/zap v1.15.0
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
