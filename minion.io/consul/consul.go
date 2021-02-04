@@ -105,6 +105,7 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 		}
 		if e != nil {
 			sugar.Errorf("Consul: http PUT %s at %s failed with %v retries", data, url+"/cluster", consulRetries)
+			return e
 		}
 		data = strings.Replace(MyInfo.Pod, ".", "-", -1)
 		r, _ = http.NewRequest("PUT", url+"/pod", strings.NewReader(data))
@@ -118,6 +119,7 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 		}
 		if e != nil {
 			sugar.Errorf("Consul: http PUT %s at %s failed with %v retries", data, url+"/pod", consulRetries)
+			return e
 		}
 		dns.Meta.Pod = data
 		dns.ID = h + "-" + MyInfo.Namespace
@@ -141,6 +143,7 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 		} else {
 			sugar.Errorf("Consul: failed to register via http PUT at %s", url)
 			sugar.Errorf("Consul: failed to register service json %s", js)
+			return e
 		}
 	}
 
@@ -174,7 +177,7 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.Sugare
 		_, e := myClient.Do(r)
 		if e != nil {
 			for ; i < consulRetries; i = i + 1 {
-				time.Sleep(1 * 1000 * time.Millisecond)
+				time.Sleep(1 * time.Second)
 				_, e = myClient.Do(r)
 				if e == nil {
 					break
@@ -183,6 +186,7 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.Sugare
 		}
 		if e != nil {
 			sugar.Errorf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/cluster", consulRetries)
+			return e
 		}
 		r, _ = http.NewRequest("DELETE", url+"/pod", nil)
 		i = 0
@@ -191,10 +195,11 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.Sugare
 			if e == nil {
 				break
 			}
-			time.Sleep(1 * 1000 * time.Millisecond)
+			time.Sleep(1 * time.Second)
 		}
 		if e != nil {
 			sugar.Errorf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/pod", consulRetries)
+			return e
 		}
 		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + h + "-" + MyInfo.Namespace
 		r, _ = http.NewRequest("PUT", url, nil)
@@ -204,10 +209,11 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.Sugare
 			if e == nil {
 				break
 			}
-			time.Sleep(1 * 1000 * time.Millisecond)
+			time.Sleep(1 * time.Second)
 		}
 		if e != nil {
 			sugar.Errorf("Consul: http PUT of nil at %s failed with %v retries", url, consulRetries)
+			return e
 		}
 	}
 

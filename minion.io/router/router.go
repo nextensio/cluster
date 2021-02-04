@@ -73,28 +73,33 @@ func atype(onboard *nxthdr.NxtOnboard) string {
 	}
 }
 
-func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, tunnel common.Transport) {
+func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, tunnel common.Transport) error {
 	aLock.Lock()
 	agents[onboard.Uuid] = tunnel
 	localRouteAdd(s, MyInfo, onboard)
-	consul.RegisterConsul(MyInfo, onboard.Services, s)
+	err := consul.RegisterConsul(MyInfo, onboard.Services, s)
 	if onboard.Agent {
 		aaa.UsrJoin(atype(onboard), onboard.Userid, s)
 	}
 	aLock.Unlock()
+
+	return err
 }
 
-func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, tunnel common.Transport) {
+func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, tunnel common.Transport) error {
+	var err error
 	aLock.Lock()
 	if agents[onboard.Uuid] == tunnel {
 		delete(agents, onboard.Uuid)
 		localRouteDel(s, MyInfo, onboard)
-		consul.DeRegisterConsul(MyInfo, onboard.Services, s)
+		err = consul.DeRegisterConsul(MyInfo, onboard.Services, s)
 		if onboard.Agent {
 			aaa.UsrLeave(atype(onboard), onboard.Userid, s)
 		}
 	}
 	aLock.Unlock()
+
+	return err
 }
 
 func agentGet(uuid string) common.Transport {
@@ -231,53 +236,6 @@ func podDelete(key string) {
 	pLock.Unlock()
 }
 
-// Lookup destination stream to send a l3 IP packet on
-func l3Lookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, onboard *nxthdr.NxtOnboard,
-	flow *nxthdr.NxtFlow) (common.Transport, *nxthdr.NxtOnboard, *string) {
-
-	// TODO: Map ip addresses in the packet to service names (savd from dns ?)
-	// and do a consul lookup
-
-	// Return fwd.Dest + destAgent as the tunnel key if the pod is a remote pod
-	return nil, nil, nil
-}
-
-func l3Fwd(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, onboard *nxthdr.NxtOnboard,
-	hdr *nxthdr.NxtHdr, agentBuf net.Buffers) {
-
-	flow := hdr.Hdr.(*nxthdr.NxtHdr_Flow).Flow
-	// We do route lookup per packet for L3 flows
-	dest, bundle, podKey := l3Lookup(s, MyInfo, ctx, onboard, flow)
-	if dest != nil {
-		usrattr, attrok := aaa.GetUsrAttr(atype(onboard), onboard.Userid, s)
-		if attrok {
-			flow.Usrattr = usrattr
-		}
-		if bundle != nil {
-			ok := aaa.AccessOk(atype(bundle), bundle.Userid, flow.Usrattr, s)
-			s.Debugf("agent access:", bundle, flow.Usrattr)
-			if !ok {
-				s.Debugf("agent access failed ", flow.DestAgent)
-				return
-			}
-			// Going to another agent/connector, we dont need the attributes anymore
-			flow.Usrattr = ""
-		}
-		err := dest.Write(hdr, agentBuf)
-		if err != nil {
-			// L3 routing failures are just fine, packet is dropped and thats it.
-			// But if the dest tunnel is non local and it has a write failure, that means
-			// something is wrong with the tunnel and we need to remove it from the hash,
-			// remember l3 pkts are just sent directly on the stream stored in the hash.
-			// Usually the goroutine reading from the tunnel will detect error and remove it,
-			// but interpod tunnels are unidirectional, no one reads from it on this end
-			if podKey != nil {
-				podDelete(*podKey)
-			}
-		}
-	}
-}
-
 // Lookup destination stream to send an L4 tcp/udp/http proxy packet on
 func l4Lookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context,
 	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) (*nxthdr.NxtOnboard, common.Transport) {
@@ -392,7 +350,13 @@ func handleAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Contex
 				// If the very first stream on which we onboarded goes away, then we assume the
 				// session goes away
 				sessionDel(Suuid)
-				agentDel(s, MyInfo, onboard, tunnel)
+				e := agentDel(s, MyInfo, onboard, tunnel)
+				if e != nil {
+					// TODO: agent delete fail is a bad thing, it can mean that consul entries
+					// are hanging around, which is bad for routing! Not sure what should be done
+					// if agent del fails
+					s.Debugf("Agent del failed", e)
+				}
 			}
 			s.Debugf("Agent read error", err)
 			return
@@ -410,8 +374,17 @@ func handleAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Contex
 			if onboard == nil {
 				onboard = hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
 				sessionAdd(Suuid, onboard)
-				agentAdd(s, MyInfo, onboard, tunnel)
-				s.Debugf("Onboarded agent", onboard)
+				if e := agentAdd(s, MyInfo, onboard, tunnel); e != nil {
+					s.Debugf("Agent add failed, closing tunnels", e)
+					tunnel.Close()
+					if first {
+						sessionDel(Suuid)
+						agentDel(s, MyInfo, onboard, tunnel)
+					}
+					return
+				} else {
+					s.Debugf("Onboarded agent", onboard)
+				}
 			}
 
 		case *nxthdr.NxtHdr_Flow:
@@ -427,33 +400,7 @@ func handleAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Contex
 					}
 					return
 				}
-			} else {
-				if !first {
-					panic("We expect L3 flows only on the first stream")
-				}
-				// l3 fwd packet drops are a NO-OP
-				l3Fwd(s, MyInfo, ctx, onboard, hdr, agentBuf)
 			}
-		}
-	}
-}
-
-func l3Local(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, hdr *nxthdr.NxtHdr, podBuf net.Buffers) {
-
-	flow := hdr.Hdr.(*nxthdr.NxtHdr_Flow).Flow
-	// Route lookup per packet for l3 flows
-	o, dest := localLookup(s, flow)
-	if dest != nil {
-		if !aaa.AccessOk(atype(o), o.Userid, flow.Usrattr, s) {
-			s.Debugf("Interpod: l3 aaa access failed ", flow.DestAgent)
-			return
-		}
-		// Going to an agent/connector, we dont need the attributes anymore
-		flow.Usrattr = ""
-		err := dest.Write(hdr, podBuf)
-		if err != nil {
-			s.Debugf("Interpod l3 dest write failed", flow, err)
-			return
 		}
 	}
 }
@@ -526,9 +473,6 @@ func handleInterPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Con
 					}
 					return
 				}
-			} else {
-				// l3 packet drops are a NO-OP
-				l3Local(s, MyInfo, ctx, hdr, podBuf)
 			}
 		}
 	}
