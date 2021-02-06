@@ -13,7 +13,7 @@ require (
 	github.com/google/uuid v1.1.2
 	github.com/miekg/dns v1.1.31
 	github.com/open-policy-agent/opa v0.23.2
-    gitlab.com/nextensio/common v0.0.0-20210204214244-116cd32dc327
+	gitlab.com/nextensio/common v0.0.0-20210205151804-9588cc522794
 	go.mongodb.org/mongo-driver v1.4.1
 	go.uber.org/zap v1.15.0
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
