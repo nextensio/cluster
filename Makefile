@@ -14,7 +14,7 @@ adcontid=$(shell docker ps -a --filter ancestor=$(USER)/$(NAME)-debug:$(VERSION)
 bcontid=$(shell docker ps -a --filter ancestor=$(USER)/$(NAME)-build:$(VERSION) -q | head -n 1)
 
 .PHONY: all
-all: build copy slim
+all: build slim
 
 .PHONY: build
 build:
@@ -24,20 +24,6 @@ build:
 	docker build -f Dockerfile.build -t $(USER)/$(NAME)-build:$(VERSION) .
 	docker create $(USER)/$(NAME)-build:$(VERSION)
 	rm files/gitlab_rsa
-
-.PHONY: debug
-debug:
-	rm -r -f files/version
-	echo $(VERSION) > files/version
-	cp ~/.ssh/gitlab_rsa files/
-	docker build -f Dockerfile -t $(USER)/$(NAME)-debug:$(VERSION) .
-	rm files/gitlab_rsa
-
-.PHONY: copy
-copy:
-	-rm -r -f bin/$(NAME).io
-	docker cp $(bcontid):/go/bin/$(NAME).io bin
-	cp files/version bin
 
 .PHONY: slim
 slim:
