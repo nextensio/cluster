@@ -16,7 +16,7 @@ package authz
 //     func NxtUsrJoin(userid string)
 //     func NxtUsrLeave(userid string)
 //     func NxtUsrAllowed(userid string) bool
-//     <API for routing policy execution>
+//     func NxtRouteLookup(userid string, host string, ...)
 // Egress pod APIs:
 //     func NxtAccessOk(bundleid string, userattr string) bool
 //
@@ -36,7 +36,7 @@ import (
 
 	"github.com/open-policy-agent/opa/rego"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive" // REMOTEDB
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
@@ -46,15 +46,13 @@ import (
 //--------------------------------Data Structures, Variables, etc ----------------------------------
 
 const maxOpaUseCases = 5 // we currently have 4
-const maxMongoColls = 10 // assume max 10 MongoDB collections, currently 6+1
+const maxMongoColls = 10 // assume max 10 MongoDB tenant collections, currently 6+1
 const maxUsers = 10000   // max per tenant
 
 /*****************************
 // MongoDB database and collections
-// TODO: Ensure each service pod gets the NxtDB for the tenant it is handling via
-// a tenant specific DB name.
 *****************************/
-const nxtMongoDB = "NxtDB" // REMOTEDB
+const nxtMongoDB = "NxtDB" // default DB name prior to per-tenant DBs
 const userInfoCollection = "NxtUsers"
 const connInfoCollection = "NxtApps"
 const appAttrCollection = "NxtAppAttr"
@@ -68,45 +66,55 @@ const CAuthzQry = "data.app.access.allow"
 const AccessQry = "data.app.access.allow"
 const RouteQry = "data.user.routing.route_tag"
 
+// These need to be created via the Dockerfiles for the policy and refdata files
+// required at run-time by OPA
 const agentldir = "authz/agent-authz"
 const connldir = "authz/conn-authz"
 const accessldir = "authz/app-access"
-const routeldir = "authz/route-pol"
+const routeldir = "authz/routing"
 
 const agentauthzpolicy = "agent-authz.rego"
 const connauthzpolicy = "conn-authz.rego"
 const appaccesspolicy = "app-access.rego"
 const userroutepolicy = "user-routing.rego"
 
-const inpType = "UserAttr"
-const inp2Type = "UserExtAttr"
+const userExtAttrDocKey = "UserExtAttr"
+const HDRKEY = "Header"
 
-const kmajver = "maj_ver"
-const kminver = "min_ver"
-const ktnt = "tenant"
-const kbid = "bid"
+// These are key names that should be used in the OPA Rego policies
+const kmajver = "maj_ver" // Collection major version
+const kminver = "min_ver" // Collection minor version
+const ktnt = "tenant"     // Tenant for collection
+const kbid = "bid"        // App-bundle ID from AppInfo and AppAttr collections
+const kuser = "uid"       // User ID from UserInfo and UserAttr collections
+const khost = "host"      // Host ID from HostAttr collection
+// These are key names that anchor a group of attributes for use in OPA Rego policies
+const kbundleattrs = "bundles" // Anchor for all refdata app-bundle attributes
+const khostattrs = "hosts"     // Anchor for all refdata host attributes
+const kuserattrs = "user"      // Anchor for input user attributes in routing
+//const khostrouteattrs = "routeattrs" // Anchor for attributes per route tag for a host
 
 // Common struct for all policies
 // Can't seem to add a Rego policy via mongoshell, hence the hack to also
 // provide a filename that is then used to read the policy from a local file.
 type Policy struct {
-	PolicyId string `json:"pid" bson:"_id"`
-	Majver   int    `json:"majver" bson:"majver"` // major version
-	Minver   int    `json:"minver" bson:"minver"` // minor version
-	//Tenant   string `json:"tenant" bson:"tenant"` // tenant id
-	Tenant primitive.ObjectID `json:"tenant" bson:"tenant"` // REMOTEDB
-	Fname  string             `json:"fname" bson:"fname"`   // rego policy filename
-	Rego   []rune             `json:"rego" bson:"rego"`     // rego policy
+	PolicyId string             `json:"pid" bson:"_id"`
+	Majver   int                `json:"majver" bson:"majver"` // major version
+	Minver   int                `json:"minver" bson:"minver"` // minor version
+	Tenant   primitive.ObjectID `json:"tenant" bson:"tenant"`
+	Fname    string             `json:"fname" bson:"fname"` // rego policy filename
+	Rego     []rune             `json:"rego" bson:"rego"`   // rego policy
 }
 
 // Header document for a data collection so that the versions and tenant are not
 // replicated in every document. The header can be read upfront to get the version
 // info for the collection from a single document.
+// Ensure this always matches with the definition in the controller repo.
 type DataHdr struct {
-	ID     string `bson:"_id" json:"ID"`
-	Majver int    `bson:"majver" json:"majver"`
-	Minver int    `bson:"minver" json:"minver"`
-	Tenant string `bson:"tenant" json:"tenant"`
+	ID     string             `bson:"_id" json:"ID"`
+	Majver int                `bson:"majver" json:"majver"`
+	Minver int                `bson:"minver" json:"minver"`
+	Tenant primitive.ObjectID `bson:"tenant" json:"tenant"`
 }
 
 // Data object to track every use case
@@ -125,8 +133,8 @@ type QState struct {
 	PStruct  Policy                 // Policy struct
 	RegoPol  []byte                 // rego policy
 	LDir     string                 // load directory for OPA
-	DataType string                 // key for header document
-	DColl    string                 // name of data collection
+	DColl    string                 // name of reference data collection
+	HdrKey   string                 // Header doc keys for reference data collections
 	RefHdr   DataHdr                // reference data header doc
 	RefData  []byte                 // reference data
 }
@@ -137,17 +145,19 @@ type TState struct { // For testing
 	Keys  [500]string // Keys - Bids or Hosts or ...
 }
 
+var nxtMongoVer int // Our implementation version
+
 var QStateMap = make(map[string]*QState, maxOpaUseCases) // indexed by opaUseCases
 var TStateMap = make(map[string]*TState, maxOpaUseCases)
 
 var opaUseCases = []string{"AgentAuthz", "ConnAuthz", "AppAccess", "RoutePol"}
 var initUseCase = []int{0, 0, 1, 0}
-var policyType = []string{"AgentPolicy", "ConnPolicy", "AccessPolicy", "RoutePolicy"} // Keys
-var dataType = []string{"UserInfo", "AppInfo", "AppAttr", "HostAttr"}                 // Header doc keys
+var policyType = []string{"AgentPolicy", "ConnPolicy", "AccessPolicy", "RoutePolicy"} // Policy doc Keys
+var hdrKeyNm = []string{"UserInfo", "AppInfo", "AppAttr", "HostAttr"}                 // Ref Data Header doc keys
+var hdrKeyNm2 = []string{"UserAttr", "AppAttr", "UserAttr", "UserAttr"}               // Header doc keys for associated cltns
 var opaQuery = []string{AAuthzQry, CAuthzQry, AccessQry, RouteQry}
 var loadDir = []string{agentldir, connldir, accessldir, routeldir}
-var policyfile = []string{agentauthzpolicy, connauthzpolicy, appaccesspolicy, userroutepolicy}
-var keyID = []string{"userid", "connid", "bid", "hostid"}
+var DColls = []string{userInfoCollection, connInfoCollection, appAttrCollection, hostAttrCollection}
 
 var initExit = make(chan bool, 1)
 var initDone bool
@@ -157,13 +167,13 @@ var mongoFailures int
 var mongoInitDone bool
 var mongoDBAddr string
 var tenant string
+var tenantOID primitive.ObjectID
 var slog *zap.SugaredLogger
 var st, sg, sm zap.Field // for tenant, gateway, module
 
-var DColls = []string{userInfoCollection, connInfoCollection, appAttrCollection, hostAttrCollection}
 var CollMap map[string]*mongo.Collection
 var mongoClient *mongo.Client
-var nxtMongoDBName string
+var nxtMongoDBName string // set to nxtMongoDB (legacy) or a unique name per tenant going forward
 
 /******************************** Calls from minion ******************/
 //export NxtAaaInit
@@ -218,16 +228,17 @@ func NxtAccessOk(bundleid string, userattr string) bool {
 	return nxtEvalAppAccessAuthz(opaUseCases[2], userattr, bundleid)
 }
 
-// export NxtRoutePolicy
-func NxtRoutePolicy(uuid string) string {
-	// To be done after controller support is available and API parameters
-	// are finalized
-	return ""
+// export NxtRouteLookup (New)
+func NxtRouteLookupNew(uid string, host string) string {
+	if initDone == false || mongoInitDone == false {
+		return ""
+	}
+	return nxtEvalUserRouting(opaUseCases[3], uid, host, nil)
 }
 
 const RouteTag = "tag"
 
-//export NxtRouteLookup
+//export NxtRouteLookup (original)
 func NxtRouteLookup(uid string, routeid string) string {
 	if initDone == false || mongoInitDone == false {
 		return ""
@@ -369,14 +380,16 @@ func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
 	}
 
 	ctx := context.Background()
+	nxtMongoVer = nxtGetEnvInt("NXT_MONGO_IMPL_VER", 0)
 	slog = sl
 	tenant = ns
+	tenantOID, _ = primitive.ObjectIDFromHex(tenant)
 	st = zap.String("Tenant", tenant)
 	// TODO: need cluster name for initializing below
 	sg = zap.String("GW", "sj-nextensio.net")
 	sm = zap.String("Module", "NxtOPA")
-	// TODO: nxtMongoDBName needs to be derived from ns
-	nxtMongoDBName = nxtMongoDB
+
+	nxtMongoDBName = nxtGetTenantDBName(tenant)
 	mongoDBAddr = mongouri
 
 	go nxtOpaProcess(ctx)
@@ -401,8 +414,7 @@ func nxtOpaUseCaseInit(ctx context.Context) {
 	// version matches, and if so, loading them into the load directory before creating
 	// the query object and preparing the query for evaluation.
 	for i, ucase := range opaUseCases {
-		nxtCreateOpaUseCase(ucase, policyType[i], dataType[i], loadDir[i],
-			opaQuery[i], DColls[i])
+		nxtCreateOpaUseCase(i, ucase)
 		if initUseCase[i] > 0 { // Initialize now in Init function
 			nxtSetupUseCase(ctx, i, ucase)
 		}
@@ -478,12 +490,19 @@ func nxtMongoConnect(ctx context.Context, ns string, mURI string) (*mongo.Client
 	return nil, err
 }
 
+func nxtGetTenantDBName(tenant string) string {
+	if nxtMongoVer < 1 {
+		return nxtMongoDB
+	}
+	return ("Nxt-" + tenant + "-DB")
+}
+
 func nxtMongoError() {
 	mongoCheck = true
 	mongoFailures++
 }
 
-func nxtGetMongoEnv(key string, defaultValue string) string {
+func nxtGetEnvStr(key string, defaultValue string) string {
 	v := os.Getenv(key)
 	if v == "" {
 		v = defaultValue
@@ -491,21 +510,34 @@ func nxtGetMongoEnv(key string, defaultValue string) string {
 	return v
 }
 
+func nxtGetEnvInt(key string, defaultValue int) int {
+	v := os.Getenv(key)
+	if v != "" {
+		if val, err := strconv.Atoi(v); err == nil {
+			return val
+		}
+	}
+	return defaultValue
+}
+
 // Create use case for each query type
-func nxtCreateOpaUseCase(ucase string, ptype string, dtype string, ldir string,
-	opaqry string, dcoll string) {
+func nxtCreateOpaUseCase(i int, ucase string) {
 	var NewState QState
 	var NewTS TState
+
+	hdrKeyNm[i] = nxtGetHdrKey(hdrKeyNm[i])
+	hdrKeyNm2[i] = nxtGetHdrKey(hdrKeyNm2[i])
+
 	NewState.QUCase = ucase
-	NewState.PolType = ptype
-	NewState.DataType = dtype
-	NewState.LDir = ldir
-	NewState.Qry = opaqry
-	NewState.DColl = dcoll
+	NewState.PolType = policyType[i]
+	NewState.LDir = loadDir[i]
+	NewState.Qry = opaQuery[i]
+	NewState.HdrKey = hdrKeyNm[i]
+	NewState.DColl = DColls[i]
 	NewState.QError = true
 	QStateMap[ucase] = &NewState
 	TStateMap[ucase] = &NewTS
-	nxtLogDebug(ucase, fmt.Sprintf("Use case created for policy %s, refdata %s", ptype, dtype))
+	nxtLogDebug(ucase, fmt.Sprintf("Use case created for policy %s, refdata %s", policyType[i], DColls[i]))
 }
 
 // Initialize and set up each use case for using OPA
@@ -546,7 +578,7 @@ func nxtReadPolicyDocument(ctx context.Context, usecase string, ptype string) {
 	var policy Policy
 
 	// Read specific policy by specifying "_id" = ptype
-	err := CollMap[policyCollection].FindOne(ctx, bson.M{"_id": ptype}).Decode(&policy)
+	err := CollMap[policyCollection].FindOne(ctx, bson.M{"_id": ptype, "tenant": tenantOID}).Decode(&policy)
 	if err != nil {
 		nxtLogError(usecase, fmt.Sprintf("Failed to find %s, error - %v", ptype, err))
 		nxtMongoError()
@@ -590,9 +622,9 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 	var hdr DataHdr
 	qs := QStateMap[ucase]
 	coll := qs.DColl
-	err := CollMap[coll].FindOne(ctx, bson.M{"_id": qs.DataType}).Decode(&hdr)
+	err := CollMap[coll].FindOne(ctx, bson.M{"_id": qs.HdrKey, "tenant": tenantOID}).Decode(&hdr)
 	if err != nil {
-		nxtLogError(ucase, fmt.Sprintf("Failed to find %s header doc - %v", qs.DataType, err))
+		nxtLogError(ucase, fmt.Sprintf("Failed to find %s header doc - %v", qs.HdrKey, err))
 		nxtMongoError()
 		return false
 	}
@@ -617,16 +649,16 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 // into a JSON string for feeding into OPA
 func nxtReadRefDataDoc(ctx context.Context, ucase string) {
 
-	switch QStateMap[ucase].DataType {
-	case dataType[0]:
+	switch ucase {
+	case opaUseCases[0]:
 		return
-	case dataType[1]:
+	case opaUseCases[1]:
 		return
-	case dataType[2]:
-		QStateMap[ucase].RefData = nxtCreateCollJSON(ctx, ucase, keyID[2], "{ \"bundles\":  [")
+	case opaUseCases[2]:
+		QStateMap[ucase].RefData = nxtCreateCollJSON(ctx, ucase, kbid, "{ \""+kbundleattrs+"\":  [")
 		return
-	case dataType[3]:
-		QStateMap[ucase].RefData = nxtCreateCollJSON(ctx, ucase, keyID[3], "{ \"hosts\":  [")
+	case opaUseCases[3]:
+		QStateMap[ucase].RefData = nxtCreateCollJSON(ctx, ucase, khost, "{ \""+khostattrs+"\":  [")
 		return
 	}
 }
@@ -659,12 +691,12 @@ func nxtProcessUserAttrChanges(ctx context.Context) {
 func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 	// read header document for user attr collection used as input
 	var uahdr DataHdr
-	var errhdr = DataHdr{inpType, 0, 0, ""}
+	var errhdr = DataHdr{ID: hdrKeyNm2[0], Majver: 0, Minver: 0}
 
 	coll := CollMap[userAttrCollection]
-	err := coll.FindOne(ctx, bson.M{"_id": inpType}).Decode(&uahdr)
+	err := coll.FindOne(ctx, bson.M{"_id": hdrKeyNm2[0], "tenant": tenantOID}).Decode(&uahdr)
 	if err != nil {
-		nxtLogError(inpType, fmt.Sprintf("Failed to find header doc - %v", err))
+		nxtLogError(hdrKeyNm2[0], fmt.Sprintf("Failed to find user attr header doc - %v", err))
 		nxtMongoError()
 		return errhdr
 	}
@@ -723,13 +755,13 @@ func nxtReadUserAttrDB(uuid string) (bson.M, bool) {
 
 	// Read user attributes from DB, cache json version, and return it
 	coll := CollMap[userAttrCollection]
-	err := coll.FindOne(ctx, bson.M{"_id": uuid}).Decode(&usera)
+	err := coll.FindOne(ctx, bson.M{"_id": uuid, "tenant": tenant}).Decode(&usera)
 	if err != nil {
 		nxtLogError(uuid, fmt.Sprintf("Failed to find attributes doc for user - %v", err))
 		nxtMongoError()
 		return bson.M{}, false
 	}
-	usera = nxtFixupAttrID(usera, keyID[0])
+	usera = nxtFixupAttrID(usera, kuser)
 	usera = nxtAddVerToDoc(usera, usrAttrHdr)
 	return usera, true
 }
@@ -785,10 +817,10 @@ func nxtReadUserExtAttrDoc(ctx context.Context) {
 	var uahdr UserExtAttr
 
 	coll := CollMap[userAttrCollection]
-	err := coll.FindOne(ctx, bson.M{"_id": inp2Type}).Decode(&uahdr)
+	err := coll.FindOne(ctx, bson.M{"_id": userExtAttrDocKey, "tenant": tenant}).Decode(&uahdr)
 	if err != nil {
 		// Disable this error until it's fully implemented
-		//nxtLogError(inp2Type, fmt.Sprintf("Failed to read user extended attributes doc - %v", err))
+		//nxtLogError(userExtAttrDocKey, fmt.Sprintf("Failed to read user extended attributes doc - %v", err))
 		//nxtMongoError()
 		return
 	}
@@ -798,7 +830,7 @@ func nxtReadUserExtAttrDoc(ctx context.Context) {
 		delete(extUAttr, k)
 	}
 	if err := json.Unmarshal([]byte(uahdr.Attrlist), &extUAttr); err != nil {
-		nxtLogError(inp2Type, fmt.Sprintf("Unmarshal error for extended user attributes - %v", err))
+		nxtLogError(userExtAttrDocKey, fmt.Sprintf("Unmarshal error for user extended attributes - %v", err))
 	}
 }
 
@@ -840,7 +872,7 @@ func nxtCreateCollJSON(ctx context.Context, ucase string, keyid string, istr str
 	qsm := QStateMap[ucase]
 	tsm := TStateMap[ucase]
 	coll := qsm.DColl
-	cursor, err := CollMap[coll].Find(ctx, bson.M{})
+	cursor, err := CollMap[coll].Find(ctx, bson.M{"tenant": tenant})
 	if err != nil {
 		nxtLogError(ucase, fmt.Sprintf("Failed to find any attribute docs - %v", err))
 		nxtMongoError()
@@ -857,8 +889,8 @@ func nxtCreateCollJSON(ctx context.Context, ucase string, keyid string, istr str
 	addComma := false
 	for i := 0; i < ndocs; i++ {
 
-		if docs[i]["_id"] == qsm.DataType { // Version doc
-			tsm.Keys[i] = qsm.DataType
+		if docs[i]["_id"] == qsm.HdrKey { // Version doc
+			tsm.Keys[i] = qsm.HdrKey
 			tsm.Count = tsm.Count + 1
 			continue
 		}
@@ -915,8 +947,7 @@ func nxtEvalAppAccessAuthz(ucase string, uattr string, bid string) bool {
 		retval := fmt.Sprintf("%v", rs[0].Expressions[0].Value)
 		return retval == "true"
 	}
-	ukey := keyID[0]
-	nxtLogError(ucase, fmt.Sprintf("Query execution failure for %s access to %s", ua[ukey], bid))
+	nxtLogError(ucase, fmt.Sprintf("Query execution failure for %s access to %s", ua[kuser], bid))
 	return false
 }
 
@@ -979,8 +1010,8 @@ func nxtEvalUserRouting(ucase string, uid string, host string, hdr *http.Header)
 		return ""
 	}
 	uajson := nxtGetUserAttrJSON(uid)
-	ueajson := nxtGetUserAttrFromHTTP(uid, hdr)
-	rs, ok := nxtExecOpaQry(nxtEvalUserRoutingJSON(host, uajson, ueajson), ucase)
+	//ueajson := nxtGetUserAttrFromHTTP(uid, hdr)
+	rs, ok := nxtExecOpaQry(nxtEvalUserRoutingJSON(host, uajson), ucase)
 	if ok {
 		return (fmt.Sprintf("%v", rs[0].Expressions[0].Value))
 	}
@@ -988,11 +1019,12 @@ func nxtEvalUserRouting(ucase string, uid string, host string, hdr *http.Header)
 	return ""
 }
 
-func nxtEvalUserRoutingJSON(host string, uajson string, ueajson string) []byte {
-	str1 := "{\"host\": \""
-	str2 := "\", \"dbattr\": "
-	str3 := ", \"dynattr\": "
-	jsonResp := fmt.Sprintf("%s%s%s%s%s%s }", str1, host, str2, uajson, str3, ueajson)
+func nxtEvalUserRoutingJSON(host string, uajson string) []byte {
+	str1 := "{\"" + khost + "\": \""
+	str2 := "\", \"" + kuserattrs + "\": "
+	//str3 := ", \"dynattr\": "
+	//jsonResp := fmt.Sprintf("%s%s%s%s%s%s }", str1, host, str2, uajson, str3, ueajson)
+	jsonResp := fmt.Sprintf("%s%s%s%s }", str1, host, str2, uajson)
 	return []byte(jsonResp)
 }
 
@@ -1080,13 +1112,12 @@ func nxtExecOpaQry(inp []byte, ucase string) (rego.ResultSet, bool) {
 func nxtAddVerToDoc(doc bson.M, hdr DataHdr) bson.M {
 	doc[kmajver] = hdr.Majver
 	doc[kminver] = hdr.Minver
-	doc[ktnt] = hdr.Tenant
+	doc[ktnt] = hdr.Tenant.Hex()
 	return doc
 }
 
 func nxtFixupAttrID(attr bson.M, keyid string) bson.M {
-	tmp := attr["_id"]
-	attr[keyid] = tmp
+	attr[keyid] = attr["_id"]
 	delete(attr, "_id")
 	return attr
 }
@@ -1098,6 +1129,13 @@ func nxtConvertToJSON(inp bson.M) string {
 		return ""
 	}
 	return string(jsonResp)
+}
+
+func nxtGetHdrKey(val string) string {
+	if nxtMongoVer >= 1 {
+		return HDRKEY // common name for all header docs
+	}
+	return val // legacy name
 }
 
 func nxtLogError(ref string, msg string) {
@@ -1127,21 +1165,21 @@ func nxtTestUserAccess(ctx context.Context) {
 
 	users = nxtReadUserAttrCollection(ctx) // user attributes from mongoDB
 
-	idx := 2
+	idx := 2 // Use case for access policy
 	ucase := opaUseCases[idx]
 	tsm := TStateMap[ucase]
 	for _, val := range *users {
 
 		// skip header document and spec document for extended attributes
 		uid := fmt.Sprintf("%s", val["_id"])
-		if (uid == inpType) || (uid == inp2Type) {
+		if (uid == hdrKeyNm2[0]) || (uid == userExtAttrDocKey) {
 			continue
 		}
 
 		// Evaluate query for each user trying to access each app bundle
 		//
 		for k := 0; k < tsm.Count; k = k + 1 {
-			if tsm.Keys[k] == dataType[idx] {
+			if tsm.Keys[k] == hdrKeyNm[idx] {
 				continue
 			}
 			res[k] = nxtEvalAppAccessAuthz(ucase, nxtConvertToJSON(val), tsm.Keys[k])
@@ -1168,24 +1206,24 @@ func nxtTestUserRouting(ctx context.Context) {
 
 	users = nxtReadUserAttrCollection(ctx) // user requests from mongoDB
 
-	idx := 3
+	idx := 3 // Use case for user routing
 	ucase := opaUseCases[idx]
 	tsm := TStateMap[ucase]
 	for _, val := range *users {
 
 		// Ignore header doc and extended (runtime) attributes doc
 		uid := fmt.Sprintf("%s", val["_id"])
-		if (uid == inpType) || (uid == inp2Type) {
+		if (uid == hdrKeyNm2[0]) || (uid == userExtAttrDocKey) {
 			continue
 		}
 
 		// Evaluate query for each user trying to access each app
 		//
 		for k := 0; k < tsm.Count; k = k + 1 {
-			if tsm.Keys[k] == dataType[idx] {
+			if tsm.Keys[k] == hdrKeyNm[idx] {
 				continue
 			}
-			user := fmt.Sprintf("%s", val[keyID[0]])
+			user := fmt.Sprintf("%s", val[kuser])
 			res[k] = nxtEvalUserRouting(ucase, user, tsm.Keys[k], &hdr)
 			nxtLogInfo(uid+" accessing "+tsm.Keys[k], fmt.Sprintf("Result = %v", res[k]))
 		}
@@ -1221,9 +1259,9 @@ func nxtReadAllUserAttrDocuments(ctx context.Context) *[]bson.M {
 	for i := 0; i < nusers; i++ {
 		// Ignore header doc and extended (runtime) attributes doc
 		uid := fmt.Sprintf("%s", users[i]["_id"])
-		if (uid != inpType) && (uid != inp2Type) {
+		if (uid != hdrKeyNm2[0]) && (uid != userExtAttrDocKey) {
 			// Change "_id" only for attribute docs, not header or ext attr spec
-			users[i] = nxtFixupAttrID(users[i], keyID[0])
+			users[i] = nxtFixupAttrID(users[i], kuser)
 			users[i] = nxtAddVerToDoc(users[i], tstRefHdr)
 		}
 	}
