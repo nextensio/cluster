@@ -32,6 +32,7 @@ import (
 	"os"
 	"strconv"
 	"time"
+
 	//"strings"
 
 	"github.com/open-policy-agent/opa/rego"
@@ -144,8 +145,6 @@ type TState struct { // For testing
 	Count int         // Count of keys
 	Keys  [500]string // Keys - Bids or Hosts or ...
 }
-
-var nxtMongoVer int // Our implementation version
 
 var QStateMap = make(map[string]*QState, maxOpaUseCases) // indexed by opaUseCases
 var TStateMap = make(map[string]*TState, maxOpaUseCases)
@@ -380,7 +379,6 @@ func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
 	}
 
 	ctx := context.Background()
-	nxtMongoVer = nxtGetEnvInt("NXT_MONGO_IMPL_VER", 0)
 	slog = sl
 	tenant = ns
 	tenantOID, _ = primitive.ObjectIDFromHex(tenant)
@@ -491,9 +489,6 @@ func nxtMongoConnect(ctx context.Context, ns string, mURI string) (*mongo.Client
 }
 
 func nxtGetTenantDBName(tenant string) string {
-	if nxtMongoVer < 1 {
-		return nxtMongoDB
-	}
 	return ("Nxt-" + tenant + "-DB")
 }
 
@@ -1132,10 +1127,7 @@ func nxtConvertToJSON(inp bson.M) string {
 }
 
 func nxtGetHdrKey(val string) string {
-	if nxtMongoVer >= 1 {
-		return HDRKEY // common name for all header docs
-	}
-	return val // legacy name
+	return HDRKEY // common name for all header docs
 }
 
 func nxtLogError(ref string, msg string) {
