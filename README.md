@@ -226,6 +226,31 @@ all makes us go with the goroutine model. We are a startup and speed at which we
 matters as much as performance, so at some point when we are succesful, we can evaluate our
 own event routines if we think that performs better
 
+The one thing that might make us reconsider moving away from goroutines to a custom
+scheduling mechanism might be memory usage. A goroutine takes up minimum 2Kb stack
+size as of today (go version 1.5). And we have a goroutine per Rx and Tx today, plus
+maybe an additional one or two goroutines depending on the stream library we use in
+common/transport (which potentially can be optimized). So there is like two to four 
+goroutines per flow - which is 8Kb memory. And each flow will have data packets queued
+up, we define common.MAXBUF as of today as 2Kb. So assuming each flow has minimal data
+queued up ie 2Kb, that means the total minimum memory per flow is 8Kb + 2kB = 10Kb
+which is quite a lot ! So at some point if memory starts killing us when we scale, we
+"may" have to evaluate moving away from goroutines and basically writing our own 
+unix select/poll loops using a thread pool etc.. - but then thats no more idiomatic
+go and then we have to ask ourselves whether we even want to stick to Go or move to
+some other faster language like Rust ?
+
+But again, we are talking about a future thats at least four years away - when we
+start getting hammered by scale issues. And as mentioned before, its always a balance
+between how much time we spend on things that take up a lot of time and potentially
+slow us down a lot and prevent us even from reaching that point we want to reach 4 years
+down the lane Vs how much slack we knowingly take right now in favour of simpler 
+easier code which allows faster feature development so that we become successful 
+and have a chance to face the problems we are worried of. If anyone has coded in 
+Rust for example, they wll know that its like ten times harder to code and we probably
+will never get started off the ground to begin with!
+
+
 #### goroutine programming template
 
 Another requirement for being able to move faster as a team / a startup is the need for 
