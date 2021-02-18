@@ -150,7 +150,7 @@ var QStateMap = make(map[string]*QState, maxOpaUseCases) // indexed by opaUseCas
 var TStateMap = make(map[string]*TState, maxOpaUseCases)
 
 var opaUseCases = []string{"AgentAuthz", "ConnAuthz", "AppAccess", "RoutePol"}
-var initUseCase = []int{0, 0, 1, 0}
+var initUseCase = []int{0, 0, 1, 1}
 var policyType = []string{"AgentPolicy", "ConnPolicy", "AccessPolicy", "RoutePolicy"} // Policy doc Keys
 var hdrKeyNm = []string{"UserInfo", "AppInfo", "AppAttr", "HostAttr"}                 // Ref Data Header doc keys
 var hdrKeyNm2 = []string{"UserAttr", "AppAttr", "UserAttr", "UserAttr"}               // Header doc keys for associated cltns
@@ -228,7 +228,7 @@ func NxtAccessOk(bundleid string, userattr string) bool {
 }
 
 // export NxtRouteLookup (New)
-func NxtRouteLookupNew(uid string, host string) string {
+func NxtRouteLookup(uid string, host string) string {
 	if initDone == false || mongoInitDone == false {
 		return ""
 	}
@@ -238,7 +238,7 @@ func NxtRouteLookupNew(uid string, host string) string {
 const RouteTag = "tag"
 
 //export NxtRouteLookup (original)
-func NxtRouteLookup(uid string, routeid string) string {
+func NxtRouteLookupOrig(uid string, routeid string) string {
 	if initDone == false || mongoInitDone == false {
 		return ""
 	}
@@ -356,7 +356,8 @@ func nxtOpaProcess(ctx context.Context) int {
 		// Process if new version of UserAttr collection
 		nxtProcessUserAttrChanges(ctx)
 
-		if (QStateMap[opaUseCases[0]].WrVer == true) || (QStateMap[opaUseCases[2]].WrVer == true) {
+		if (QStateMap[opaUseCases[0]].WrVer == true) || (QStateMap[opaUseCases[2]].WrVer == true) ||
+			(QStateMap[opaUseCases[3]].WrVer == true) {
 			nxtWriteAttrVersions()
 		}
 
@@ -1261,13 +1262,15 @@ func nxtReadAllUserAttrDocuments(ctx context.Context) *[]bson.M {
 }
 
 func nxtWriteAttrVersions() {
-	qsm := QStateMap[opaUseCases[2]]
-	versions := fmt.Sprintf("USER=%d.%d\nBUNDLE=%d.%d\nPOLICY=%d.%d\nROUTE=0.0",
-		usrAttrHdr.Majver, usrAttrHdr.Minver, qsm.RefHdr.Majver, qsm.RefHdr.Minver,
-		qsm.PStruct.Majver, qsm.PStruct.Minver)
+	qsm2 := QStateMap[opaUseCases[2]]
+	qsm3 := QStateMap[opaUseCases[3]]
+	versions := fmt.Sprintf("USER=%d.%d\nBUNDLE=%d.%d\nPOLICY=%d.%d\nROUTE=%d.%d",
+		usrAttrHdr.Majver, usrAttrHdr.Minver, qsm2.RefHdr.Majver, qsm2.RefHdr.Minver,
+		qsm2.PStruct.Majver, qsm2.PStruct.Minver, qsm3.RefHdr.Majver, qsm3.RefHdr.Minver)
 	ioutil.WriteFile("/tmp/opa_attr_versions", []byte(versions), 0644)
 	QStateMap[opaUseCases[0]].WrVer = false
 	QStateMap[opaUseCases[2]].WrVer = false
+	QStateMap[opaUseCases[3]].WrVer = false
 }
 
 //--------------------------------------End------------------------------------
