@@ -64,16 +64,6 @@ type Kv struct {
  * Register DNS entry and key value pair for the service
  */
 func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredLogger) (e error) {
-	if MyInfo.Sim == true {
-		// In sim mode
-		return nil
-	}
-
-	if MyInfo.Register == false {
-		// Don't register service with Consul as per cmd line arg
-		return nil
-	}
-
 	var dns Entry
 	dns.Address = MyInfo.PodIp
 	dns.Meta.Cluster = MyInfo.Id
@@ -154,14 +144,6 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
  * DeRegister DNS entry and key value pair for the service
  */
 func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredLogger) (e error) {
-	if MyInfo.Sim == true {
-		return nil
-	}
-
-	if MyInfo.Register == false {
-		return nil
-	}
-
 	var url string
 	var h string
 	var r *http.Request

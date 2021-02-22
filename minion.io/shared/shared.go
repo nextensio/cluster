@@ -15,13 +15,8 @@ const (
 
 // Structure for storing various parameters for this program
 type Params struct {
-	Tunnel    bool
-	UseDns    bool
-	UseHttp   bool
-	Register  bool
 	Iport     int
 	Oport     int
-	ListenIp  string
 	Node      string
 	Pod       string
 	Namespace string
@@ -29,11 +24,6 @@ type Params struct {
 	Id        string
 	DnsIp     string
 	MongoUri  string
-	Sim       bool
-	C_suffix  string
-	C_server  string
-	C_port    int
-	C_scheme  string
 }
 
 // Structure for storing forwarding result
