@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"gitlab.com/nextensio/common/go"
+	common "gitlab.com/nextensio/common/go"
 	"gitlab.com/nextensio/common/go/messages/nxthdr"
 	nhttp2 "gitlab.com/nextensio/common/go/transport/http2"
 	websock "gitlab.com/nextensio/common/go/transport/websocket"
