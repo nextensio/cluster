@@ -86,7 +86,7 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	aLock.Lock()
 	agents[onboard.Uuid] = tunnel
 	localRouteAdd(s, MyInfo, onboard)
-	err := consul.RegisterConsul(MyInfo, onboard.Services, s)
+	err := consul.RegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
 	if onboard.Agent {
 		aaa.UsrJoin(atype(onboard), onboard.Userid, s)
 	}
@@ -101,7 +101,7 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	if agents[onboard.Uuid] == tunnel {
 		delete(agents, onboard.Uuid)
 		localRouteDel(s, MyInfo, onboard)
-		err = consul.DeRegisterConsul(MyInfo, onboard.Services, s)
+		err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
 		if onboard.Agent {
 			aaa.UsrLeave(atype(onboard), onboard.Userid, s)
 		}
