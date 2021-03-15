@@ -152,11 +152,12 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 // TODO2: These remote pod sessions need to be aged out at some point, will need some reference
 // counting / last used timestamp etc..
 func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
-	flow *nxthdr.NxtFlow, podIP string, localPod bool) common.Transport {
+	flow *nxthdr.NxtFlow, dest string, localPod bool) common.Transport {
 	var tunnel common.Transport
 	var pending bool = false
 
-	key := podIP + flow.DestAgent
+	// dest is cluster name if pod is remote, else pod name if local (same cluster)
+	key := dest + flow.DestAgent
 	// Try read lock first since the most common case should be that tunnels are
 	// already setup
 	pLock.RLock()
@@ -175,7 +176,7 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 		p = pods[key]
 		if p == nil {
 			pods[key] = &podInfo{pending: true, tunnel: nil}
-			podDial(s, ctx, MyInfo, flow, podIP, localPod)
+			podDial(s, ctx, MyInfo, flow, dest, localPod)
 			tunnel = pods[key].tunnel
 		} else {
 			tunnel = p.tunnel
@@ -188,7 +189,7 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 
 // Create the initial session to a destination pod/remote cluser
 func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
-	flow *nxthdr.NxtFlow, podIP string, localPod bool) {
+	flow *nxthdr.NxtFlow, dest string, localPod bool) {
 	var pubKey []byte
 	hdrs := make(http.Header)
 	// Take this session to the pod on the remote cluster hosting the particular agent/connector
@@ -202,31 +203,31 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	hdrs.Add("x-nextensio-sourcecluster", MyInfo.Id)
 	// SourcePodID: MyInfo.Pod
 	hdrs.Add("x-nextensio-sourcepod", MyInfo.Pod)
-	// DestClusterID: podIP for inter-cluster traffic, else MyInfo.Id
-	// DestPodID: podIP for intra-cluster traffic, else no header
+	// DestClusterID: dest for inter-cluster traffic, else MyInfo.Id
+	// DestPodID: dest for intra-cluster traffic, else no header
 	if localPod == true {
 		hdrs.Add("x-nextensio-destcluster", MyInfo.Id)
-		hdrs.Add("x-nextensio-destpod", podIP)
+		hdrs.Add("x-nextensio-destpod", dest)
 	} else {
-		hdrs.Add("x-nextensio-destcluster", podIP)
+		hdrs.Add("x-nextensio-destcluster", dest)
 		hdrs.Add("x-nextensio-destpod", "unknown")
 	}
 	// TargetID: Host header
 	lg := log.New(&zap2log{s: s}, "http2", 0)
-	client := nhttp2.NewClient(ctx, lg, pubKey, podIP, podIP, MyInfo.Iport, hdrs)
+	client := nhttp2.NewClient(ctx, lg, pubKey, dest, dest, MyInfo.Iport, hdrs)
 	// For pod to pod connectivity, a pod will always dial-out another one,
 	// we dont expect a stream to come in from the other end on a dial-out session,
 	// and hence the reason we use the unusedChan on which no one is listening.
 	// This is a unidirectional session, we just write on this. Writing from the
 	// other end will end up with the other end dialling a new connection
-	s.Debugf("Dialing pod", flow.DestAgent, podIP)
+	s.Debugf("Dialing pod", flow.DestAgent, dest)
 	err := client.Dial(unusedChan)
 	if err != nil {
-		s.Debugf("Dialing pod error", err, flow.DestAgent, podIP)
+		s.Debugf("Dialing pod error", err, flow.DestAgent, dest)
 		return
 	}
-	s.Debugf("Dialled pod", flow.DestAgent, podIP)
-	key := podIP + flow.DestAgent
+	s.Debugf("Dialled pod", flow.DestAgent, dest)
+	key := dest + flow.DestAgent
 	pods[key].pending = false
 	pods[key].tunnel = client
 }
