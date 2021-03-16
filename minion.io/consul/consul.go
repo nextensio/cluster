@@ -11,8 +11,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,45 +63,27 @@ type Kv struct {
 }
 
 /*
- * Register DNS entry and key value pair for the service
+ * Register DNS entry and PodIP:Podname key:value pair for the service
  */
-func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredLogger) (e error) {
+func RegisterConsul(MyInfo *shared.Params, service []string, uuid string, sugar *zap.SugaredLogger) (e error) {
 	var dns Entry
 	dns.Address = MyInfo.PodIp
 	dns.Meta.Cluster = MyInfo.Id
 
 	var url string
-	var data string
 	var h string
 	var js []byte
 	var r *http.Request
+	npodip := strings.Replace(MyInfo.PodIp, ".", "-", -1)
 	for _, val := range service {
 		if val == "" {
 			break
 		}
 		h = strings.Replace(val, ".", "-", -1)
-		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + MyInfo.Namespace
-		sugar.Debugf("Consul: registering service %s at %s", h, url)
-		data = MyInfo.Id
-		r, _ = http.NewRequest("PUT", url+"/cluster", strings.NewReader(data))
-		i := 1
-		_, e := myClient.Do(r)
-		if e != nil {
-			for ; i < consulRetries; i = i + 1 {
-				time.Sleep(1 * 1000 * time.Millisecond)
-				_, e = myClient.Do(r)
-				if e == nil {
-					break
-				}
-			}
-		}
-		if e != nil {
-			sugar.Errorf("Consul: http PUT %s at %s failed with %v retries", data, url+"/cluster", consulRetries)
-			return e
-		}
-		data = strings.Replace(MyInfo.Pod, ".", "-", -1)
-		r, _ = http.NewRequest("PUT", url+"/pod", strings.NewReader(data))
-		i = 0
+		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + MyInfo.Namespace + "-" + npodip
+		sugar.Debugf("Consul: registering pod %s at IP %s for service %s at %s", MyInfo.Pod, MyInfo.PodIp, h, url)
+		r, _ = http.NewRequest("PUT", url, strings.NewReader(MyInfo.Pod))
+		i := 0
 		for ; i < consulRetries; i = i + 1 {
 			_, e = myClient.Do(r)
 			if e == nil {
@@ -108,12 +92,13 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 			time.Sleep(1 * 1000 * time.Millisecond)
 		}
 		if e != nil {
-			sugar.Errorf("Consul: http PUT %s at %s failed with %v retries", data, url+"/pod", consulRetries)
+			sugar.Errorf("Consul: http PUT %s for IP %s at %s failed with %v retries", MyInfo.Pod, MyInfo.PodIp, url, consulRetries)
 			return e
 		}
-		dns.Meta.Pod = data
-		dns.ID = h + "-" + MyInfo.Namespace
+		dns.Meta.Pod = MyInfo.Pod
 		dns.Name = h + "-" + MyInfo.Namespace
+		// ID needs to be unique per Consul agent
+		dns.ID = dns.Name + "-" + MyInfo.Pod + "-" + uuid
 		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/register"
 		js, _ = json.Marshal(dns)
 		r, _ = http.NewRequest("PUT", url, bytes.NewReader(js))
@@ -141,37 +126,23 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 }
 
 /*
- * DeRegister DNS entry and key value pair for the service
+ * DeRegister DNS entry and PodIP:Podname key:value pair for the service
  */
-func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredLogger) (e error) {
+func DeRegisterConsul(MyInfo *shared.Params, service []string, uuid string, sugar *zap.SugaredLogger) (e error) {
 	var url string
 	var h string
+	var sid string
 	var r *http.Request
+	npodip := strings.Replace(MyInfo.PodIp, ".", "-", -1)
 	for _, val := range service {
 		if val == "" {
 			break
 		}
 		h = strings.Replace(val, ".", "-", -1)
-		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + MyInfo.Namespace
-		sugar.Debugf("Consul: Deregistering service %s at %s", h, url)
-		r, _ = http.NewRequest("DELETE", url+"/cluster", nil)
-		i := 1
-		_, e := myClient.Do(r)
-		if e != nil {
-			for ; i < consulRetries; i = i + 1 {
-				time.Sleep(1 * time.Second)
-				_, e = myClient.Do(r)
-				if e == nil {
-					break
-				}
-			}
-		}
-		if e != nil {
-			sugar.Errorf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/cluster", consulRetries)
-			return e
-		}
-		r, _ = http.NewRequest("DELETE", url+"/pod", nil)
-		i = 0
+		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "-" + MyInfo.Namespace + "-" + npodip
+		sugar.Debugf("Consul: Deregistering pod %s at IP %s for service %s at %s", MyInfo.Pod, MyInfo.PodIp, h, url)
+		r, _ = http.NewRequest("DELETE", url, nil)
+		i := 0
 		for ; i < consulRetries; i = i + 1 {
 			_, e = myClient.Do(r)
 			if e == nil {
@@ -180,10 +151,11 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.Sugare
 			time.Sleep(1 * time.Second)
 		}
 		if e != nil {
-			sugar.Errorf("Consul: http DELETE of %s at %s failed with %v retries", h, url+"/pod", consulRetries)
+			sugar.Errorf("Consul: http DELETE of %s for IP %s at %s failed with %v retries", MyInfo.Pod, MyInfo.PodIp, url, consulRetries)
 			return e
 		}
-		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + h + "-" + MyInfo.Namespace
+		sid = h + "-" + MyInfo.Namespace + "-" + MyInfo.Pod + "-" + uuid
+		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + sid
 		r, _ = http.NewRequest("PUT", url, nil)
 		i = 0
 		for ; i < consulRetries; i = i + 1 {
@@ -202,35 +174,26 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.Sugare
 	return nil
 }
 
-//# curl -v -s http://k8s-worker1.node.consul:8500/v1/kv/tom-com-default?recurse
-//*   Trying 10.50.0.38...
-//* TCP_NODELAY set
-//* Connected to k8s-worker1.node.consul (10.50.0.38) port 8500 (#0)
-//> GET /v1/kv/tom-com-default?recurse HTTP/1.1
-//> Host: k8s-worker1.node.consul:8500
-//> User-Agent: curl/7.61.1
-//> Accept: */*
-//>
-//< HTTP/1.1 200 OK
-//< Content-Type: application/json
-//< Vary: Accept-Encoding
-//< X-Consul-Index: 367484
-//< X-Consul-Knownleader: true
-//< X-Consul-Lastcontact: 0
-//< Date: Tue, 11 Jun 2019 01:51:21 GMT
-//< Content-Length: 235
-//<
-//* Connection #0 to host k8s-worker1.node.consul left intact
-//[{"LockIndex":0,"Key":"tom-com-default/cluster","Flags":0,"Value":"c2pj","CreateIndex":367483,"ModifyIndex":367483},{"LockIndex":0,"Key":"tom-com-default/pod","Flags":0,"Value":"dG9tLWNvbQ==","CreateIndex":367484,"ModifyIndex":367484}]/ #
+//# curl -v -s http://k8s-worker1.node.consul:8500/v1/kv/tom-com-default-10-244-0-16
+//
+//[
+// {"LockIndex":0,
+//  "Key":"tom-com-default-10-244-0-16",
+//  "Flags":0,
+//  "Value":"pod4",
+//  "CreateIndex":367483,
+//  "ModifyIndex":367483}
+// }
+//]
+// Lookup KV store using pod IP as key and get pod name from "Value" of json reply
+func ConsulKvLookup(MyInfo *shared.Params, name string, podip string, sugar *zap.SugaredLogger) (fwd shared.Fwd, e error) {
+	sugar.Infof("consul kv lookup for %s at IP %s", name, podip)
 
-// Reply we get is top level array instead of a full JSON object. So we need to handle it
-// differently when unmarshalling it
-func ConsulHttpLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogger) (fwd shared.Fwd, e error) {
-	sugar.Infof("consul kv lookup for %s", name)
-
-	h := strings.Replace(name, ".", "-", -1)
-	url := "http://" + MyInfo.Node + ".node.consul:8500/v1/kv/" + h + "?recurse"
-	sugar.Debugf("Consul: HTTP lookup at %s", url)
+	// remove dots from dotted decimal IP address
+	npodip := strings.Replace(podip, ".", "-", -1)
+	// name contains namespace
+	url := "http://" + MyInfo.Node + ".node.consul:8500/v1/kv/" + name + "-" + npodip
+	sugar.Debugf("Consul: KV lookup at %s", url)
 	i := 1
 	resp, e := myClient.Get(url)
 	if e != nil {
@@ -243,45 +206,37 @@ func ConsulHttpLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogg
 		}
 	}
 	if e != nil {
-		sugar.Errorf("Consul: http GET for %s at %s failed with %v retries", h, url, consulRetries)
+		sugar.Errorf("Consul: KV lookup of pod name for %s at %s failed with %v retries", name, url, consulRetries)
 		return fwd, e
 	}
 
 	defer resp.Body.Close()
 	r, e := ioutil.ReadAll(resp.Body)
 	if e != nil {
-		sugar.Errorf("Consul: http response read err %v", e)
+		sugar.Errorf("Consul: KV lookup http response read err %v", e)
 		return fwd, e
 	}
-	// create a slice for storing JSON array
-	kvs := make([]Kv, 0)
+	// for storing JSON array from kv store
+	var kvs []Kv
 	e = json.Unmarshal(r, &kvs)
 	if e != nil {
 		sugar.Errorf("Consul: json response unmarshal err %v", e)
 		return fwd, e
 	}
 	tmp, _ := base64.StdEncoding.DecodeString(kvs[0].Value)
-	fwd.Id = string(tmp)
-	tmp, _ = base64.StdEncoding.DecodeString(kvs[1].Value)
 	fwd.Pod = string(tmp)
-	if fwd.Id == MyInfo.Id {
-		// Same cluster
-		if fwd.Pod == MyInfo.Pod {
-			// Same pod
-			fwd.DestType = shared.SelfDest
-			fwd.Dest = name
-			sugar.Debugf("Consul: destination %s of type SelfDest", name)
-		} else {
-			// Different pod
-			fwd.DestType = shared.LocalDest
-			fwd.Dest = fwd.Pod + "-in." + MyInfo.Namespace + LocalSuffix
-			sugar.Debugf("Consul: destination %s of type LocalDest", fwd.Dest)
-		}
+	fwd.PodIp = podip
+	fwd.Id = MyInfo.Id
+	if fwd.Pod == MyInfo.Pod {
+		// Same pod
+		fwd.DestType = shared.SelfDest
+		fwd.Dest = name
+		sugar.Debugf("Consul: destination %s of type SelfDest", name)
 	} else {
-		// Different cluster
-		fwd.DestType = shared.RemoteDest
-		fwd.Dest = RemotePrePrefix + fwd.Id + RemotePostPrefix
-		sugar.Debugf("Consul: destination %s of type RemoteDest", fwd.Dest)
+		// Different pod
+		fwd.DestType = shared.LocalDest
+		fwd.Dest = fwd.Pod + "-in." + MyInfo.Namespace + LocalSuffix
+		sugar.Debugf("Consul: destination %s of type LocalDest", fwd.Dest)
 	}
 
 	return fwd, nil
@@ -314,6 +269,12 @@ func ConsulHttpLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogg
 //;; WHEN: Tue Jun 11 07:05:47 UTC 2019
 //;; MSG SIZE  rcvd: 170
 
+// DNS lookup answer section returns destination pod IP and cluster.
+// If destination pod is in same cluster, use pod IP to look up pod name in kv store.
+// Kv lookup can be avoided if pod IP is enough to forward frame. For now, we keep
+// both pod name and IP to minimize changes.
+// If destination pod is in a different cluster, get destination cluster to forward
+// the frame to.
 func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogger) (fwd shared.Fwd, e error) {
 	sugar.Infof("consul dns lookup for %s", name)
 
@@ -338,25 +299,52 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 		return fwd, e
 	}
 
-	for _, v := range resp.Answer {
-		if srv, ok := v.(*dns.SRV); ok {
-			target := srv.Target
-			s := strings.Split(target, ".")
-			if s[2] == MyInfo.Id {
-				hfwd, e := ConsulHttpLookup(MyInfo, name, sugar)
-				if e != nil {
-					return fwd, e
-				}
-				return hfwd, nil
-			} else {
-				fwd.DestType = shared.RemoteDest
-				fwd.Dest = RemotePrePrefix + s[2] + RemotePostPrefix
-				fwd.Pod = ""
-				sugar.Debugf("Consul: destination %s of type RemoteDest", fwd.Dest)
-				return fwd, nil
+	sugar.Debugf("Consul: DNS lookup for %s returned %v answers", name, len(resp.Answer))
+	if len(resp.Answer) < 1 {
+		return fwd, errors.New("not found")
+	}
+	// Just always pick the first answer. It will be load balanced (round robin) in case
+	// of multiple answers.
+	if srv, ok := resp.Answer[0].(*dns.SRV); ok {
+		target := srv.Target
+		s := strings.Split(target, ".")
+		// Consul DNS lookup returns pod IP in compressed hex format. Convert it to dotted decimal.
+		podip := ipString(s[0], sugar)
+		if s[2] == MyInfo.Id {
+			// Target pod is in same cluster. Do KV lookup to get name from IP address
+			hfwd, e := ConsulKvLookup(MyInfo, name, podip, sugar)
+			if e != nil {
+				return fwd, e
 			}
+			return hfwd, nil
+		} else {
+			fwd.DestType = shared.RemoteDest
+			fwd.Dest = RemotePrePrefix + s[2] + RemotePostPrefix
+			fwd.Pod = ""
+			sugar.Debugf("Consul: destination %s of type RemoteDest", fwd.Dest)
+			return fwd, nil
 		}
 	}
 
 	return fwd, errors.New("not found")
+}
+
+// Return the dotted decimal string form of the IP address from a compressed hex string.
+func ipString(ip string, sugar *zap.SugaredLogger) string {
+
+	var ips string
+	var decn [4]int64
+
+	// Assume IPv4 for now, convert to dotted decimal notation.
+	p4 := ip
+
+	i := 0
+	for j := 0; j < 3; j++ {
+		decn[j], _ = strconv.ParseInt(p4[i:i+2], 16, 16)
+		i = i + 2
+	}
+	decn[3], _ = strconv.ParseInt(p4[6:8], 16, 16)
+	ips = fmt.Sprintf("%v.%v.%v.%v", decn[0], decn[1], decn[2], decn[3])
+	sugar.Debugf("Consul: ipString got %s, returned %s", ip, ips)
+	return ips
 }

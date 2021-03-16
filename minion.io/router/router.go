@@ -1,9 +1,12 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -33,6 +36,12 @@ type podInfo struct {
 	tunnel  common.Transport
 }
 
+type dropInfo struct {
+	reason string
+	flow   *nxthdr.NxtFlow
+	myInfo *shared.Params
+}
+
 var aLock sync.RWMutex
 var sessions map[uuid.UUID]nxthdr.NxtOnboard
 var agents map[string]common.Transport
@@ -41,6 +50,7 @@ var pods map[string]*podInfo
 var unusedChan chan common.NxtStream
 var routeLock sync.RWMutex
 var localRoutes map[string]*nxthdr.NxtOnboard
+var pakdropReq chan dropInfo
 
 func sessionAdd(Suuid uuid.UUID, onboard *nxthdr.NxtOnboard) {
 	aLock.Lock()
@@ -76,7 +86,7 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	aLock.Lock()
 	agents[onboard.Uuid] = tunnel
 	localRouteAdd(s, MyInfo, onboard)
-	err := consul.RegisterConsul(MyInfo, onboard.Services, s)
+	err := consul.RegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
 	if onboard.Agent {
 		aaa.UsrJoin(atype(onboard), onboard.Userid, s)
 	}
@@ -91,7 +101,7 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	if agents[onboard.Uuid] == tunnel {
 		delete(agents, onboard.Uuid)
 		localRouteDel(s, MyInfo, onboard)
-		err = consul.DeRegisterConsul(MyInfo, onboard.Services, s)
+		err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
 		if onboard.Agent {
 			aaa.UsrLeave(atype(onboard), onboard.Userid, s)
 		}
@@ -141,11 +151,13 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 // just keeping the code same for local and remote cluster at the moment.
 // TODO2: These remote pod sessions need to be aged out at some point, will need some reference
 // counting / last used timestamp etc..
-func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params, destAgent string, podIP string) common.Transport {
+func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
+	flow *nxthdr.NxtFlow, dest string, localPod bool) common.Transport {
 	var tunnel common.Transport
 	var pending bool = false
 
-	key := podIP + destAgent
+	// dest is cluster name if pod is remote, else pod name if local (same cluster)
+	key := dest + flow.DestAgent
 	// Try read lock first since the most common case should be that tunnels are
 	// already setup
 	pLock.RLock()
@@ -164,7 +176,7 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 		p = pods[key]
 		if p == nil {
 			pods[key] = &podInfo{pending: true, tunnel: nil}
-			podDial(s, ctx, MyInfo, destAgent, podIP)
+			podDial(s, ctx, MyInfo, flow, dest, localPod)
 			tunnel = pods[key].tunnel
 		} else {
 			tunnel = p.tunnel
@@ -176,28 +188,46 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 }
 
 // Create the initial session to a destination pod/remote cluser
-func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params, destAgent string, podIP string) {
+func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
+	flow *nxthdr.NxtFlow, dest string, localPod bool) {
 	var pubKey []byte
 	hdrs := make(http.Header)
 	// Take this session to the pod on the remote cluster hosting the particular agent/connector
-	hdrs.Add("x-nextensio-for", destAgent)
+	hdrs.Add("x-nextensio-for", flow.DestAgent)
 	// Just a value which lets the other end identify that this is a new "session"
 	hdrs.Add("x-nextensio-session", uuid.New().String())
+	// Add following headers required for stats dimensions:
+	// SourceAgentID: NxtFlow.originAgent
+	hdrs.Add("x-nextensio-sourceagent", flow.OriginAgent)
+	// SourceClusterID: MyInfo.Id
+	hdrs.Add("x-nextensio-sourcecluster", MyInfo.Id)
+	// SourcePodID: MyInfo.Pod
+	hdrs.Add("x-nextensio-sourcepod", MyInfo.Pod)
+	// DestClusterID: dest for inter-cluster traffic, else MyInfo.Id
+	// DestPodID: dest for intra-cluster traffic, else no header
+	if localPod == true {
+		hdrs.Add("x-nextensio-destcluster", MyInfo.Id)
+		hdrs.Add("x-nextensio-destpod", dest)
+	} else {
+		hdrs.Add("x-nextensio-destcluster", dest)
+		hdrs.Add("x-nextensio-destpod", "unknown")
+	}
+	// TargetID: Host header
 	lg := log.New(&zap2log{s: s}, "http2", 0)
-	client := nhttp2.NewClient(ctx, lg, pubKey, podIP, podIP, MyInfo.Iport, hdrs)
+	client := nhttp2.NewClient(ctx, lg, pubKey, dest, dest, MyInfo.Iport, hdrs)
 	// For pod to pod connectivity, a pod will always dial-out another one,
 	// we dont expect a stream to come in from the other end on a dial-out session,
 	// and hence the reason we use the unusedChan on which no one is listening.
 	// This is a unidirectional session, we just write on this. Writing from the
 	// other end will end up with the other end dialling a new connection
-	s.Debugf("Dialing pod", destAgent, podIP)
+	s.Debugf("Dialing pod", flow.DestAgent, dest)
 	err := client.Dial(unusedChan)
 	if err != nil {
-		s.Debugf("Dialing pod error", err, destAgent, podIP)
+		s.Debugf("Dialing pod error", err, flow.DestAgent, dest)
 		return
 	}
-	s.Debugf("Dialled pod", destAgent, podIP)
-	key := podIP + destAgent
+	s.Debugf("Dialled pod", flow.DestAgent, dest)
+	key := dest + flow.DestAgent
 	pods[key].pending = false
 	pods[key].tunnel = client
 }
@@ -260,9 +290,9 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	case shared.SelfDest:
 		return localRouteLookup(s, flow)
 	case shared.LocalDest:
-		return nil, podLookup(s, ctx, MyInfo, flow.DestAgent, fwd.Dest)
+		return nil, podLookup(s, ctx, MyInfo, flow, fwd.Dest, true)
 	case shared.RemoteDest:
-		return nil, podLookup(s, ctx, MyInfo, flow.DestAgent, fwd.Dest)
+		return nil, podLookup(s, ctx, MyInfo, flow, fwd.Dest, false)
 	}
 
 	return nil, nil
@@ -276,6 +306,8 @@ func userAccessAllowed(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, onboard *nxth
 	// The AAA access check is done per packet today, we can save some performance if we
 	// do it once per flow like route lookup, but then we lose the ability to firewall the
 	// flow after its established
+	// TODO: This check is not needed for anything received from an agent unless we are
+	// assuming both agents and connectors can connect to the same pod, which is not in POR.
 	if bundle != nil {
 		if !aaa.AccessOk(atype(bundle), (*bundle).Userid, flow.Usrattr, s) {
 			return false
@@ -288,7 +320,7 @@ func userAccessAllowed(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, onboard *nxth
 }
 
 func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel common.Transport,
-	dest common.Transport, first bool, Suuid uuid.UUID, onboard *nxthdr.NxtOnboard) {
+	dest common.Transport, first bool, Suuid uuid.UUID, onboard *nxthdr.NxtOnboard, f *nxthdr.NxtFlow, r string) {
 	tunnel.Close()
 	if dest != nil {
 		dest.Close()
@@ -304,6 +336,9 @@ func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel co
 			// if agent del fails
 			s.Debugf("Agent del failed", e)
 		}
+	}
+	if (r != "") && (f != nil) {
+		pakdropReq <- dropInfo{reason: r, flow: f, myInfo: MyInfo}
 	}
 }
 
@@ -336,7 +371,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 	for {
 		hdr, agentBuf, err := tunnel.Read()
 		if err != nil {
-			streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard)
+			streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
 			s.Debugf("Agent read error", err)
 			return
 		}
@@ -355,7 +390,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				sessionAdd(Suuid, onboard)
 				if e := agentAdd(s, MyInfo, onboard, tunnel); e != nil {
 					s.Debugf("Agent add failed, closing tunnels", e)
-					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard)
+					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
 					return
 				} else {
 					s.Debugf("Onboarded agent", onboard)
@@ -378,13 +413,15 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				// L4 routing failures need to terminate the flow
 				if dest == nil {
 					s.Debugf("Agent flow dest fail:", flow)
-					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard)
+					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard,
+						flow, "Couldn't get destination pod")
 					return
 				}
 				dest = dest.NewStream(nil)
 				if dest == nil {
 					s.Debugf("Agent flow stream fail:", flow)
-					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard)
+					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard,
+						flow, "Stream open failure on pod connection")
 					return
 				}
 				// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
@@ -393,13 +430,13 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			}
 			if !userAccessAllowed(s, flow, onboard, bundle) {
 				s.Debugf("Agent access fail:", bundle, flow.DestAgent)
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard)
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent access denied")
 				return
 			}
 			err := dest.Write(hdr, agentBuf)
 			if err != nil {
 				s.Debugf("Agent flow write fail:", err, flow)
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard)
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Write to Agent failed")
 				return
 			}
 		}
@@ -419,10 +456,54 @@ func bundleAccessAllowed(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, onboard *nx
 	return true
 }
 
-func streamFromPodClose(tunnel common.Transport, dest common.Transport) {
+var nullConn net.Conn = nil
+
+func pakDrop(s *zap.SugaredLogger) {
+	for {
+		select {
+		case info := <-pakdropReq:
+			s.Debugf("Dropping frame from %s - %s", info.flow.OriginAgent, info.reason)
+			continue // until blackhole support is in
+
+			if nullConn == nil {
+				servAddr := strings.Join([]string{"blackhole", strconv.Itoa(10000)}, ":")
+				conn, e := net.Dial("tcp", servAddr)
+				if e != nil {
+					continue
+				}
+				nullConn = conn
+			}
+			reqhdr := []byte("GET / HTTP/1.0")
+			drophdr := []byte("x-nextensio-drop: " + info.reason)
+			// SourceAgentID: NxtFlow.originAgent
+			sahdr := []byte("x-nextensio-sourceagent: " + info.flow.OriginAgent)
+			// SourceClusterID: MyInfo.Id
+			schdr := []byte("x-nextensio-sourcecluster: " + info.myInfo.Id)
+			// SourcePodID: MyInfo.Pod
+			sphdr := []byte("x-nextensio-sourcepod: " + info.myInfo.Pod)
+			// DestClusterID: unknown
+			// DestPodID: unknown
+			dchdr := []byte("x-nextensio-destcluster: unknown")
+			dphdr := []byte("x-nextensio-destpod: unknown")
+			clenhdr := []byte("Content-length: 0\r\n\r\n")
+			pak := bytes.Join([][]byte{reqhdr, drophdr, sahdr, schdr, sphdr, dchdr, dphdr, clenhdr},
+				[]byte("\r\n"))
+			_, e := nullConn.Write(pak)
+			if e != nil {
+				nullConn.Close()
+				nullConn = nil
+			}
+		}
+	}
+}
+
+func streamFromPodClose(tunnel common.Transport, dest common.Transport, MyInfo *shared.Params, f *nxthdr.NxtFlow, r string) {
 	tunnel.Close()
 	if dest != nil {
 		dest.Close()
+	}
+	if (r != "") && (f != nil) {
+		pakdropReq <- dropInfo{reason: r, flow: f, myInfo: MyInfo}
 	}
 }
 
@@ -440,7 +521,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 		hdr, podBuf, err := tunnel.Read()
 		if err != nil {
 			s.Debugf("InterPod Error", err)
-			streamFromPodClose(tunnel, dest)
+			streamFromPodClose(tunnel, dest, MyInfo, nil, "")
 			return
 		}
 		switch hdr.Hdr.(type) {
@@ -455,13 +536,13 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
 				if dest == nil {
 					s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
-					streamFromPodClose(tunnel, dest)
+					streamFromPodClose(tunnel, dest, MyInfo, flow, "Couldn't get destination to agent")
 					return
 				}
 				dest = dest.NewStream(nil)
 				if dest == nil {
-					s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
-					streamFromPodClose(tunnel, dest)
+					s.Debugf("Interpod: cant open stream on dest tunnel for ", flow.DestAgent)
+					streamFromPodClose(tunnel, dest, MyInfo, flow, "Stream open to agent failed")
 					return
 				}
 				// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
@@ -469,13 +550,13 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				dest.CloseCascade(tunnel)
 			}
 			if !bundleAccessAllowed(s, flow, onboard) {
-				streamFromPodClose(tunnel, dest)
+				streamFromPodClose(tunnel, dest, MyInfo, flow, "Agent access denied")
 				return
 			}
 			err := dest.Write(hdr, podBuf)
 			if err != nil {
 				s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
-				streamFromPodClose(tunnel, dest)
+				streamFromPodClose(tunnel, dest, MyInfo, flow, "Write to destination pod failed")
 				return
 			}
 		}
@@ -488,6 +569,8 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	pods = make(map[string]*podInfo)
 	localRoutes = make(map[string]*nxthdr.NxtOnboard)
 	unusedChan = make(chan common.NxtStream)
+	pakdropReq = make(chan dropInfo)
+	go pakDrop(s)
 	go outsideListener(s, MyInfo, ctx, "websocket")
 	go insideListener(s, MyInfo, ctx, "http2")
 }
