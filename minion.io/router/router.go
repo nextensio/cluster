@@ -152,7 +152,7 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 // TODO2: These remote pod sessions need to be aged out at some point, will need some reference
 // counting / last used timestamp etc..
 func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
-	flow *nxthdr.NxtFlow, dest string, localPod bool) common.Transport {
+	flow *nxthdr.NxtFlow, dest string) common.Transport {
 	var tunnel common.Transport
 	var pending bool = false
 
@@ -176,7 +176,7 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 		p = pods[key]
 		if p == nil {
 			pods[key] = &podInfo{pending: true, tunnel: nil}
-			podDial(s, ctx, MyInfo, flow, dest, localPod)
+			podDial(s, ctx, MyInfo, flow, dest)
 			tunnel = pods[key].tunnel
 		} else {
 			tunnel = p.tunnel
@@ -189,30 +189,14 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 
 // Create the initial session to a destination pod/remote cluser
 func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
-	flow *nxthdr.NxtFlow, dest string, localPod bool) {
+	flow *nxthdr.NxtFlow, dest string) {
 	var pubKey []byte
 	hdrs := make(http.Header)
 	// Take this session to the pod on the remote cluster hosting the particular agent/connector
 	hdrs.Add("x-nextensio-for", flow.DestAgent)
 	// Just a value which lets the other end identify that this is a new "session"
 	hdrs.Add("x-nextensio-session", uuid.New().String())
-	// Add following headers required for stats dimensions:
-	// SourceAgentID: NxtFlow.originAgent
-	hdrs.Add("x-nextensio-sourceagent", flow.OriginAgent)
-	// SourceClusterID: MyInfo.Id
-	hdrs.Add("x-nextensio-sourcecluster", MyInfo.Id)
-	// SourcePodID: MyInfo.Pod
-	hdrs.Add("x-nextensio-sourcepod", MyInfo.Pod)
-	// DestClusterID: dest for inter-cluster traffic, else MyInfo.Id
-	// DestPodID: dest for intra-cluster traffic, else no header
-	if localPod == true {
-		hdrs.Add("x-nextensio-destcluster", MyInfo.Id)
-		hdrs.Add("x-nextensio-destpod", dest)
-	} else {
-		hdrs.Add("x-nextensio-destcluster", dest)
-		hdrs.Add("x-nextensio-destpod", "unknown")
-	}
-	// TargetID: Host header
+
 	lg := log.New(&zap2log{s: s}, "http2", 0)
 	client := nhttp2.NewClient(ctx, lg, pubKey, dest, dest, MyInfo.Iport, hdrs)
 	// For pod to pod connectivity, a pod will always dial-out another one,
@@ -286,13 +270,37 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 		return nil, nil
 	}
 
+	hdrs := make(http.Header)
+	// Add following headers required for stats dimensions:
+	// SourceAgentID: NxtFlow.originAgent
+	hdrs.Add("x-nextensio-sourceagent", flow.OriginAgent)
+	// SourceClusterID: MyInfo.Id
+	hdrs.Add("x-nextensio-sourcecluster", MyInfo.Id)
+	// SourcePodID: MyInfo.Pod
+	hdrs.Add("x-nextensio-sourcepod", MyInfo.Pod)
+	// DestClusterID: fwd.Dest for inter-cluster traffic, else MyInfo.Id
+	// DestPodID: fwd.Dest for intra-cluster traffic, else no header
+
 	switch fwd.DestType {
 	case shared.SelfDest:
-		return localRouteLookup(s, flow)
+		bundle, dest := localRouteLookup(s, flow)
+		if dest != nil {
+			return bundle, dest.NewStream(nil)
+		}
 	case shared.LocalDest:
-		return nil, podLookup(s, ctx, MyInfo, flow, fwd.Dest, true)
+		dest := podLookup(s, ctx, MyInfo, flow, fwd.Dest)
+		if dest != nil {
+			hdrs.Add("x-nextensio-destcluster", MyInfo.Id)
+			hdrs.Add("x-nextensio-destpod", fwd.Dest)
+			return nil, dest.NewStream(hdrs)
+		}
 	case shared.RemoteDest:
-		return nil, podLookup(s, ctx, MyInfo, flow, fwd.Dest, false)
+		dest := podLookup(s, ctx, MyInfo, flow, fwd.Dest)
+		if dest != nil {
+			hdrs.Add("x-nextensio-destcluster", fwd.Dest)
+			hdrs.Add("x-nextensio-destpod", "unknown")
+			return nil, dest.NewStream(hdrs)
+		}
 	}
 
 	return nil, nil
