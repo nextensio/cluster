@@ -417,21 +417,14 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			// Route lookup just one time
 			if dest == nil {
 				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow)
-				s.Debugf("Agent L4 Lookup", flow, bundle, dest)
 				// L4 routing failures need to terminate the flow
 				if dest == nil {
 					s.Debugf("Agent flow dest fail:", flow)
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard,
-						flow, "Couldn't get destination pod")
+						flow, "Couldn't get destination pod or open stream to it")
 					return
 				}
-				dest = dest.NewStream(nil)
-				if dest == nil {
-					s.Debugf("Agent flow stream fail:", flow)
-					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard,
-						flow, "Stream open failure on pod connection")
-					return
-				}
+				s.Debugf("Agent L4 Lookup", flow, bundle, dest)
 				// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
 				// the close is cascaded to the other elements connected to the cluster (pods/agents)
 				dest.CloseCascade(tunnel)
@@ -541,12 +534,12 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 			// Route lookup just one time
 			if dest == nil {
 				onboard, dest = localRouteLookup(s, flow)
-				s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
 				if dest == nil {
 					s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
 					streamFromPodClose(tunnel, dest, MyInfo, flow, "Couldn't get destination to agent")
 					return
 				}
+				s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
 				dest = dest.NewStream(nil)
 				if dest == nil {
 					s.Debugf("Interpod: cant open stream on dest tunnel for ", flow.DestAgent)
