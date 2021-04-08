@@ -31,7 +31,7 @@ var myClient = &http.Client{Timeout: 10 * time.Second}
 const (
 	consulRetries    = 5
 	LocalSuffix      = ".svc.cluster.local"
-	RemotePrePrefix  = "gateway"
+	RemotePrePrefix  = ""
 	RemotePostPrefix = ".nextensio.net"
 )
 

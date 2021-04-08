@@ -85,7 +85,6 @@ const HDRKEY = "Header"
 // These are key names that should be used in the OPA Rego policies
 const kmajver = "maj_ver" // Collection major version
 const kminver = "min_ver" // Collection minor version
-const ktnt = "tenant"     // Tenant for collection
 const kbid = "bid"        // App-bundle ID from AppInfo and AppAttr collections
 const kuser = "uid"       // User ID from UserInfo and UserAttr collections
 const khost = "host"      // Host ID from HostAttr collection
@@ -99,12 +98,11 @@ const kuserattrs = "user"      // Anchor for input user attributes in routing
 // Can't seem to add a Rego policy via mongoshell, hence the hack to also
 // provide a filename that is then used to read the policy from a local file.
 type Policy struct {
-	PolicyId string             `json:"pid" bson:"_id"`
-	Majver   int                `json:"majver" bson:"majver"` // major version
-	Minver   int                `json:"minver" bson:"minver"` // minor version
-	Tenant   primitive.ObjectID `json:"tenant" bson:"tenant"`
-	Fname    string             `json:"fname" bson:"fname"` // rego policy filename
-	Rego     []rune             `json:"rego" bson:"rego"`   // rego policy
+	PolicyId string `json:"pid" bson:"_id"`
+	Majver   int    `json:"majver" bson:"majver"` // major version
+	Minver   int    `json:"minver" bson:"minver"` // minor version
+	Fname    string `json:"fname" bson:"fname"`   // rego policy filename
+	Rego     []rune `json:"rego" bson:"rego"`     // rego policy
 }
 
 // Header document for a data collection so that the versions and tenant are not
@@ -112,10 +110,9 @@ type Policy struct {
 // info for the collection from a single document.
 // Ensure this always matches with the definition in the controller repo.
 type DataHdr struct {
-	ID     string             `bson:"_id" json:"ID"`
-	Majver int                `bson:"majver" json:"majver"`
-	Minver int                `bson:"minver" json:"minver"`
-	Tenant primitive.ObjectID `bson:"tenant" json:"tenant"`
+	ID     string `bson:"_id" json:"ID"`
+	Majver int    `bson:"majver" json:"majver"`
+	Minver int    `bson:"minver" json:"minver"`
 }
 
 // Data object to track every use case
@@ -574,7 +571,7 @@ func nxtReadPolicyDocument(ctx context.Context, usecase string, ptype string) {
 	var policy Policy
 
 	// Read specific policy by specifying "_id" = ptype
-	err := CollMap[policyCollection].FindOne(ctx, bson.M{"_id": ptype, "tenant": tenantOID}).Decode(&policy)
+	err := CollMap[policyCollection].FindOne(ctx, bson.M{"_id": ptype}).Decode(&policy)
 	if err != nil {
 		nxtLogError(usecase, fmt.Sprintf("Failed to find %s, error - %v", ptype, err))
 		nxtMongoError()
@@ -618,7 +615,7 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 	var hdr DataHdr
 	qs := QStateMap[ucase]
 	coll := qs.DColl
-	err := CollMap[coll].FindOne(ctx, bson.M{"_id": qs.HdrKey, "tenant": tenantOID}).Decode(&hdr)
+	err := CollMap[coll].FindOne(ctx, bson.M{"_id": qs.HdrKey}).Decode(&hdr)
 	if err != nil {
 		nxtLogError(ucase, fmt.Sprintf("Failed to find %s header doc - %v", qs.HdrKey, err))
 		nxtMongoError()
@@ -690,7 +687,7 @@ func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 	var errhdr = DataHdr{ID: hdrKeyNm2[0], Majver: 0, Minver: 0}
 
 	coll := CollMap[userAttrCollection]
-	err := coll.FindOne(ctx, bson.M{"_id": hdrKeyNm2[0], "tenant": tenantOID}).Decode(&uahdr)
+	err := coll.FindOne(ctx, bson.M{"_id": hdrKeyNm2[0]}).Decode(&uahdr)
 	if err != nil {
 		nxtLogError(hdrKeyNm2[0], fmt.Sprintf("Failed to find user attr header doc - %v", err))
 		nxtMongoError()
@@ -751,7 +748,7 @@ func nxtReadUserAttrDB(uuid string) (bson.M, bool) {
 
 	// Read user attributes from DB, cache json version, and return it
 	coll := CollMap[userAttrCollection]
-	err := coll.FindOne(ctx, bson.M{"_id": uuid, "tenant": tenant}).Decode(&usera)
+	err := coll.FindOne(ctx, bson.M{"_id": uuid}).Decode(&usera)
 	if err != nil {
 		nxtLogError(uuid, fmt.Sprintf("Failed to find attributes doc for user - %v", err))
 		nxtMongoError()
@@ -813,7 +810,7 @@ func nxtReadUserExtAttrDoc(ctx context.Context) {
 	var uahdr UserExtAttr
 
 	coll := CollMap[userAttrCollection]
-	err := coll.FindOne(ctx, bson.M{"_id": userExtAttrDocKey, "tenant": tenant}).Decode(&uahdr)
+	err := coll.FindOne(ctx, bson.M{"_id": userExtAttrDocKey}).Decode(&uahdr)
 	if err != nil {
 		// Disable this error until it's fully implemented
 		//nxtLogError(userExtAttrDocKey, fmt.Sprintf("Failed to read user extended attributes doc - %v", err))
@@ -868,7 +865,7 @@ func nxtCreateCollJSON(ctx context.Context, ucase string, keyid string, istr str
 	qsm := QStateMap[ucase]
 	tsm := TStateMap[ucase]
 	coll := qsm.DColl
-	cursor, err := CollMap[coll].Find(ctx, bson.M{"tenant": tenant})
+	cursor, err := CollMap[coll].Find(ctx, bson.M{})
 	if err != nil {
 		nxtLogError(ucase, fmt.Sprintf("Failed to find any attribute docs - %v", err))
 		nxtMongoError()
@@ -1108,7 +1105,6 @@ func nxtExecOpaQry(inp []byte, ucase string) (rego.ResultSet, bool) {
 func nxtAddVerToDoc(doc bson.M, hdr DataHdr) bson.M {
 	doc[kmajver] = hdr.Majver
 	doc[kminver] = hdr.Minver
-	doc[ktnt] = hdr.Tenant.Hex()
 	return doc
 }
 
