@@ -13,7 +13,6 @@ package authz
 // NxtAAAInit() - to be called once for initialization before any other API calls
 // Ingress pod APIs:
 //     func NxtGetUsrAttr(userid string) (string, bool)
-//     func NxtUsrJoin(userid string)
 //     func NxtUsrLeave(userid string)
 //     func NxtUsrAllowed(userid string) bool
 //     func NxtRouteLookup(userid string, host string, ...)
@@ -31,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	//"strings"
@@ -163,6 +163,8 @@ var mongoFailures int
 var mongoInitDone bool
 var mongoDBAddr string
 var tenant string
+var nxtPod string
+var nxtDisconnect func(string, *zap.SugaredLogger)
 var tenantOID primitive.ObjectID
 var slog *zap.SugaredLogger
 var st, sg, sm zap.Field // for tenant, gateway, module
@@ -172,85 +174,89 @@ var mongoClient *mongo.Client
 var nxtMongoDBName string // set to nxtMongoDB (legacy) or a unique name per tenant going forward
 
 /******************************** Calls from minion ******************/
-//export NxtAaaInit
-func NxtAaaInit(namespace string, mongouri string, sl *zap.SugaredLogger) int {
-	err := nxtOpaInit(namespace, mongouri, sl)
+func NxtAaaInit(namespace string, pod string, mongouri string, sl *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) int {
+	err := nxtOpaInit(namespace, pod, mongouri, sl, disconnectCb)
 	if err != nil {
 		return 1
 	}
 	return 0
 }
 
-//export NxtUsrJoin
-func NxtUsrJoin(userid string) {
+func NxtUsrAllowed(which string, userid string) bool {
 	if initDone == false || mongoInitDone == false {
-		return
+		return false
 	}
-	_ = nxtGetUserAttrJSON(userid)
-}
-
-//export NxtUsrLeave
-func NxtUsrLeave(userid string) {
-	if initDone == false {
-		return
+	var bson primitive.M
+	var ok bool
+	if which == "agent" {
+		nxtGetUserAttrJSON(userid)
+		_, bson, ok = nxtReadUserAttrCache(userid)
+	} else {
+		nxtGetAppAttrJSON(userid)
+		_, bson, ok = nxtReadAppAttrCache(userid)
 	}
-	// Don't check mongoInitDone as we purge the data in local cache
-	nxtPurgeUserAttrJSON(userid)
-}
-
-//export NxtGetUsrAttr
-func NxtGetUsrAttr(userid string) (string, bool) {
-	if initDone == false {
-		return "", false
+	if !ok {
+		NxtUsrLeave(which, userid)
+		return false
 	}
-	// Don't check mongoInitDone as we may have the data in local cache
-	// The call handles the case where mongo init not done and data not in local cache
-	return nxtGetUserAttrJSON(userid), true
-}
-
-//export NxtUsrAllowed
-func NxtUsrAllowed(userid string) bool {
-	if initDone == false {
+	if pod, found := bson["_pod"].(string); found {
+		if pod != nxtPod {
+			NxtUsrLeave(which, userid)
+			return false
+		}
+	} else {
+		NxtUsrLeave(which, userid)
 		return false
 	}
 	return true
 }
 
-//export NxtAccessOk
-func NxtAccessOk(bundleid string, userattr string) bool {
+func NxtUsrLeave(which string, userid string) {
+	if initDone == false {
+		return
+	}
+	if which == "agent" {
+		// Don't check mongoInitDone as we purge the data in local cache
+		nxtPurgeUserAttrJSON(userid)
+	} else {
+		nxtPurgeAppAttrJSON(userid)
+	}
+}
+
+func NxtGetUsrAttr(which string, userid string) (string, bool) {
+	if initDone == false {
+		return "", false
+	}
+	// Don't check mongoInitDone as we may have the data in local cache
+	// The call handles the case where mongo init not done and data not in local cache
+	if which == "agent" {
+		return nxtGetUserAttrJSON(userid), true
+	} else {
+		return "", false
+	}
+}
+
+func NxtAccessOk(which string, bundleid string, userattr string) bool {
 	if initDone == false {
 		return false
+	}
+	if which == "agent" {
+		return true
 	}
 	return nxtEvalAppAccessAuthz(opaUseCases[2], userattr, bundleid)
 }
 
-// export NxtRouteLookup (New)
-func NxtRouteLookup(uid string, host string) string {
+func NxtRouteLookup(which string, uid string, host string) string {
 	if initDone == false || mongoInitDone == false {
+		return ""
+	}
+	if which != "agent" {
 		return ""
 	}
 	return nxtEvalUserRouting(opaUseCases[3], uid, host, nil)
 }
 
 const RouteTag = "tag"
-
-//export NxtRouteLookup (original)
-func NxtRouteLookupOrig(uid string, routeid string) string {
-	if initDone == false || mongoInitDone == false {
-		return ""
-	}
-	// For parity with python version of minion
-	var route bson.M
-	var key = uid + ":" + routeid
-	err := CollMap[RouteCollection].FindOne(
-		context.TODO(),
-		bson.M{"_id": key},
-	).Decode(&route)
-	if err == nil {
-		return fmt.Sprintf("%s", route[RouteTag])
-	}
-	return ""
-}
 
 /*********************************************************************/
 
@@ -352,6 +358,7 @@ func nxtOpaProcess(ctx context.Context) int {
 		}
 		// Process if new version of UserAttr collection
 		nxtProcessUserAttrChanges(ctx)
+		nxtProcessAppAttrChanges(ctx)
 
 		if (QStateMap[opaUseCases[0]].WrVer == true) || (QStateMap[opaUseCases[2]].WrVer == true) ||
 			(QStateMap[opaUseCases[3]].WrVer == true) {
@@ -364,8 +371,7 @@ func nxtOpaProcess(ctx context.Context) int {
 
 //-------------------------------- Init Functions ----------------------------------
 // API to init nxt OPA interface
-//export nxtOpaInit
-func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
+func nxtOpaInit(ns string, pod string, mongouri string, sl *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) error {
 	defer func() {
 		initExit <- true
 	}()
@@ -387,6 +393,8 @@ func nxtOpaInit(ns string, mongouri string, sl *zap.SugaredLogger) error {
 
 	nxtMongoDBName = nxtGetTenantDBName(tenant)
 	mongoDBAddr = mongouri
+	nxtPod = pod
+	nxtDisconnect = disconnectCb
 
 	go nxtOpaProcess(ctx)
 	procStarted = true
@@ -419,6 +427,7 @@ func nxtOpaUseCaseInit(ctx context.Context) {
 	// Set up cache for user attributes.
 	// Then read the extended (runtime) attributes spec doc
 	userAttr = make(map[string]usrCache, maxUsers)
+	appAttr = make(map[string]usrCache, maxUsers)
 	usrAttrHdr = nxtReadUserAttrHdr(ctx)
 	nxtReadUserExtAttrDoc(ctx)
 
@@ -662,10 +671,11 @@ func nxtReadRefDataDoc(ctx context.Context, ucase string) {
 // the collection version changes. Cache entries are purged when a user disconnects.
 type usrCache struct {
 	uajson string
+	uabson primitive.M
 }
 
 var userAttr map[string]usrCache
-var userAttrLock bool
+var userAttrLock sync.Mutex
 var usrAttrHdr DataHdr
 
 // If new version of user attribues collection is available, read the
@@ -696,44 +706,46 @@ func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 	return uahdr
 }
 
-// Read one user's attr data from mongoDB collection and return it together
-// with the json version with header info added. Called when user connects to service pod.
-//export nxtGetUserAttrJSON
-func nxtGetUserAttrJSON(uuid string) string {
+func loadUserAttrFromDB(uuid string) string {
 	var uaC usrCache
-
-	ua, ok := nxtReadUserAttrCache(uuid)
-	if ok {
-		return ua // cached version
-	}
 
 	uastruct, ok := nxtReadUserAttrDB(uuid)
 	if ok {
-		ua = nxtConvertToJSON(uastruct)
-		if userAttrLock != true {
-			uaC.uajson = ua
-			userAttr[uuid] = uaC
-			//nxtLogDebug(uuid, "Added attributes for user to local cache")
-		}
+		ua := nxtConvertToJSON(uastruct)
+		userAttrLock.Lock()
+		uaC.uajson = ua
+		uaC.uabson = uastruct
+		userAttr[uuid] = uaC
+		userAttrLock.Unlock()
 		return ua
 	}
 	return ""
 }
 
-// Read a user attribute doc from local cache
-func nxtReadUserAttrCache(uuid string) (string, bool) {
-	if userAttrLock {
-		nxtLogDebug(uuid, "Local cache locked while retieving attributes for user")
-		return "", false // force a read from the DB
+// Read one user's attr data from mongoDB collection and return it together
+// with the json version with header info added. Called when user connects to service pod.
+func nxtGetUserAttrJSON(uuid string) string {
+	ua, _, ok := nxtReadUserAttrCache(uuid)
+	if ok {
+		return ua // cached version
 	}
+
+	return loadUserAttrFromDB(uuid)
+}
+
+// Read a user attribute doc from local cache
+func nxtReadUserAttrCache(uuid string) (string, primitive.M, bool) {
+	userAttrLock.Lock()
+	defer userAttrLock.Unlock()
+
 	// Check in cache if user's attributes exist. If yes, return value.
 	uaC, ok := userAttr[uuid]
 	if ok == true {
 		//nxtLogDebug(uuid, "Retrieved attributes for user from local cache")
-		return uaC.uajson, true
+		return uaC.uajson, uaC.uabson, true
 	}
 	//nxtLogDebug(uuid, "Failed to find attributes for user in local cache")
-	return "", false
+	return "", nil, false
 }
 
 // Read a user attribute doc from the DB and add header document info
@@ -760,10 +772,24 @@ func nxtReadUserAttrDB(uuid string) (bson.M, bool) {
 }
 
 // Remove user attributes for a user on disconnect
-//export nxtPurgeUserAttrJSON
 func nxtPurgeUserAttrJSON(uuid string) {
-	if userAttrLock != true {
-		delete(userAttr, uuid) // if locked, let it be
+	userAttrLock.Lock()
+	defer userAttrLock.Unlock()
+	delete(userAttr, uuid)
+}
+
+// The users attributes have changed, check if the user is still allowed
+// to connect to this pod / cluster etc..
+func nxtUsrAttrChanged(uuid string, new primitive.M) {
+	if attr, found := userAttr[uuid]; found {
+		if o, ok := attr.uabson["_pod"].(string); ok {
+			// If the users pod changed from this pod to another, disconnect the user tunnel
+			if n, ok := new["_pod"].(string); ok {
+				if o == nxtPod && o != n {
+					nxtDisconnect(uuid, slog)
+				}
+			}
+		}
 	}
 }
 
@@ -771,14 +797,149 @@ func nxtPurgeUserAttrJSON(uuid string) {
 func nxtUpdateUserAttrCache() {
 	var uaC usrCache
 
-	userAttrLock = true
+	userAttrLock.Lock()
+	defer userAttrLock.Unlock()
+
 	for id, _ := range userAttr {
 		uastruct, _ := nxtReadUserAttrDB(id)
 		uaC.uajson = nxtConvertToJSON(uastruct)
+		uaC.uabson = uastruct
+		nxtUsrAttrChanged(id, uastruct)
 		userAttr[id] = uaC
 	}
-	userAttrLock = false
 	nxtLogDebug("UserAttrCache", fmt.Sprintf("Updated %v entries in local cache", len(userAttr)))
+}
+
+var appAttr map[string]usrCache
+var appAttrLock sync.Mutex
+var appAttrHdr DataHdr
+
+// If new version of app attribues collection is available, read the
+// extended attributes spec doc and update the cache for active apps
+func nxtProcessAppAttrChanges(ctx context.Context) {
+	tmphdr := nxtReadAppAttrHdr(ctx)
+	if (tmphdr.Majver > appAttrHdr.Majver) || (tmphdr.Minver > appAttrHdr.Minver) {
+		appAttrHdr = tmphdr
+		QStateMap[opaUseCases[2]].WrVer = true // for testing infra
+		nxtUpdateAppAttrCache()
+	}
+}
+
+// Read header doc from app attributes collection to get version info
+func nxtReadAppAttrHdr(ctx context.Context) DataHdr {
+	// read header document for app attr collection used as input
+	var apphdr DataHdr
+	var errhdr = DataHdr{ID: HDRKEY, Majver: 0, Minver: 0}
+
+	coll := CollMap[appAttrCollection]
+	err := coll.FindOne(ctx, bson.M{"_id": HDRKEY}).Decode(&apphdr)
+	if err != nil {
+		nxtLogError(hdrKeyNm2[0], fmt.Sprintf("Failed to find app attr header doc - %v", err))
+		nxtMongoError()
+		return errhdr
+	}
+	return apphdr
+}
+
+func loadAppAttrFromDB(uuid string) string {
+	var appC usrCache
+
+	appstruct, ok := nxtReadAppAttrDB(uuid)
+	if ok {
+		app := nxtConvertToJSON(appstruct)
+		appAttrLock.Lock()
+		appC.uajson = app
+		appC.uabson = appstruct
+		appAttr[uuid] = appC
+		appAttrLock.Unlock()
+		return app
+	}
+	return ""
+}
+
+// Read one app's attr data from mongoDB collection and return it together
+// with the json version with header info added. Called when app connects to service pod.
+func nxtGetAppAttrJSON(uuid string) string {
+	app, _, ok := nxtReadAppAttrCache(uuid)
+	if ok {
+		return app // cached version
+	}
+
+	return loadAppAttrFromDB(uuid)
+}
+
+// Read an app attribute doc from local cache
+func nxtReadAppAttrCache(uuid string) (string, primitive.M, bool) {
+	appAttrLock.Lock()
+	defer appAttrLock.Unlock()
+
+	appC, ok := appAttr[uuid]
+	if ok == true {
+		return appC.uajson, appC.uabson, true
+	}
+	return "", nil, false
+}
+
+// Read an app attribute doc from the DB and add header document info
+func nxtReadAppAttrDB(appid string) (bson.M, bool) {
+	var appa bson.M
+
+	if mongoInitDone == false {
+		return bson.M{}, false
+	}
+
+	ctx := context.Background()
+
+	// Read app attributes from DB, cache json version, and return it
+	coll := CollMap[appAttrCollection]
+	err := coll.FindOne(ctx, bson.M{"_id": appid}).Decode(&appa)
+	if err != nil {
+		nxtLogError(appid, fmt.Sprintf("Failed to find attributes doc for app - %v", err))
+		nxtMongoError()
+		return bson.M{}, false
+	}
+	appa = nxtFixupAttrID(appa, kuser)
+	appa = nxtAddVerToDoc(appa, appAttrHdr)
+	return appa, true
+}
+
+// Remove app attributes for a apps on disconnect
+func nxtPurgeAppAttrJSON(appid string) {
+	appAttrLock.Lock()
+	defer appAttrLock.Unlock()
+	delete(appAttr, appid)
+}
+
+// The app's attributes have changed, check if the app is still allowed
+// to connect to this pod / cluster etc..
+func nxtAppAttrChanged(uuid string, new primitive.M) {
+	if attr, found := appAttr[uuid]; found {
+		if o, ok := attr.uabson["_pod"].(string); ok {
+			// If the app's pod changed from this pod to another, disconnect the user tunnel
+			if n, ok := new["_pod"].(string); ok {
+				if o == nxtPod && o != n {
+					nxtDisconnect(uuid, slog)
+				}
+			}
+		}
+	}
+}
+
+// Update cache because version info changed for collection
+func nxtUpdateAppAttrCache() {
+	var appC usrCache
+
+	appAttrLock.Lock()
+	defer appAttrLock.Unlock()
+
+	for id, _ := range appAttr {
+		appstruct, _ := nxtReadAppAttrDB(id)
+		appC.uajson = nxtConvertToJSON(appstruct)
+		appC.uabson = appstruct
+		nxtAppAttrChanged(id, appstruct)
+		appAttr[id] = appC
+	}
+	nxtLogDebug("AppAttrCache", fmt.Sprintf("Updated %v entries in local cache", len(appAttr)))
 }
 
 // Extended (runtime) user attributes spec. The mongoDB doc specifies the HTTP headers
@@ -913,11 +1074,6 @@ func nxtCreateCollJSON(ctx context.Context, ucase string, keyid string, istr str
 // It takes the HTTP header for user attributes and target app bundle ID for destination
 // Connector to call the API for app access authz
 // It gets back a true or false as the authz result.
-//
-// Go return type rego.ResultSet not supported in an exported function, hence return bool
-// instead of the complex struct rego.ResultSet.
-
-//export nxtEvalAppAccessAuthz
 func nxtEvalAppAccessAuthz(ucase string, uattr string, bid string) bool {
 	// Unmarshal uattr into a UserAttr struct and insert bid into it
 	// Convert back to a unified json string
@@ -987,8 +1143,6 @@ func nxtEvalConnectorAuthz(ctx context.Context, inp []byte) bool {
 // API for routing policy with the user id, destination host and the HTTP headers.
 // API returns a string tag which may be null for default case. Minion uses the tag
 // to determine the routing.
-
-//export nxtEvalUserRouting
 func nxtEvalUserRouting(ucase string, uid string, host string, hdr *http.Header) string {
 	// Use uid to get user attributes from local cache, hdr to get runtime attributes
 	// from HTTP headers. Combine these attributes with host to generate a unified json

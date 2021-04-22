@@ -3,6 +3,7 @@ package router
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -45,6 +46,7 @@ type dropInfo struct {
 var aLock sync.RWMutex
 var sessions map[uuid.UUID]nxthdr.NxtOnboard
 var agents map[string]common.Transport
+var users map[string][]common.Transport
 var pLock sync.RWMutex
 var pods map[string]*podInfo
 var unusedChan chan common.NxtStream
@@ -83,31 +85,48 @@ func atype(onboard *nxthdr.NxtOnboard) string {
 }
 
 func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, tunnel common.Transport) error {
+	if !aaa.UsrAllowed(atype(onboard), onboard.Userid, s) {
+		return fmt.Errorf("User disallowed")
+	}
 	aLock.Lock()
 	agents[onboard.Uuid] = tunnel
+	cur := users[onboard.Userid]
+	users[onboard.Userid] = append(cur, tunnel)
+	aLock.Unlock()
 	localRouteAdd(s, MyInfo, onboard)
 	err := consul.RegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
-	if onboard.Agent {
-		aaa.UsrJoin(atype(onboard), onboard.Userid, s)
+	if err != nil {
+		return err
 	}
-	aLock.Unlock()
 
 	return err
 }
 
 func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, tunnel common.Transport) error {
 	var err error
+	deleted := false
 	aLock.Lock()
 	if agents[onboard.Uuid] == tunnel {
 		delete(agents, onboard.Uuid)
-		localRouteDel(s, MyInfo, onboard)
-		err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
-		if onboard.Agent {
-			aaa.UsrLeave(atype(onboard), onboard.Userid, s)
+		cur := users[onboard.Userid]
+		for i := 0; i < len(cur); i++ {
+			if cur[i] == tunnel {
+				users[onboard.Userid] = append(cur[:i], cur[i+1:]...)
+				break
+			}
 		}
+		if len(users[onboard.Userid]) == 0 {
+			delete(users, onboard.Userid)
+		}
+		deleted = true
 	}
 	aLock.Unlock()
 
+	if deleted {
+		localRouteDel(s, MyInfo, onboard)
+		err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
+		aaa.UsrLeave(atype(onboard), onboard.Userid, s)
+	}
 	return err
 }
 
@@ -117,6 +136,18 @@ func agentGet(uuid string) common.Transport {
 	aLock.RUnlock()
 
 	return tunnel
+}
+
+func DisconnectUser(userid string, s *zap.SugaredLogger) {
+	aLock.Lock()
+	cur := users[userid]
+	var i = 0
+	for ; i < len(cur); i++ {
+		cur[i].Close()
+	}
+	aLock.Unlock()
+
+	s.Debugf("Force disconnected user %s, tunnels %d", userid, i)
 }
 
 // Lookup a session to the agent/connector on this same pod.
@@ -567,6 +598,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context) {
 	sessions = make(map[uuid.UUID]nxthdr.NxtOnboard)
 	agents = make(map[string]common.Transport)
+	users = make(map[string][]common.Transport)
 	pods = make(map[string]*podInfo)
 	localRoutes = make(map[string]*nxthdr.NxtOnboard)
 	unusedChan = make(chan common.NxtStream)

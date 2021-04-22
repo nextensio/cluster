@@ -50,7 +50,7 @@ func main() {
 	args.ArgHandler(sugar, &MyInfo)
 	env.EnvHandler(sugar, &MyInfo)
 	router.RouterInit(sugar, &MyInfo, ctx)
-	go aaa.AaaStart(MyInfo.Namespace, MyInfo.MongoUri, sugar)
+	go aaa.AaaStart(MyInfo.Namespace, MyInfo.Pod, MyInfo.MongoUri, sugar, router.DisconnectUser)
 	for {
 		time.Sleep(86400 * time.Second)
 	}
