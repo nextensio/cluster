@@ -43,6 +43,15 @@ type dropInfo struct {
 	myInfo *shared.Params
 }
 
+// TODO: The lock is a big fat lock here and is liberally taken during the entire duration
+// of an agent add/del operation - including the time spent registering/deregistering with
+// consul etc.. The add and del of an agent can happen in parallel - one agent tunnel might
+// be going down and at the same time a new tunnel from the same agent might be coming up.
+// So it is VERY IMPORTANT to take the locks for a single agent and to serialize them properly,
+// but we do not have to take this big fat lock for that reason - so we really need a per-agent
+// lock also so that one agent going up down does not block another agent. So the big lock
+// should be taken just when the global arrays are mutated/changed, and the per-agent lock
+// should be taken during the time the agent consul/route/whatever other operations are done
 var aLock sync.RWMutex
 var sessions map[uuid.UUID]nxthdr.NxtOnboard
 var agents map[string]common.Transport
@@ -56,23 +65,26 @@ var pakdropReq chan dropInfo
 
 func sessionAdd(Suuid uuid.UUID, onboard *nxthdr.NxtOnboard) {
 	aLock.Lock()
+	defer aLock.Unlock()
+
 	sessions[Suuid] = *onboard
-	aLock.Unlock()
 }
 
 func sessionDel(Suuid uuid.UUID) {
 	aLock.Lock()
+	defer aLock.Unlock()
+
 	delete(sessions, Suuid)
-	aLock.Unlock()
 }
 
 func sessionGet(Suuid uuid.UUID) *nxthdr.NxtOnboard {
 	var onboard *nxthdr.NxtOnboard
 	aLock.RLock()
+	defer aLock.RUnlock()
+
 	if o, ok := sessions[Suuid]; ok {
 		onboard = &o
 	}
-	aLock.RUnlock()
 	return onboard
 }
 
@@ -85,14 +97,15 @@ func atype(onboard *nxthdr.NxtOnboard) string {
 }
 
 func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, tunnel common.Transport) error {
+	aLock.Lock()
+	defer aLock.Unlock()
+
 	if !aaa.UsrAllowed(atype(onboard), onboard.Userid, s) {
 		return fmt.Errorf("User disallowed")
 	}
-	aLock.Lock()
 	agents[onboard.Uuid] = tunnel
 	cur := users[onboard.Userid]
 	users[onboard.Userid] = append(cur, tunnel)
-	aLock.Unlock()
 	localRouteAdd(s, MyInfo, onboard)
 	err := consul.RegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
 	if err != nil {
@@ -103,9 +116,11 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 }
 
 func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, tunnel common.Transport) error {
+	aLock.Lock()
+	defer aLock.Unlock()
+
 	var err error
 	deleted := false
-	aLock.Lock()
 	if agents[onboard.Uuid] == tunnel {
 		delete(agents, onboard.Uuid)
 		cur := users[onboard.Userid]
@@ -120,7 +135,6 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 		}
 		deleted = true
 	}
-	aLock.Unlock()
 
 	if deleted {
 		localRouteDel(s, MyInfo, onboard)
@@ -132,20 +146,22 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 
 func agentGet(uuid string) common.Transport {
 	aLock.RLock()
+	defer aLock.RUnlock()
+
 	tunnel := agents[uuid]
-	aLock.RUnlock()
 
 	return tunnel
 }
 
 func DisconnectUser(userid string, s *zap.SugaredLogger) {
-	aLock.Lock()
+	aLock.RLock()
+	defer aLock.RUnlock()
+
 	cur := users[userid]
 	var i = 0
 	for ; i < len(cur); i++ {
 		cur[i].Close()
 	}
-	aLock.Unlock()
 
 	s.Debugf("Force disconnected user %s, tunnels %d", userid, i)
 }

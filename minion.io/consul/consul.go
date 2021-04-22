@@ -29,7 +29,7 @@ import (
 var myClient = &http.Client{Timeout: 10 * time.Second}
 
 const (
-	consulRetries    = 5
+	consulRetries    = 2
 	LocalSuffix      = ".svc.cluster.local"
 	RemotePrePrefix  = ""
 	RemotePostPrefix = ".nextensio.net"
@@ -89,10 +89,11 @@ func RegisterConsul(MyInfo *shared.Params, service []string, uuid string, sugar 
 			if e == nil {
 				break
 			}
-			time.Sleep(1 * 1000 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 		if e != nil {
 			sugar.Errorf("Consul: http PUT %s for IP %s at %s failed with %v retries", MyInfo.Pod, MyInfo.PodIp, url, consulRetries)
+			DeRegisterConsul(MyInfo, service, uuid, sugar)
 			return e
 		}
 		dns.Meta.Pod = MyInfo.Pod
@@ -110,7 +111,7 @@ func RegisterConsul(MyInfo *shared.Params, service []string, uuid string, sugar 
 			if e == nil {
 				break
 			}
-			time.Sleep(1 * 1000 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 		if i < consulRetries && e == nil {
 			sugar.Debugf("Consul: registered via http PUT at %s", url)
@@ -118,6 +119,7 @@ func RegisterConsul(MyInfo *shared.Params, service []string, uuid string, sugar 
 		} else {
 			sugar.Errorf("Consul: failed to register via http PUT at %s", url)
 			sugar.Errorf("Consul: failed to register service json %s", js)
+			DeRegisterConsul(MyInfo, service, uuid, sugar)
 			return e
 		}
 	}
@@ -143,31 +145,29 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, uuid string, suga
 		sugar.Debugf("Consul: Deregistering pod %s at IP %s for service %s at %s", MyInfo.Pod, MyInfo.PodIp, h, url)
 		r, _ = http.NewRequest("DELETE", url, nil)
 		i := 0
-		for ; i < consulRetries; i = i + 1 {
+		for ; i < 2*consulRetries; i = i + 1 {
 			_, e = myClient.Do(r)
 			if e == nil {
 				break
 			}
-			time.Sleep(1 * time.Second)
+			time.Sleep(10 * time.Millisecond)
 		}
 		if e != nil {
-			sugar.Errorf("Consul: http DELETE of %s for IP %s at %s failed with %v retries", MyInfo.Pod, MyInfo.PodIp, url, consulRetries)
-			return e
+			sugar.Errorf("Consul: http DELETE of %s for IP %s at %s failed with %v retries", MyInfo.Pod, MyInfo.PodIp, url, 2*consulRetries)
 		}
 		sid = h + "-" + MyInfo.Namespace + "-" + MyInfo.Pod + "-" + uuid
 		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + sid
 		r, _ = http.NewRequest("PUT", url, nil)
 		i = 0
-		for ; i < consulRetries; i = i + 1 {
+		for ; i < 2*consulRetries; i = i + 1 {
 			_, e = myClient.Do(r)
 			if e == nil {
 				break
 			}
-			time.Sleep(1 * time.Second)
+			time.Sleep(10 * time.Millisecond)
 		}
 		if e != nil {
-			sugar.Errorf("Consul: http PUT of nil at %s failed with %v retries", url, consulRetries)
-			return e
+			sugar.Errorf("Consul: http PUT of nil at %s failed with %v retries", url, 2*consulRetries)
 		}
 	}
 

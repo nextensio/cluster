@@ -22,6 +22,7 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 	"minion.io/aaa"
 	"minion.io/args"
+	"minion.io/consul"
 	"minion.io/env"
 	"minion.io/router"
 	"minion.io/shared"
@@ -50,7 +51,7 @@ func main() {
 	args.ArgHandler(sugar, &MyInfo)
 	env.EnvHandler(sugar, &MyInfo)
 	router.RouterInit(sugar, &MyInfo, ctx)
-	go aaa.AaaStart(MyInfo.Namespace, MyInfo.Pod, MyInfo.MongoUri, sugar, router.DisconnectUser)
+	go aaa.AaaStart(MyInfo.Namespace, MyInfo.Pod, MyInfo.Id+consul.RemotePostPrefix, MyInfo.MongoUri, sugar, router.DisconnectUser)
 	for {
 		time.Sleep(86400 * time.Second)
 	}

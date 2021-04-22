@@ -164,6 +164,7 @@ var mongoInitDone bool
 var mongoDBAddr string
 var tenant string
 var nxtPod string
+var nxtGw string
 var nxtDisconnect func(string, *zap.SugaredLogger)
 var tenantOID primitive.ObjectID
 var slog *zap.SugaredLogger
@@ -174,8 +175,8 @@ var mongoClient *mongo.Client
 var nxtMongoDBName string // set to nxtMongoDB (legacy) or a unique name per tenant going forward
 
 /******************************** Calls from minion ******************/
-func NxtAaaInit(namespace string, pod string, mongouri string, sl *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) int {
-	err := nxtOpaInit(namespace, pod, mongouri, sl, disconnectCb)
+func NxtAaaInit(namespace string, pod string, gateway string, mongouri string, sl *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) int {
+	err := nxtOpaInit(namespace, pod, gateway, mongouri, sl, disconnectCb)
 	if err != nil {
 		return 1
 	}
@@ -207,6 +208,16 @@ func NxtUsrAllowed(which string, userid string) bool {
 	} else {
 		NxtUsrLeave(which, userid)
 		return false
+	}
+	// gateway.nextensio.net signifies 'any' gateway, if an explicit
+	// one is mentioned, thats all we will be allowed to connect to
+	if gw, found := bson["_gateway"].(string); found {
+		if gw == "gateway.nextensio.net" {
+			return true
+		}
+		if gw != nxtGw {
+			return false
+		}
 	}
 	return true
 }
@@ -371,7 +382,7 @@ func nxtOpaProcess(ctx context.Context) int {
 
 //-------------------------------- Init Functions ----------------------------------
 // API to init nxt OPA interface
-func nxtOpaInit(ns string, pod string, mongouri string, sl *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) error {
+func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) error {
 	defer func() {
 		initExit <- true
 	}()
@@ -394,6 +405,7 @@ func nxtOpaInit(ns string, pod string, mongouri string, sl *zap.SugaredLogger, d
 	nxtMongoDBName = nxtGetTenantDBName(tenant)
 	mongoDBAddr = mongouri
 	nxtPod = pod
+	nxtGw = gateway
 	nxtDisconnect = disconnectCb
 
 	go nxtOpaProcess(ctx)
@@ -780,34 +792,55 @@ func nxtPurgeUserAttrJSON(uuid string) {
 
 // The users attributes have changed, check if the user is still allowed
 // to connect to this pod / cluster etc..
-func nxtUsrAttrChanged(uuid string, new primitive.M) {
+func nxtUsrAttrChanged(uuid string, new primitive.M) bool {
 	if attr, found := userAttr[uuid]; found {
 		if o, ok := attr.uabson["_pod"].(string); ok {
 			// If the users pod changed from this pod to another, disconnect the user tunnel
 			if n, ok := new["_pod"].(string); ok {
 				if o == nxtPod && o != n {
-					nxtDisconnect(uuid, slog)
+					return true
+				}
+			}
+		}
+		if o, ok := attr.uabson["_gateway"].(string); ok {
+			if n, ok := new["_gateway"].(string); ok {
+				if o != n {
+					return true
 				}
 			}
 		}
 	}
+
+	return false
 }
 
 // Update cache because version info changed for collection
 func nxtUpdateUserAttrCache() {
 	var uaC usrCache
+	var disconnect []string
 
 	userAttrLock.Lock()
-	defer userAttrLock.Unlock()
 
 	for id, _ := range userAttr {
 		uastruct, _ := nxtReadUserAttrDB(id)
 		uaC.uajson = nxtConvertToJSON(uastruct)
 		uaC.uabson = uastruct
-		nxtUsrAttrChanged(id, uastruct)
+		if nxtUsrAttrChanged(id, uastruct) {
+			disconnect = append(disconnect, id)
+		}
 		userAttr[id] = uaC
 	}
-	nxtLogDebug("UserAttrCache", fmt.Sprintf("Updated %v entries in local cache", len(userAttr)))
+
+	userAttrLock.Unlock()
+
+	// do the disconnects outside the lock, or else there can be a classic
+	// lock dependency deadlock with the aaa lock here followed by minion lock
+	// in nxtDisconnect and minion lock in minion agent add/del which tries to
+	// take aaa lock here
+	for _, d := range disconnect {
+		nxtDisconnect(d, slog)
+	}
+	nxtLogDebug("UserAttrCache", fmt.Sprintf("Updated %v entries in local cache, disconnected %d", len(userAttr), len(disconnect)))
 }
 
 var appAttr map[string]usrCache
@@ -912,34 +945,55 @@ func nxtPurgeAppAttrJSON(appid string) {
 
 // The app's attributes have changed, check if the app is still allowed
 // to connect to this pod / cluster etc..
-func nxtAppAttrChanged(uuid string, new primitive.M) {
+func nxtAppAttrChanged(uuid string, new primitive.M) bool {
 	if attr, found := appAttr[uuid]; found {
 		if o, ok := attr.uabson["_pod"].(string); ok {
 			// If the app's pod changed from this pod to another, disconnect the user tunnel
 			if n, ok := new["_pod"].(string); ok {
 				if o == nxtPod && o != n {
-					nxtDisconnect(uuid, slog)
+					return true
+				}
+			}
+		}
+		if o, ok := attr.uabson["_gateway"].(string); ok {
+			if n, ok := new["_gateway"].(string); ok {
+				if o != n {
+					return true
 				}
 			}
 		}
 	}
+
+	return false
 }
 
 // Update cache because version info changed for collection
 func nxtUpdateAppAttrCache() {
 	var appC usrCache
+	var disconnect []string
 
 	appAttrLock.Lock()
-	defer appAttrLock.Unlock()
 
 	for id, _ := range appAttr {
 		appstruct, _ := nxtReadAppAttrDB(id)
 		appC.uajson = nxtConvertToJSON(appstruct)
 		appC.uabson = appstruct
-		nxtAppAttrChanged(id, appstruct)
+		if nxtAppAttrChanged(id, appstruct) {
+			disconnect = append(disconnect, id)
+		}
 		appAttr[id] = appC
 	}
-	nxtLogDebug("AppAttrCache", fmt.Sprintf("Updated %v entries in local cache", len(appAttr)))
+
+	appAttrLock.Unlock()
+
+	// do the disconnects outside the lock, or else there can be a classic
+	// lock dependency deadlock with the aaa lock here followed by minion lock
+	// in nxtDisconnect and minion lock in minion agent add/del which tries to
+	// take aaa lock here
+	for _, d := range disconnect {
+		nxtDisconnect(d, slog)
+	}
+	nxtLogDebug("AppAttrCache", fmt.Sprintf("Updated %v entries in local cache, disconnected %d", len(appAttr), len(disconnect)))
 }
 
 // Extended (runtime) user attributes spec. The mongoDB doc specifies the HTTP headers

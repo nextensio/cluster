@@ -9,8 +9,8 @@ import (
 	"minion.io/authz"
 )
 
-func AaaStart(ns string, pod string, uri string, s *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) {
-	authz.NxtAaaInit(ns, pod, uri, s, disconnectCb)
+func AaaStart(ns string, pod string, gateway string, uri string, s *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) {
+	authz.NxtAaaInit(ns, pod, gateway, uri, s, disconnectCb)
 }
 
 func UsrAllowed(which string, id string, s *zap.SugaredLogger) bool {
