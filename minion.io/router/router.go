@@ -68,6 +68,19 @@ var routeLock sync.RWMutex
 var localRoutes map[string]*nxthdr.NxtOnboard
 var pakdropReq chan dropInfo
 
+// NOTE: About all the multitude of UUIDs.
+// onboard.userid: This everyone understands - its like foobar@nextensio.net
+//
+// onboard.Uuid: foobar@nextensio.net can have three devices, one laptop, one
+// ipad and one android phone. So when foobar connects to nextensio from all these devices,
+// each device will get a unique id, wihch is onboard.Uuid
+//
+// Suuid: Now foobar conneting from laptop might have multiple tunnels to the cluster - either
+// because we support multiple tunnels from the same device (eventually, not yet), or it can be
+// transient situations where one tunnel is going down and not cleaned up fully while the other
+// tunnel is coming up etc.. - this can very well happen because each tunnel is handled by
+// independent goroutines. Suuid means 'session UUid'
+
 func sessionAdd(Suuid uuid.UUID, onboard *nxthdr.NxtOnboard) {
 	aLock.Lock()
 	defer aLock.Unlock()
@@ -108,11 +121,15 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	if !aaa.UsrAllowed(atype(onboard), onboard.Userid, s) {
 		return fmt.Errorf("User disallowed")
 	}
+	// Here is where we assume there is only one active tunnel from an agent device to the cluster,
+	// so if that needs to change in future, this is the place to come looking for
 	agentT := &agentTunnel{tunnel: tunnel, suuid: Suuid}
 	agents[onboard.Uuid] = agentT
 	cur := users[onboard.Userid]
 	users[onboard.Userid] = append(cur, agentT)
 	localRouteAdd(s, MyInfo, onboard)
+	// TODO: Some changes might be needed in consul registration to handle the case of same userid
+	// connected to multiple clusters (via multiple devices). Also see comments in globalRouteLookup()
 	err := consul.RegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
 	if err != nil {
 		return err
@@ -126,14 +143,12 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	defer aLock.Unlock()
 
 	var err error
-	del := false
 	agentT := agents[onboard.Uuid]
+	// Here is where we assume there is only one active tunnel from an agent device to the cluster,
+	// so if that needs to change in future, this is the place to come looking for
 	if agentT != nil && agentT.suuid == Suuid {
-		del = true
 		delete(agents, onboard.Uuid)
 		localRouteDel(s, MyInfo, onboard)
-		err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
-		aaa.UsrLeave(atype(onboard), onboard.Userid, s)
 	}
 	cur := users[onboard.Userid]
 	lcur := len(cur)
@@ -143,11 +158,14 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 			break
 		}
 	}
+	// If all the tunnels from all the user devices dropped, then we retract the consul route
 	if len(users[onboard.Userid]) == 0 {
 		delete(users, onboard.Userid)
+		err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
+		aaa.UsrLeave(atype(onboard), onboard.Userid, s)
 	}
-	s.Debugf("AgentDel: user %s, Suuid %s, deleted %s, total tunnels %d / %d",
-		onboard.Userid, Suuid, del, lcur, len(users[onboard.Userid]))
+	s.Debugf("AgentDel: user %s, Suuid %s, total tunnels %d / %d",
+		onboard.Userid, Suuid, lcur, len(users[onboard.Userid]))
 	return err
 }
 
@@ -180,6 +198,9 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 	// TODO: This dot dash business has to go away, we have to unify the usage
 	// of services everywhere to either dot or dash
 	service := strings.ReplaceAll(flow.DestAgent, ".", "-")
+	if flow.FromConnector {
+		service = service + flow.AgentUuid
+	}
 	routeLock.RLock()
 	onboard := localRoutes[service]
 	routeLock.RUnlock()
@@ -277,11 +298,14 @@ func localRouteAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.
 	// available on this pod.
 	// TODO: handle the case where there are multiple local agents advertising the same service
 	// and maybe we want to loadbalance across them ?
-	cp := *onboard
 	for _, s := range onboard.Services {
 		s = strings.ReplaceAll(s, ".", "-")
+		// Multiple agents can login with the same userid, each agent tunnel has a unique uuid
+		if onboard.Agent {
+			s = s + onboard.Uuid
+		}
 		routeLock.Lock()
-		localRoutes[s] = &cp
+		localRoutes[s] = onboard
 		routeLock.Unlock()
 	}
 }
@@ -291,6 +315,10 @@ func localRouteDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.
 	// and maybe we want to loadbalance across them ? So delete only one agent for that service here
 	for _, s := range onboard.Services {
 		s = strings.ReplaceAll(s, ".", "-")
+		// Multiple agents can login with the same userid, each agent tunnel has a unique uuid
+		if onboard.Agent {
+			s = s + onboard.Uuid
+		}
 		routeLock.Lock()
 		localRoutes[s] = nil
 		routeLock.Unlock()
@@ -322,6 +350,12 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 		flow.DestAgent = tag + "." + flow.Dest
 	}
 
+	// TODO: This consul lookup needs to be enhanced to handle the case of
+	// same userid connected to multiple clusters (via multiple devices). We have the
+	// flow.OriginAgent available here which will indicate the exact agent Uuid. The
+	// consul registration today registers a dns name which is the same for all devices,
+	// maybe we register dns names including the uuid, so we can lookup here with that
+	// uuid included ?
 	fwd, err := consul.ConsulDnsLookup(MyInfo, consul_key, s)
 	if err != nil {
 		s.Debugf("Consul lookup failed for dest", flow.DestAgent)
@@ -330,8 +364,8 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 
 	hdrs := make(http.Header)
 	// Add following headers required for stats dimensions:
-	// SourceAgentID: NxtFlow.originAgent
-	hdrs.Add("x-nextensio-sourceagent", flow.OriginAgent)
+	// SourceAgentID: NxtFlow.SourceAgent
+	hdrs.Add("x-nextensio-sourceagent", flow.SourceAgent)
 	// SourceClusterID: MyInfo.Id
 	hdrs.Add("x-nextensio-sourcecluster", MyInfo.Id)
 	// SourcePodID: MyInfo.Pod
@@ -469,7 +503,17 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			if first {
 				panic("We dont expect L4 flows on the first stream")
 			}
-
+			if onboard == nil {
+				s.Debugf("Agent not onboarded yet")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent not onboarded")
+				return
+			}
+			// Indicate to the connector which exact user device is originating this flow,
+			// so we can find the right user device in the return path.
+			if onboard.Agent {
+				flow.FromConnector = false
+				flow.AgentUuid = onboard.Uuid
+			}
 			// Route lookup just one time
 			if dest == nil {
 				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow)
@@ -510,6 +554,11 @@ func bundleAccessAllowed(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, onboard *nx
 	// Going to an agent/connector, we dont need the attributes anymore
 	flow.Usrattr = ""
 
+	// Going to an agent, we dont need to carry around the identity of the unique user device
+	// originating the flow
+	if onboard.Agent {
+		flow.AgentUuid = ""
+	}
 	return true
 }
 
@@ -519,7 +568,7 @@ func pakDrop(s *zap.SugaredLogger) {
 	for {
 		select {
 		case info := <-pakdropReq:
-			s.Debugf("Dropping frame from %s - %s", info.flow.OriginAgent, info.reason)
+			s.Debugf("Dropping frame from %s - %s", info.flow.SourceAgent, info.reason)
 			continue // until blackhole support is in
 
 			if nullConn == nil {
@@ -532,8 +581,8 @@ func pakDrop(s *zap.SugaredLogger) {
 			}
 			reqhdr := []byte("GET / HTTP/1.0")
 			drophdr := []byte("x-nextensio-drop: " + info.reason)
-			// SourceAgentID: NxtFlow.originAgent
-			sahdr := []byte("x-nextensio-sourceagent: " + info.flow.OriginAgent)
+			// SourceAgentID: NxtFlow.SourceAgent
+			sahdr := []byte("x-nextensio-sourceagent: " + info.flow.SourceAgent)
 			// SourceClusterID: MyInfo.Id
 			schdr := []byte("x-nextensio-sourcecluster: " + info.myInfo.Id)
 			// SourcePodID: MyInfo.Pod
