@@ -270,6 +270,7 @@ func localRouteAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.
 	// and maybe we want to loadbalance across them ?
 	cp := *onboard
 	for _, s := range onboard.Services {
+		s = strings.ReplaceAll(s, ".", "-")
 		routeLock.Lock()
 		localRoutes[s] = &cp
 		routeLock.Unlock()
@@ -280,6 +281,7 @@ func localRouteDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.
 	// TODO: handle the case where there are multiple local agents advertising the same service
 	// and maybe we want to loadbalance across them ? So delete only one agent for that service here
 	for _, s := range onboard.Services {
+		s = strings.ReplaceAll(s, ".", "-")
 		routeLock.Lock()
 		localRoutes[s] = nil
 		routeLock.Unlock()

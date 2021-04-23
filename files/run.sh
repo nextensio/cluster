@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-/go/bin/minion.io -tunnel -consul_dns -register -ip 127.0.0.1 -iport 80 &
+/go/bin/minion.io &
 
 tail -f /dev/null
 
