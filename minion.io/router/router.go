@@ -43,6 +43,11 @@ type dropInfo struct {
 	myInfo *shared.Params
 }
 
+type agentTunnel struct {
+	tunnel common.Transport
+	suuid  uuid.UUID
+}
+
 // TODO: The lock is a big fat lock here and is liberally taken during the entire duration
 // of an agent add/del operation - including the time spent registering/deregistering with
 // consul etc.. The add and del of an agent can happen in parallel - one agent tunnel might
@@ -54,8 +59,8 @@ type dropInfo struct {
 // should be taken during the time the agent consul/route/whatever other operations are done
 var aLock sync.RWMutex
 var sessions map[uuid.UUID]nxthdr.NxtOnboard
-var agents map[string]common.Transport
-var users map[string][]common.Transport
+var agents map[string]*agentTunnel
+var users map[string][]*agentTunnel
 var pLock sync.RWMutex
 var pods map[string]*podInfo
 var unusedChan chan common.NxtStream
@@ -96,51 +101,53 @@ func atype(onboard *nxthdr.NxtOnboard) string {
 	}
 }
 
-func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, tunnel common.Transport) error {
+func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, Suuid uuid.UUID, tunnel common.Transport) error {
 	aLock.Lock()
 	defer aLock.Unlock()
 
 	if !aaa.UsrAllowed(atype(onboard), onboard.Userid, s) {
 		return fmt.Errorf("User disallowed")
 	}
-	agents[onboard.Uuid] = tunnel
+	agentT := &agentTunnel{tunnel: tunnel, suuid: Suuid}
+	agents[onboard.Uuid] = agentT
 	cur := users[onboard.Userid]
-	users[onboard.Userid] = append(cur, tunnel)
+	users[onboard.Userid] = append(cur, agentT)
 	localRouteAdd(s, MyInfo, onboard)
 	err := consul.RegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
 	if err != nil {
 		return err
 	}
-
+	s.Debugf("AgentAdd: user %s, Suuid %s, total tunnels %d", onboard.Userid, Suuid, len(users[onboard.Userid]))
 	return err
 }
 
-func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, tunnel common.Transport) error {
+func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, Suuid uuid.UUID) error {
 	aLock.Lock()
 	defer aLock.Unlock()
 
 	var err error
-	deleted := false
-	if agents[onboard.Uuid] == tunnel {
+	del := false
+	agentT := agents[onboard.Uuid]
+	if agentT != nil && agentT.suuid == Suuid {
+		del = true
 		delete(agents, onboard.Uuid)
-		cur := users[onboard.Userid]
-		for i := 0; i < len(cur); i++ {
-			if cur[i] == tunnel {
-				users[onboard.Userid] = append(cur[:i], cur[i+1:]...)
-				break
-			}
-		}
-		if len(users[onboard.Userid]) == 0 {
-			delete(users, onboard.Userid)
-		}
-		deleted = true
-	}
-
-	if deleted {
 		localRouteDel(s, MyInfo, onboard)
 		err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
 		aaa.UsrLeave(atype(onboard), onboard.Userid, s)
 	}
+	cur := users[onboard.Userid]
+	lcur := len(cur)
+	for i := 0; i < lcur; i++ {
+		if cur[i].suuid == Suuid {
+			users[onboard.Userid] = append(cur[:i], cur[i+1:]...)
+			break
+		}
+	}
+	if len(users[onboard.Userid]) == 0 {
+		delete(users, onboard.Userid)
+	}
+	s.Debugf("AgentDel: user %s, Suuid %s, deleted %s, total tunnels %d / %d",
+		onboard.Userid, Suuid, del, lcur, len(users[onboard.Userid]))
 	return err
 }
 
@@ -148,9 +155,11 @@ func agentGet(uuid string) common.Transport {
 	aLock.RLock()
 	defer aLock.RUnlock()
 
-	tunnel := agents[uuid]
-
-	return tunnel
+	agentT := agents[uuid]
+	if agentT == nil {
+		return nil
+	}
+	return agentT.tunnel
 }
 
 func DisconnectUser(userid string, s *zap.SugaredLogger) {
@@ -160,7 +169,7 @@ func DisconnectUser(userid string, s *zap.SugaredLogger) {
 	cur := users[userid]
 	var i = 0
 	for ; i < len(cur); i++ {
-		cur[i].Close()
+		cur[i].tunnel.Close()
 	}
 
 	s.Debugf("Force disconnected user %s, tunnels %d", userid, i)
@@ -386,7 +395,7 @@ func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel co
 		// If the very first stream on which we onboarded goes away, then we assume the
 		// session goes away
 		sessionDel(Suuid)
-		e := agentDel(s, MyInfo, onboard, tunnel)
+		e := agentDel(s, MyInfo, onboard, Suuid)
 		if e != nil {
 			// TODO: agent delete fail is a bad thing, it can mean that consul entries
 			// are hanging around, which is bad for routing! Not sure what should be done
@@ -445,12 +454,10 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			if onboard == nil {
 				onboard = hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
 				sessionAdd(Suuid, onboard)
-				if e := agentAdd(s, MyInfo, onboard, tunnel); e != nil {
+				if e := agentAdd(s, MyInfo, onboard, Suuid, tunnel); e != nil {
 					s.Debugf("Agent add failed, closing tunnels", e)
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
 					return
-				} else {
-					s.Debugf("Onboarded agent", onboard)
 				}
 			}
 
@@ -615,8 +622,8 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 
 func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context) {
 	sessions = make(map[uuid.UUID]nxthdr.NxtOnboard)
-	agents = make(map[string]common.Transport)
-	users = make(map[string][]common.Transport)
+	agents = make(map[string]*agentTunnel)
+	users = make(map[string][]*agentTunnel)
 	pods = make(map[string]*podInfo)
 	localRoutes = make(map[string]*nxthdr.NxtOnboard)
 	unusedChan = make(chan common.NxtStream)
