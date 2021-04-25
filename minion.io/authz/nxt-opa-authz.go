@@ -1469,7 +1469,7 @@ func nxtWriteAttrVersions() {
 	qsm2 := QStateMap[opaUseCases[2]]
 	qsm3 := QStateMap[opaUseCases[3]]
 	versions := fmt.Sprintf("USER=%d.%d\nBUNDLE=%d.%d\nPOLICY=%d.%d\nROUTE=%d.%d",
-		usrAttrHdr.Majver, usrAttrHdr.Minver, qsm2.RefHdr.Majver, qsm2.RefHdr.Minver,
+		usrAttrHdr.Majver, usrAttrHdr.Minver, appAttrHdr.Majver, appAttrHdr.Minver,
 		qsm2.PStruct.Majver, qsm2.PStruct.Minver, qsm3.RefHdr.Majver, qsm3.RefHdr.Minver)
 	ioutil.WriteFile("/tmp/opa_attr_versions", []byte(versions), 0644)
 	QStateMap[opaUseCases[0]].WrVer = false
