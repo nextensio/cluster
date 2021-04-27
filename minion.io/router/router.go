@@ -198,7 +198,7 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 	// TODO: This dot dash business has to go away, we have to unify the usage
 	// of services everywhere to either dot or dash
 	service := strings.ReplaceAll(flow.DestAgent, ".", "-")
-	if flow.FromConnector {
+	if flow.ResponseData {
 		service = service + flow.AgentUuid
 	}
 	routeLock.RLock()
@@ -511,7 +511,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			// Indicate to the connector which exact user device is originating this flow,
 			// so we can find the right user device in the return path.
 			if onboard.Agent {
-				flow.FromConnector = false
+				flow.ResponseData = false
 				flow.AgentUuid = onboard.Uuid
 			}
 			// Route lookup just one time
