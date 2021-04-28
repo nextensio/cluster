@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"time"
 
+	common "gitlab.com/nextensio/common/go"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -43,6 +44,7 @@ func lumberjackZapHook(e zapcore.Entry) error {
 }
 
 func main() {
+	common.MAXBUF = (2048 * 4)
 	ctx := context.Background()
 	//logger, _ := zap.NewProduction(zap.Hooks(lumberjackZapHook))
 	logger, _ := zap.NewDevelopment(zap.Hooks(lumberjackZapHook))
