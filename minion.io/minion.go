@@ -44,7 +44,7 @@ func lumberjackZapHook(e zapcore.Entry) error {
 }
 
 func main() {
-	common.MAXBUF = (2048 * 4)
+	common.MAXBUF = (64*1024)
 	ctx := context.Background()
 	//logger, _ := zap.NewProduction(zap.Hooks(lumberjackZapHook))
 	logger, _ := zap.NewDevelopment(zap.Hooks(lumberjackZapHook))
