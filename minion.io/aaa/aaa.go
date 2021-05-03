@@ -1,7 +1,3 @@
-/*
- * aaa.go - aaa package for interfaceing with opa library
- * Author: Davi Gupta (davigupta@gmail.com), Sep 2020
- */
 package aaa
 
 import (

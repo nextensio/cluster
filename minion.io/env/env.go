@@ -1,9 +1,3 @@
-/*
- * env.go: parse environment variables
- *
- * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
- */
-
 package env
 
 import (

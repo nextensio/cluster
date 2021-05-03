@@ -1,9 +1,3 @@
-/*
- * consul.go: regsiter services with consul
- *
- * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
- */
-
 package consul
 
 import (

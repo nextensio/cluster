@@ -1,9 +1,3 @@
-/*
- * stats.go: Packet statistics, e.g., drop
- *
- * Author: Davi Gupta (davigupta@gmail.com), Sep 2020
- */
-
 package stats
 
 import (

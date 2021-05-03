@@ -1,9 +1,3 @@
-/*
- * args.go: handle the various arguments for this program
- *
- * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
- */
-
 package args
 
 import (

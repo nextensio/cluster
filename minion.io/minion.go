@@ -1,15 +1,3 @@
-/*
- * minion.go:
- *
- * Workers of Nextensio world. They work tirelessly connecting two islands
- * in a secure way. Let the work begin.
- * Worker listens on two ports:
- * * 80 : for worker-to-worker communication
- * * 443 : for agents/connectors to connect to the worker
- *
- * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
- */
-
 package main
 
 import (

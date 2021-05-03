@@ -1,9 +1,3 @@
-/*
- * shared.go: variables, constant, structures shared across packages
- *
- * Author: Davi Gupta (davigupta@gmail.com), Jun 2019
- */
-
 package shared
 
 // Constants used by this program
