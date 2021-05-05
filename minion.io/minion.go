@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"runtime"
+	"syscall"
 	"time"
 
 	common "gitlab.com/nextensio/common/go"
@@ -32,7 +36,7 @@ func lumberjackZapHook(e zapcore.Entry) error {
 }
 
 func main() {
-	common.MAXBUF = (64*1024)
+	common.MAXBUF = (64 * 1024)
 	ctx := context.Background()
 	//logger, _ := zap.NewProduction(zap.Hooks(lumberjackZapHook))
 	logger, _ := zap.NewDevelopment(zap.Hooks(lumberjackZapHook))
@@ -42,6 +46,20 @@ func main() {
 	env.EnvHandler(sugar, &MyInfo)
 	router.RouterInit(sugar, &MyInfo, ctx)
 	go aaa.AaaStart(MyInfo.Namespace, MyInfo.Pod, MyInfo.Id+consul.RemotePostPrefix, MyInfo.MongoUri, sugar, router.DisconnectUser)
+
+	// Do kill -USR1 <pid of minion> to get all stack traces in app_debug.log
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, syscall.SIGUSR1)
+	go func() {
+		for {
+			<-sigc
+			// ... do something ...
+			buf := make([]byte, 1<<16)
+			runtime.Stack(buf, true)
+			sugar.Debugf("%s", buf)
+		}
+	}()
+
 	for {
 		time.Sleep(86400 * time.Second)
 	}
