@@ -312,6 +312,8 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 			}
 			return hfwd, nil
 		} else {
+			// target pod is in a remote cluster
+			fwd.Id = s[2]
 			fwd.DestType = shared.RemoteDest
 			fwd.Dest = RemotePrePrefix + s[2] + RemotePostPrefix
 			fwd.Pod = ""

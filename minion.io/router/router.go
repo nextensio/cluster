@@ -128,14 +128,15 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	cur := users[onboard.Userid]
 	users[onboard.Userid] = append(cur, agentT)
 	localRouteAdd(s, MyInfo, onboard)
-	// TODO: Some changes might be needed in consul registration to handle the case of same userid
-	// connected to multiple clusters (via multiple devices). Also see comments in globalRouteLookup()
-	err := consul.RegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
-	if err != nil {
-		return err
+	// Do not register any service with Consul for users, only for connectors.
+	if !onboard.Agent {
+		err := consul.RegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
+		if err != nil {
+			return err
+		}
 	}
 	s.Debugf("AgentAdd: user %s, Suuid %s, total tunnels %d", onboard.Userid, Suuid, len(users[onboard.Userid]))
-	return err
+	return nil
 }
 
 func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, Suuid uuid.UUID) error {
@@ -158,10 +159,13 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 			break
 		}
 	}
-	// If all the tunnels from all the user devices dropped, then we retract the consul route
 	if len(users[onboard.Userid]) == 0 {
+		// No more connections from this userid
 		delete(users, onboard.Userid)
-		err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
+		if !onboard.Agent {
+			// Deregister services from Consul if it's a connector
+			err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
+		}
 		aaa.UsrLeave(atype(onboard), onboard.Userid, s)
 	}
 	s.Debugf("AgentDel: user %s, Suuid %s, total tunnels %d / %d",
@@ -169,7 +173,7 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	return err
 }
 
-func agentGet(uuid string) common.Transport {
+func agentTunnelGet(uuid string) common.Transport {
 	aLock.RLock()
 	defer aLock.RUnlock()
 
@@ -180,6 +184,7 @@ func agentGet(uuid string) common.Transport {
 	return agentT.tunnel
 }
 
+// Not called
 func DisconnectUser(userid string, s *zap.SugaredLogger) {
 	aLock.RLock()
 	defer aLock.RUnlock()
@@ -208,7 +213,7 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 	if onboard == nil {
 		return nil, nil
 	}
-	tunnel := agentGet(onboard.Uuid)
+	tunnel := agentTunnelGet(onboard.Uuid)
 	if tunnel == nil {
 		return nil, nil
 	}
@@ -229,12 +234,17 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 // TODO2: These remote pod sessions need to be aged out at some point, will need some reference
 // counting / last used timestamp etc..
 func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
-	flow *nxthdr.NxtFlow, dest string) common.Transport {
+	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd) common.Transport {
 	var tunnel common.Transport
 	var pending bool = false
+	var key string
 
-	// dest is cluster name if pod is remote, else pod name if local (same cluster)
-	key := dest + flow.DestAgent
+	// Pod name if local, else cluster name
+	if fwd.DestType == shared.LocalDest {
+		key = fwd.Pod
+	} else {
+		key = fwd.Id
+	}
 	// Try read lock first since the most common case should be that tunnels are
 	// already setup
 	pLock.RLock()
@@ -253,7 +263,7 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 		p = pods[key]
 		if p == nil {
 			pods[key] = &podInfo{pending: true, tunnel: nil}
-			podDial(s, ctx, MyInfo, flow, dest)
+			podDial(s, ctx, MyInfo, onboard, flow, fwd)
 			tunnel = pods[key].tunnel
 		} else {
 			tunnel = p.tunnel
@@ -266,29 +276,35 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 
 // Create the initial session to a destination pod/remote cluser
 func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
-	flow *nxthdr.NxtFlow, dest string) {
+	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd) {
 	var pubKey []byte
+	var key string
+
+	// Add headers for tunnel between source pod and destination pod or cluster
 	hdrs := make(http.Header)
-	// Take this session to the pod on the remote cluster hosting the particular agent/connector
-	hdrs.Add("x-nextensio-for", flow.DestAgent)
-	// Just a value which lets the other end identify that this is a new "session"
-	hdrs.Add("x-nextensio-session", uuid.New().String())
+	hdrs.Add("x-nextensio-sourcecluster", MyInfo.Id)
+	hdrs.Add("x-nextensio-sourcepod", MyInfo.Pod)
+	hdrs.Add("x-nextensio-destcluster", fwd.Id)
 
 	lg := log.New(&zap2log{s: s}, "http2", 0)
-	client := nhttp2.NewClient(ctx, lg, pubKey, dest, dest, MyInfo.Iport, hdrs)
+	client := nhttp2.NewClient(ctx, lg, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs)
 	// For pod to pod connectivity, a pod will always dial-out another one,
 	// we dont expect a stream to come in from the other end on a dial-out session,
 	// and hence the reason we use the unusedChan on which no one is listening.
 	// This is a unidirectional session, we just write on this. Writing from the
 	// other end will end up with the other end dialling a new connection
-	s.Debugf("Dialing pod", flow.DestAgent, dest)
 	err := client.Dial(unusedChan)
 	if err != nil {
-		s.Debugf("Dialing pod error", err, flow.DestAgent, dest)
+		s.Debugf("Pod dialing error for %s at %s", err, flow.DestAgent, fwd.Dest)
 		return
 	}
-	s.Debugf("Dialled pod", flow.DestAgent, dest)
-	key := dest + flow.DestAgent
+	s.Debugf("Dialed pod for %s at %s", flow.DestAgent, fwd.Dest)
+	// Pod name if local, else cluster name
+	if fwd.DestType == shared.LocalDest {
+		key = fwd.Pod
+	} else {
+		key = fwd.Id
+	}
 	pods[key].pending = false
 	pods[key].tunnel = client
 }
@@ -325,6 +341,7 @@ func localRouteDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.
 	}
 }
 
+// Not called
 func podDelete(key string) {
 	pLock.Lock()
 	session := pods[key]
@@ -339,6 +356,8 @@ func podDelete(key string) {
 func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context,
 	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) (*nxthdr.NxtOnboard, common.Transport) {
 	var consul_key, tag string
+	var fwd shared.Fwd
+	var err error
 
 	tag = aaa.RouteLookup(atype(onboard), onboard.Userid, flow.DestAgent, s)
 
@@ -350,28 +369,51 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 		flow.DestAgent = tag + "." + flow.Dest
 	}
 
-	// TODO: This consul lookup needs to be enhanced to handle the case of
-	// same userid connected to multiple clusters (via multiple devices). We have the
-	// flow.OriginAgent available here which will indicate the exact agent Uuid. The
-	// consul registration today registers a dns name which is the same for all devices,
-	// maybe we register dns names including the uuid, so we can lookup here with that
-	// uuid included ?
-	fwd, err := consul.ConsulDnsLookup(MyInfo, consul_key, s)
-	if err != nil {
-		s.Debugf("Consul lookup failed for dest", flow.DestAgent)
-		return nil, nil
+	// Do a Consul DNS lookup for the user -> connector direction only
+	// For the connector -> user direction, the target cluster and pod are
+	// obtained from the flow header fields UserCluster and UserPod. UserPod is set
+	// as the value of the x-nextensio-for header.
+	if onboard.Agent {
+		// We're on an Apod, trying to send the frame to a Cpod
+		fwd, err = consul.ConsulDnsLookup(MyInfo, consul_key, s)
+		if err != nil {
+			s.Debugf("Consul lookup failed for dest %s with key %s", flow.DestAgent, consul_key)
+			return nil, nil
+		}
+	} else {
+		// We're on a Cpod, trying to send the frame to an Apod
+		if flow.UserCluster == MyInfo.Id {
+			// Local destination
+			fwd.DestType = shared.LocalDest
+			fwd.Dest = flow.UserPod + "-in." + MyInfo.Namespace + consul.LocalSuffix
+		} else {
+			// Remote destination
+			fwd.DestType = shared.RemoteDest
+			fwd.Dest = consul.RemotePrePrefix + flow.UserCluster + consul.RemotePostPrefix
+		}
+		fwd.Pod = flow.UserPod
+		fwd.Id = flow.UserCluster
 	}
 
+	// Add http headers specific to this session/stream
 	hdrs := make(http.Header)
-	// Add following headers required for stats dimensions:
-	// SourceAgentID: NxtFlow.SourceAgent
+	// Add following header for stats dimensions:
 	hdrs.Add("x-nextensio-sourceagent", flow.SourceAgent)
-	// SourceClusterID: MyInfo.Id
-	hdrs.Add("x-nextensio-sourcecluster", MyInfo.Id)
-	// SourcePodID: MyInfo.Pod
-	hdrs.Add("x-nextensio-sourcepod", MyInfo.Pod)
-	// DestClusterID: fwd.Dest for inter-cluster traffic, else MyInfo.Id
-	// DestPodID: fwd.Dest for intra-cluster traffic, else no header
+	// Just a value which lets the other end identify that this is a new "session"
+	hdrs.Add("x-nextensio-session", uuid.New().String())
+	// Take this session to the remote or local pod hosting the particular agent/connector
+	// For agent -> connector, the -for header will have the connector service
+	// For connector -> agent, the -for header will have the destination Apod.
+	if onboard.Agent {
+		// On Apod, so this is for a service (on a Cpod)
+		hdrs.Add("x-nextensio-for", flow.DestAgent)
+		// On apod we do not know destination cpod
+		hdrs.Add("x-nextensio-destpod", "unknown")
+	} else {
+		// On Cpod, destination pod is from flow.UserPod sent in flow header by Apod
+		hdrs.Add("x-nextensio-for", fwd.Pod)
+		hdrs.Add("x-nextensio-destpod", fwd.Pod)
+	}
 
 	switch fwd.DestType {
 	case shared.SelfDest:
@@ -380,17 +422,13 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 			return bundle, dest.NewStream(nil)
 		}
 	case shared.LocalDest:
-		dest := podLookup(s, ctx, MyInfo, flow, fwd.Dest)
+		dest := podLookup(s, ctx, MyInfo, onboard, flow, fwd)
 		if dest != nil {
-			hdrs.Add("x-nextensio-destcluster", MyInfo.Id)
-			hdrs.Add("x-nextensio-destpod", fwd.Dest)
 			return nil, dest.NewStream(hdrs)
 		}
 	case shared.RemoteDest:
-		dest := podLookup(s, ctx, MyInfo, flow, fwd.Dest)
+		dest := podLookup(s, ctx, MyInfo, onboard, flow, fwd)
 		if dest != nil {
-			hdrs.Add("x-nextensio-destcluster", fwd.Dest)
-			hdrs.Add("x-nextensio-destpod", "unknown")
 			return nil, dest.NewStream(hdrs)
 		}
 	}
@@ -466,13 +504,13 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		// this means we are not the first stream in this session
 		first = false
 	}
-	s.Debugf("New agent stream", Suuid, onboard)
+	s.Debugf("New agent stream %s : %v", Suuid, onboard)
 
 	for {
 		hdr, agentBuf, err := tunnel.Read()
 		if err != nil {
 			streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
-			s.Debugf("Agent read error", err)
+			s.Debugf("Agent read error - %v", err)
 			return
 		}
 		switch hdr.Hdr.(type) {
@@ -489,7 +527,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				onboard = hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
 				sessionAdd(Suuid, onboard)
 				if e := agentAdd(s, MyInfo, onboard, Suuid, tunnel); e != nil {
-					s.Debugf("Agent add failed, closing tunnels", e)
+					s.Debugf("Agent add failed, closing tunnels - %v", e)
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
 					return
 				}
@@ -513,30 +551,32 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			if onboard.Agent {
 				flow.ResponseData = false
 				flow.AgentUuid = onboard.Uuid
+				flow.UserCluster = MyInfo.Id
+				flow.UserPod = MyInfo.Pod
 			}
 			// Route lookup just one time
 			if dest == nil {
 				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow)
 				// L4 routing failures need to terminate the flow
 				if dest == nil {
-					s.Debugf("Agent flow dest fail:", flow)
+					s.Debugf("Agent flow dest fail: %v", flow)
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard,
 						flow, "Couldn't get destination pod or open stream to it")
 					return
 				}
-				s.Debugf("Agent L4 Lookup", flow, bundle, dest)
+				s.Debugf("Agent L4 Lookup: flow=%v bundle=%v stream=%v", flow, bundle, dest)
 				// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
 				// the close is cascaded to the other elements connected to the cluster (pods/agents)
 				dest.CloseCascade(tunnel)
 			}
 			if !userAccessAllowed(s, flow, onboard, bundle) {
-				s.Debugf("Agent access fail:", bundle, flow.DestAgent)
+				s.Debugf("Agent access fail: bundle=%v DestAgent=%s", bundle, flow.DestAgent)
 				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent access denied")
 				return
 			}
 			err := dest.Write(hdr, agentBuf)
 			if err != nil {
-				s.Debugf("Agent flow write fail:", err, flow)
+				s.Debugf("Agent flow write fail: flow=%v, error=%v", flow, err)
 				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Write to Agent failed")
 				return
 			}
