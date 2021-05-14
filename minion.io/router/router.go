@@ -309,7 +309,7 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	pods[key].tunnel = client
 }
 
-func localRouteAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard) {
+func localRouteAdd(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard) {
 	// Register to the local routing table so that we know what services are
 	// available on this pod.
 	// TODO: handle the case where there are multiple local agents advertising the same service
@@ -326,7 +326,7 @@ func localRouteAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.
 	}
 }
 
-func localRouteDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard) {
+func localRouteDel(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard) {
 	// TODO: handle the case where there are multiple local agents advertising the same service
 	// and maybe we want to loadbalance across them ? So delete only one agent for that service here
 	for _, s := range onboard.Services {
@@ -359,22 +359,22 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	var fwd shared.Fwd
 	var err error
 
-	tag = aaa.RouteLookup(atype(onboard), onboard.Userid, flow.DestAgent, s)
-
-	host := strings.ReplaceAll(flow.DestAgent, ".", "-")
-	if tag == "" {
-		consul_key = strings.Join([]string{host, MyInfo.Namespace}, "-")
-	} else {
-		consul_key = strings.Join([]string{tag, host, MyInfo.Namespace}, "-")
-		flow.DestAgent = tag + "." + flow.Dest
-	}
-
 	// Do a Consul DNS lookup for the user -> connector direction only
 	// For the connector -> user direction, the target cluster and pod are
 	// obtained from the flow header fields UserCluster and UserPod. UserPod is set
 	// as the value of the x-nextensio-for header.
 	if onboard.Agent {
 		// We're on an Apod, trying to send the frame to a Cpod
+		tag = aaa.RouteLookup(atype(onboard), onboard.Userid, flow.DestAgent, s)
+
+		host := strings.ReplaceAll(flow.DestAgent, ".", "-")
+		if tag == "" {
+			consul_key = strings.Join([]string{host, MyInfo.Namespace}, "-")
+		} else {
+			consul_key = strings.Join([]string{tag, host, MyInfo.Namespace}, "-")
+			flow.DestAgent = tag + "." + flow.Dest
+		}
+
 		fwd, err = consul.ConsulDnsLookup(MyInfo, consul_key, s)
 		if err != nil {
 			s.Debugf("Consul lookup failed for dest %s with key %s", flow.DestAgent, consul_key)
@@ -441,11 +441,9 @@ func userAccessAllowed(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, onboard *nxth
 	if attrok {
 		flow.Usrattr = usrattr
 	}
-	// The AAA access check is done per packet today, we can save some performance if we
-	// do it once per flow like route lookup, but then we lose the ability to firewall the
-	// flow after its established
-	// TODO: This check is not needed for anything received from an agent unless we are
-	// assuming both agents and connectors can connect to the same pod, which is not in POR.
+	// TODO: This check is not really needed as it's for DestType == SelfDest, ie., for any
+	// traffic between user and connector within the same pod.
+	// Users and connectors cannot connect to the same pod as per POR.
 	if bundle != nil {
 		if !aaa.AccessOk(atype(bundle), (*bundle).Userid, flow.Usrattr, s) {
 			return false
