@@ -33,8 +33,6 @@ import (
 	"sync"
 	"time"
 
-	//"strings"
-
 	"github.com/open-policy-agent/opa/rego"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -166,7 +164,6 @@ var tenant string
 var nxtPod string
 var nxtGw string
 var nxtDisconnect func(string, *zap.SugaredLogger)
-var tenantOID primitive.ObjectID
 var slog *zap.SugaredLogger
 var st, sg, sm zap.Field // for tenant, gateway, module
 
@@ -190,15 +187,26 @@ func NxtUsrAllowed(which string, userid string) bool {
 	var bson primitive.M
 	var ok bool
 	if which == "agent" {
-		nxtGetUserAttrJSON(userid)
-		_, bson, ok = nxtReadUserAttrCache(userid)
+		_, bson, ok = nxtGetUserAttrJSON(userid)
 	} else {
-		nxtGetAppAttrJSON(userid)
-		_, bson, ok = nxtReadAppAttrCache(userid)
+		_, bson, ok = nxtGetAppAttrJSON(userid)
 	}
 	if !ok {
 		NxtUsrLeave(which, userid)
 		return false
+	}
+	// gateway.nextensio.net signifies 'any' gateway, if an explicit
+	// one is mentioned, thats all we will be allowed to connect to.
+	// Check for gw before pod since all clusters may not be identical
+	// in terms of minion pods - pod # may not be valid in "any" gw case.
+	if gw, found := bson["_gateway"].(string); found {
+		if gw == "gateway.nextensio.net" {
+			return true
+		}
+		if gw != nxtGw {
+			NxtUsrLeave(which, userid)
+			return false
+		}
 	}
 	if pod, found := bson["_pod"].(string); found {
 		if pod != nxtPod {
@@ -208,16 +216,6 @@ func NxtUsrAllowed(which string, userid string) bool {
 	} else {
 		NxtUsrLeave(which, userid)
 		return false
-	}
-	// gateway.nextensio.net signifies 'any' gateway, if an explicit
-	// one is mentioned, thats all we will be allowed to connect to
-	if gw, found := bson["_gateway"].(string); found {
-		if gw == "gateway.nextensio.net" {
-			return true
-		}
-		if gw != nxtGw {
-			return false
-		}
 	}
 	return true
 }
@@ -241,7 +239,8 @@ func NxtGetUsrAttr(which string, userid string) (string, bool) {
 	// Don't check mongoInitDone as we may have the data in local cache
 	// The call handles the case where mongo init not done and data not in local cache
 	if which == "agent" {
-		return nxtGetUserAttrJSON(userid), true
+		uajson, _, ok := nxtGetUserAttrJSON(userid)
+		return uajson, ok
 	} else {
 		return "", false
 	}
@@ -285,26 +284,8 @@ func nxtOpaProcess(ctx context.Context) int {
 		nxtLogDebug("OpaProcess", "InitExit set- init done")
 	}
 
-	var err error
-	// Next, loop until all initialization is done in case nxtOpaInit() failed
-	nxtLogDebug("OpaProcess", fmt.Sprintf("1. initDone=%v, mongoInitDone=%v, mongoCheck=%v",
-		initDone, mongoInitDone, mongoCheck))
-	for {
-		if initDone == true {
-			break
-		}
-		time.Sleep(2 * 1000 * time.Millisecond)
-		if mongoInitDone == false {
-			nxtLogDebug("OpaProcess", "Calling mongoDB init as it wasn't done")
-			mongoClient, err = nxtMongoDBInit(ctx, tenant, mongoDBAddr)
-			if err != nil {
-				nxtLogError(nxtMongoDBName, fmt.Sprintf("DB init retry error - %v", err))
-				continue
-			}
-			mongoInitDone = true
-			nxtOpaUseCaseInit(ctx)
-		}
-	}
+	// Loop until all initialization is done in case nxtOpaInit() failed
+	nxtOpaProcessInitCheck(ctx)
 
 	// Finally, loop forever
 	// 1. checking if mongoDB connection is still alive if any mongoDB access failed
@@ -313,49 +294,10 @@ func nxtOpaProcess(ctx context.Context) int {
 	nxtLogDebug("OpaProcess", fmt.Sprintf("2. initDone=%v, mongoInitDone=%v, mongoCheck=%v",
 		initDone, mongoInitDone, mongoCheck))
 	for {
-		if mongoInitDone == false {
-			// No connection to mongoDB. Try to reconnect.
-			nxtLogDebug("OpaProcess", "Calling mongoDB init - mongoInitDone false")
-			mongoClient, err = nxtMongoDBInit(ctx, tenant, mongoDBAddr)
-			if err != nil {
-				nxtLogError(nxtMongoDBName, fmt.Sprintf("DB init retry error - %v", err))
-				time.Sleep(2 * 1000 * time.Millisecond)
-				continue
-			}
-			mongoInitDone = true
-			mongoCheck = false
-		}
-		if mongoCheck == true {
-			// There has been a mongoDB access failure.
-			// Do a ping and see if DB is accessible. If not, reinit.
-			err = mongoClient.Ping(ctx, nil)
-			if err != nil {
-				_ = mongoClient.Disconnect(ctx)
-				mongoClient, err = nxtMongoDBInit(ctx, tenant, mongoDBAddr)
-				if err == nil {
-					// We have a new mongoDB connection.
-					mongoInitDone = true
-					mongoCheck = false
-					mongoFailures = 0
-				} else {
-					// Failed to reconnect to mongoDB. Keep retrying.
-					nxtLogError(nxtMongoDBName,
-						fmt.Sprintf("Failed to reinit DB after ping failure - %v",
-							err))
-					nxtLogError(nxtMongoDBName,
-						fmt.Sprintf("Total %d DB access failures", mongoFailures))
-					mongoInitDone = false
-				}
-			} else {
-				// Ping to mongoDB works fine. Reset flag.
-				mongoCheck = false
-				nxtLogDebug(nxtMongoDBName,
-					fmt.Sprintf("%d DB access failures seen but ping is fine",
-						mongoFailures))
-			}
-		}
 		// sleep(1 sec)
 		time.Sleep(1 * 1000 * time.Millisecond)
+
+		nxtOpaProcessMongoCheck(ctx)
 
 		if mongoInitDone == false {
 			// Skip any further code if mongoDB not accessible
@@ -380,6 +322,72 @@ func nxtOpaProcess(ctx context.Context) int {
 	return 0
 }
 
+func nxtOpaProcessInitCheck(ctx context.Context) {
+	var err error
+	nxtLogDebug("OpaProcess", fmt.Sprintf("1. initDone=%v, mongoInitDone=%v, mongoCheck=%v",
+		initDone, mongoInitDone, mongoCheck))
+	for {
+		if initDone == true {
+			break
+		}
+		time.Sleep(2 * 1000 * time.Millisecond)
+		if mongoInitDone == false {
+			nxtLogDebug("OpaProcess", "Calling mongoDB init as it wasn't done")
+			mongoClient, err = nxtMongoDBInit(ctx, tenant, mongoDBAddr)
+			if err != nil {
+				nxtLogError(nxtMongoDBName, fmt.Sprintf("DB init retry error - %v", err))
+				continue
+			}
+			mongoInitDone = true
+			nxtOpaUseCaseInit(ctx)
+		}
+	}
+}
+
+func nxtOpaProcessMongoCheck(ctx context.Context) {
+	var err error
+	if mongoInitDone == false {
+		// No connection to mongoDB. Try to reconnect.
+		nxtLogDebug("OpaProcess", "Calling mongoDB init - mongoInitDone false")
+		mongoClient, err = nxtMongoDBInit(ctx, tenant, mongoDBAddr)
+		if err != nil {
+			nxtLogError(nxtMongoDBName, fmt.Sprintf("DB init retry error - %v", err))
+			return
+		}
+		mongoInitDone = true
+		mongoCheck = false
+	}
+	if mongoCheck == true {
+		// There has been a mongoDB access failure.
+		// Do a ping and see if DB is accessible. If not, reinit.
+		err = mongoClient.Ping(ctx, nil)
+		if err != nil {
+			_ = mongoClient.Disconnect(ctx)
+			mongoClient, err = nxtMongoDBInit(ctx, tenant, mongoDBAddr)
+			if err == nil {
+				// We have a new mongoDB connection.
+				mongoInitDone = true
+				mongoCheck = false
+				mongoFailures = 0
+			} else {
+				// Failed to reconnect to mongoDB. Keep retrying.
+				nxtLogError(nxtMongoDBName,
+					fmt.Sprintf("Failed to reinit DB after ping failure - %v",
+						err))
+				nxtLogError(nxtMongoDBName,
+					fmt.Sprintf("Total %d DB access failures", mongoFailures))
+				mongoInitDone = false
+			}
+		} else {
+			// Ping to mongoDB works fine. Reset flag.
+			mongoCheck = false
+			nxtLogDebug(nxtMongoDBName,
+				fmt.Sprintf("%d DB access failures seen but ping is fine",
+					mongoFailures))
+		}
+	}
+}
+
 //-------------------------------- Init Functions ----------------------------------
 // API to init nxt OPA interface
 func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) error {
@@ -396,16 +404,14 @@ func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.
 	ctx := context.Background()
 	slog = sl
 	tenant = ns
-	tenantOID, _ = primitive.ObjectIDFromHex(tenant)
+	nxtPod = pod
+	nxtGw = gateway
 	st = zap.String("Tenant", tenant)
-	// TODO: need cluster name for initializing below
-	sg = zap.String("GW", "sj-nextensio.net")
+	sg = zap.String("GW", nxtGw)
 	sm = zap.String("Module", "NxtOPA")
 
 	nxtMongoDBName = nxtGetTenantDBName(tenant)
 	mongoDBAddr = mongouri
-	nxtPod = pod
-	nxtGw = gateway
 	nxtDisconnect = disconnectCb
 
 	go nxtOpaProcess(ctx)
@@ -718,28 +724,29 @@ func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 	return uahdr
 }
 
-func loadUserAttrFromDB(uuid string) string {
+func loadUserAttrFromDB(uuid string) (string, primitive.M, bool) {
 	var uaC usrCache
 
 	uastruct, ok := nxtReadUserAttrDB(uuid)
 	if ok {
 		ua := nxtConvertToJSON(uastruct)
 		userAttrLock.Lock()
+		// Cache doc read from DB
 		uaC.uajson = ua
 		uaC.uabson = uastruct
 		userAttr[uuid] = uaC
 		userAttrLock.Unlock()
-		return ua
+		return ua, uastruct, ok
 	}
-	return ""
+	return "", primitive.M{}, false
 }
 
 // Read one user's attr data from mongoDB collection and return it together
 // with the json version with header info added. Called when user connects to service pod.
-func nxtGetUserAttrJSON(uuid string) string {
-	ua, _, ok := nxtReadUserAttrCache(uuid)
+func nxtGetUserAttrJSON(uuid string) (string, primitive.M, bool) {
+	uajson, uastruct, ok := nxtReadUserAttrCache(uuid)
 	if ok {
-		return ua // cached version
+		return uajson, uastruct, ok // cached version
 	}
 
 	return loadUserAttrFromDB(uuid)
@@ -874,28 +881,29 @@ func nxtReadAppAttrHdr(ctx context.Context) DataHdr {
 	return apphdr
 }
 
-func loadAppAttrFromDB(uuid string) string {
+func loadAppAttrFromDB(uuid string) (string, primitive.M, bool) {
 	var appC usrCache
 
 	appstruct, ok := nxtReadAppAttrDB(uuid)
 	if ok {
 		app := nxtConvertToJSON(appstruct)
 		appAttrLock.Lock()
+		// Cache doc read from DB
 		appC.uajson = app
 		appC.uabson = appstruct
 		appAttr[uuid] = appC
 		appAttrLock.Unlock()
-		return app
+		return app, appstruct, ok
 	}
-	return ""
+	return "", primitive.M{}, false
 }
 
 // Read one app's attr data from mongoDB collection and return it together
 // with the json version with header info added. Called when app connects to service pod.
-func nxtGetAppAttrJSON(uuid string) string {
-	app, _, ok := nxtReadAppAttrCache(uuid)
+func nxtGetAppAttrJSON(uuid string) (string, primitive.M, bool) {
+	app, appstruct, ok := nxtReadAppAttrCache(uuid)
 	if ok {
-		return app // cached version
+		return app, appstruct, ok // cached version
 	}
 
 	return loadAppAttrFromDB(uuid)
@@ -1210,7 +1218,7 @@ func nxtEvalUserRouting(ucase string, uid string, host string, hdr *http.Header)
 	if QStateMap[ucase].QError {
 		return ""
 	}
-	uajson := nxtGetUserAttrJSON(uid)
+	uajson, _, _ := nxtGetUserAttrJSON(uid)
 	//ueajson := nxtGetUserAttrFromHTTP(uid, hdr)
 	rs, ok := nxtExecOpaQry(nxtEvalUserRoutingJSON(host, uajson), ucase)
 	if ok {
