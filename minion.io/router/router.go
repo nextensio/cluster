@@ -534,10 +534,14 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		case *nxthdr.NxtHdr_Flow:
 			flow := hdr.Hdr.(*nxthdr.NxtHdr_Flow).Flow
 			if flow.Type == nxthdr.NxtFlow_L3 {
-				panic("Not expecting anything other than L4 flows at this time")
+				s.Debugf("Not expecting anything other than L4 flows at this time")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent not onboarded")
+				return
 			}
 			if first {
-				panic("We dont expect L4 flows on the first stream")
+				s.Debugf("We dont expect L4 flows on the first stream")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent not onboarded")
+				return
 			}
 			if onboard == nil {
 				s.Debugf("Agent not onboarded yet")

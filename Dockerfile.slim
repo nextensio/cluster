@@ -8,4 +8,4 @@ RUN mkdir -p authz
 RUN mkdir -p authz/app-access
 RUN mkdir -p authz/routing
 EXPOSE 80/tcp 8002/tcp
-CMD ["/go/bin/minion.io", "-tunnel", "-consul_dns", "-register", "-ip", "127.0.0.1", "-iport", "80"]
+CMD ["/go/bin/minion.io"]
