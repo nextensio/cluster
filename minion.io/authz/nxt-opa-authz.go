@@ -180,46 +180,27 @@ func NxtAaaInit(namespace string, pod string, gateway string, mongouri string, s
 	return 0
 }
 
-func NxtUsrAllowed(which string, userid string) bool {
+// Check on Apod for user and Cpod for connector
+func NxtUsrAllowed(which string, userid string, cluster string, podname string) bool {
 	if initDone == false || mongoInitDone == false {
 		return false
 	}
-	var bson primitive.M
-	var ok bool
-	if which == "agent" {
-		_, bson, ok = nxtGetUserAttrJSON(userid)
-	} else {
-		_, bson, ok = nxtGetAppAttrJSON(userid)
+	if (cluster == "gateway") || (cluster == "any") {
+		return true
 	}
-	if !ok {
-		NxtUsrLeave(which, userid)
+	gw := cluster + ".nextensio.net"
+	if gw != nxtGw {
+		nxtLogDebug("UsrAllow", fmt.Sprintf("Gw mismatch for %s, gw=%s", userid, gw))
 		return false
 	}
-	// gateway.nextensio.net signifies 'any' gateway, if an explicit
-	// one is mentioned, thats all we will be allowed to connect to.
-	// Check for gw before pod since all clusters may not be identical
-	// in terms of minion pods - pod # may not be valid in "any" gw case.
-	if gw, found := bson["_gateway"].(string); found {
-		if gw == "gateway.nextensio.net" {
-			return true
-		}
-		if gw != nxtGw {
-			NxtUsrLeave(which, userid)
-			return false
-		}
-	}
-	if pod, found := bson["_pod"].(string); found {
-		if pod != nxtPod {
-			NxtUsrLeave(which, userid)
-			return false
-		}
-	} else {
-		NxtUsrLeave(which, userid)
+	if podname != nxtPod {
+		nxtLogDebug("UsrAllow", fmt.Sprintf("Pod mismatch for %s, pod=%s", userid, podname))
 		return false
 	}
 	return true
 }
 
+// Purge a user's attributes when last agent of that user leaves
 func NxtUsrLeave(which string, userid string) {
 	if initDone == false {
 		return
@@ -227,11 +208,10 @@ func NxtUsrLeave(which string, userid string) {
 	if which == "agent" {
 		// Don't check mongoInitDone as we purge the data in local cache
 		nxtPurgeUserAttrJSON(userid)
-	} else {
-		nxtPurgeAppAttrJSON(userid)
 	}
 }
 
+// Get user attributes only on Apod. Passed to Cpod via flow header.
 func NxtGetUsrAttr(which string, userid string) (string, bool) {
 	if initDone == false {
 		return "", false
@@ -246,6 +226,7 @@ func NxtGetUsrAttr(which string, userid string) (string, bool) {
 	}
 }
 
+// Access policy is run only on Cpod
 func NxtAccessOk(which string, bundleid string, userattr string) bool {
 	if initDone == false {
 		return false
@@ -256,6 +237,7 @@ func NxtAccessOk(which string, bundleid string, userattr string) bool {
 	return nxtEvalAppAccessAuthz(opaUseCases[2], userattr, bundleid)
 }
 
+// Route policy is run only on Apod
 func NxtRouteLookup(which string, uid string, host string) string {
 	if initDone == false || mongoInitDone == false {
 		return ""
@@ -311,9 +293,9 @@ func nxtOpaProcess(ctx context.Context) int {
 		}
 		// Process if new version of UserAttr collection
 		nxtProcessUserAttrChanges(ctx)
-		nxtProcessAppAttrChanges(ctx)
 
-		if (QStateMap[opaUseCases[0]].WrVer == true) || (QStateMap[opaUseCases[2]].WrVer == true) ||
+		if (QStateMap[opaUseCases[0]].WrVer == true) ||
+			(QStateMap[opaUseCases[2]].WrVer == true) ||
 			(QStateMap[opaUseCases[3]].WrVer == true) {
 			nxtWriteAttrVersions()
 		}
@@ -445,7 +427,7 @@ func nxtOpaUseCaseInit(ctx context.Context) {
 	// Set up cache for user attributes.
 	// Then read the extended (runtime) attributes spec doc
 	userAttr = make(map[string]usrCache, maxUsers)
-	appAttr = make(map[string]usrCache, maxUsers)
+	appAttr = make(map[string]usrCache)
 	usrAttrHdr = nxtReadUserAttrHdr(ctx)
 	nxtReadUserExtAttrDoc(ctx)
 
@@ -683,7 +665,7 @@ func nxtReadRefDataDoc(ctx context.Context, ucase string) {
 	}
 }
 
-//-------------------------------User Attribute Functions---------------------------------
+//-----------------------------User Attributes Caching Functions------------------------------
 
 // Cache of user attributes for all active users. Cache is updated whenever
 // the collection version changes. Cache entries are purged when a user disconnects.
@@ -797,34 +779,9 @@ func nxtPurgeUserAttrJSON(uuid string) {
 	delete(userAttr, uuid)
 }
 
-// The users attributes have changed, check if the user is still allowed
-// to connect to this pod / cluster etc..
-func nxtUsrAttrChanged(uuid string, new primitive.M) bool {
-	if attr, found := userAttr[uuid]; found {
-		if o, ok := attr.uabson["_pod"].(string); ok {
-			// If the users pod changed from this pod to another, disconnect the user tunnel
-			if n, ok := new["_pod"].(string); ok {
-				if o == nxtPod && o != n {
-					return true
-				}
-			}
-		}
-		if o, ok := attr.uabson["_gateway"].(string); ok {
-			if n, ok := new["_gateway"].(string); ok {
-				if o != n {
-					return true
-				}
-			}
-		}
-	}
-
-	return false
-}
-
 // Update cache because version info changed for collection
 func nxtUpdateUserAttrCache() {
 	var uaC usrCache
-	var disconnect []string
 
 	userAttrLock.Lock()
 
@@ -832,30 +789,21 @@ func nxtUpdateUserAttrCache() {
 		uastruct, _ := nxtReadUserAttrDB(id)
 		uaC.uajson = nxtConvertToJSON(uastruct)
 		uaC.uabson = uastruct
-		if nxtUsrAttrChanged(id, uastruct) {
-			disconnect = append(disconnect, id)
-		}
 		userAttr[id] = uaC
 	}
 
 	userAttrLock.Unlock()
-
-	// do the disconnects outside the lock, or else there can be a classic
-	// lock dependency deadlock with the aaa lock here followed by minion lock
-	// in nxtDisconnect and minion lock in minion agent add/del which tries to
-	// take aaa lock here
-	for _, d := range disconnect {
-		nxtDisconnect(d, slog)
-	}
-	nxtLogDebug("UserAttrCache", fmt.Sprintf("Updated %v entries in local cache, disconnected %d", len(userAttr), len(disconnect)))
+	nxtLogDebug("UserAttrCache", fmt.Sprintf("Updated %v entries in local cache", len(userAttr)))
 }
+
+//-----------------------------Bundle Attributes Caching Functions-----------------------------
 
 var appAttr map[string]usrCache
 var appAttrLock sync.Mutex
 var appAttrHdr DataHdr
 
 // If new version of app attribues collection is available, read the
-// extended attributes spec doc and update the cache for active apps
+// attributes docs and update the cache for active apps
 func nxtProcessAppAttrChanges(ctx context.Context) {
 	tmphdr := nxtReadAppAttrHdr(ctx)
 	if (tmphdr.Majver > appAttrHdr.Majver) || (tmphdr.Minver > appAttrHdr.Minver) {
@@ -951,34 +899,9 @@ func nxtPurgeAppAttrJSON(appid string) {
 	delete(appAttr, appid)
 }
 
-// The app's attributes have changed, check if the app is still allowed
-// to connect to this pod / cluster etc..
-func nxtAppAttrChanged(uuid string, new primitive.M) bool {
-	if attr, found := appAttr[uuid]; found {
-		if o, ok := attr.uabson["_pod"].(string); ok {
-			// If the app's pod changed from this pod to another, disconnect the user tunnel
-			if n, ok := new["_pod"].(string); ok {
-				if o == nxtPod && o != n {
-					return true
-				}
-			}
-		}
-		if o, ok := attr.uabson["_gateway"].(string); ok {
-			if n, ok := new["_gateway"].(string); ok {
-				if o != n {
-					return true
-				}
-			}
-		}
-	}
-
-	return false
-}
-
 // Update cache because version info changed for collection
 func nxtUpdateAppAttrCache() {
 	var appC usrCache
-	var disconnect []string
 
 	appAttrLock.Lock()
 
@@ -986,23 +909,14 @@ func nxtUpdateAppAttrCache() {
 		appstruct, _ := nxtReadAppAttrDB(id)
 		appC.uajson = nxtConvertToJSON(appstruct)
 		appC.uabson = appstruct
-		if nxtAppAttrChanged(id, appstruct) {
-			disconnect = append(disconnect, id)
-		}
 		appAttr[id] = appC
 	}
 
 	appAttrLock.Unlock()
-
-	// do the disconnects outside the lock, or else there can be a classic
-	// lock dependency deadlock with the aaa lock here followed by minion lock
-	// in nxtDisconnect and minion lock in minion agent add/del which tries to
-	// take aaa lock here
-	for _, d := range disconnect {
-		nxtDisconnect(d, slog)
-	}
-	nxtLogDebug("AppAttrCache", fmt.Sprintf("Updated %v entries in local cache, disconnected %d", len(appAttr), len(disconnect)))
+	nxtLogDebug("AppAttrCache", fmt.Sprintf("Updated %v entries in local cache", len(appAttr)))
 }
+
+//-------------------------------Dynamic User Attributes Functions---------------------------------
 
 // Extended (runtime) user attributes spec. The mongoDB doc specifies the HTTP headers
 // as a JSON string of key-value pairs in Attrlist. The key is seen by OPA. The
@@ -1216,6 +1130,7 @@ func nxtEvalUserRouting(ucase string, uid string, host string, hdr *http.Header)
 		return ""
 	}
 	if QStateMap[ucase].QError {
+		nxtLogError(ucase, "Qstate error for route query for "+uid+" to "+host)
 		return ""
 	}
 	uajson, _, _ := nxtGetUserAttrJSON(uid)
@@ -1474,10 +1389,10 @@ func nxtReadAllUserAttrDocuments(ctx context.Context) *[]bson.M {
 }
 
 func nxtWriteAttrVersions() {
-	qsm2 := QStateMap[opaUseCases[2]]
-	qsm3 := QStateMap[opaUseCases[3]]
+	qsm2 := QStateMap[opaUseCases[2]] // Access policy usecase
+	qsm3 := QStateMap[opaUseCases[3]] // Route policy usecase
 	versions := fmt.Sprintf("USER=%d.%d\nBUNDLE=%d.%d\nPOLICY=%d.%d\nROUTE=%d.%d",
-		usrAttrHdr.Majver, usrAttrHdr.Minver, appAttrHdr.Majver, appAttrHdr.Minver,
+		usrAttrHdr.Majver, usrAttrHdr.Minver, qsm2.RefHdr.Majver, qsm2.RefHdr.Minver,
 		qsm2.PStruct.Majver, qsm2.PStruct.Minver, qsm3.RefHdr.Majver, qsm3.RefHdr.Minver)
 	ioutil.WriteFile("/tmp/opa_attr_versions", []byte(versions), 0644)
 	QStateMap[opaUseCases[0]].WrVer = false

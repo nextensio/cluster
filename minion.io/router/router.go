@@ -118,7 +118,7 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	aLock.Lock()
 	defer aLock.Unlock()
 
-	if !aaa.UsrAllowed(atype(onboard), onboard.Userid, s) {
+	if !aaa.UsrAllowed(atype(onboard), onboard.Userid, onboard.Cluster, onboard.Podname, s) {
 		return fmt.Errorf("User disallowed")
 	}
 	// Here is where we assume there is only one active tunnel from an agent device to the cluster,
@@ -184,7 +184,7 @@ func agentTunnelGet(uuid string) common.Transport {
 	return agentT.tunnel
 }
 
-// Not called
+// Passed as callback when calling AaaStart() from minion.go
 func DisconnectUser(userid string, s *zap.SugaredLogger) {
 	aLock.RLock()
 	defer aLock.RUnlock()

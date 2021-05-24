@@ -9,9 +9,9 @@ func AaaStart(ns string, pod string, gateway string, uri string, s *zap.SugaredL
 	authz.NxtAaaInit(ns, pod, gateway, uri, s, disconnectCb)
 }
 
-func UsrAllowed(which string, id string, s *zap.SugaredLogger) bool {
+func UsrAllowed(which string, id string, cluster string, podname string, s *zap.SugaredLogger) bool {
 
-	val := authz.NxtUsrAllowed(which, id)
+	val := authz.NxtUsrAllowed(which, id, cluster, podname)
 	s.Debugf("aaa: user allowed %v, %v : result %v\n", which, id, val)
 	return val
 }
