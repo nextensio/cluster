@@ -283,7 +283,7 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	// Add headers for tunnel between source pod and destination pod or cluster
 	hdrs := make(http.Header)
 	hdrs.Add("x-nextensio-sourcecluster", MyInfo.Id)
-	hdrs.Add("x-nextensio-sourcepod", MyInfo.Pod)
+	hdrs.Add("x-nextensio-sourcepod", MyInfo.Host)
 	hdrs.Add("x-nextensio-destcluster", fwd.Id)
 
 	lg := log.New(&zap2log{s: s}, "http2", 0)
@@ -554,7 +554,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				flow.ResponseData = false
 				flow.AgentUuid = onboard.Uuid
 				flow.UserCluster = MyInfo.Id
-				flow.UserPod = MyInfo.Pod
+				flow.UserPod = MyInfo.Host
 			}
 			// Route lookup just one time
 			if dest == nil {
@@ -627,8 +627,8 @@ func pakDrop(s *zap.SugaredLogger) {
 			sahdr := []byte("x-nextensio-sourceagent: " + info.flow.SourceAgent)
 			// SourceClusterID: MyInfo.Id
 			schdr := []byte("x-nextensio-sourcecluster: " + info.myInfo.Id)
-			// SourcePodID: MyInfo.Pod
-			sphdr := []byte("x-nextensio-sourcepod: " + info.myInfo.Pod)
+			// SourcePodID: MyInfo.Host
+			sphdr := []byte("x-nextensio-sourcepod: " + info.myInfo.Host)
 			// DestClusterID: unknown
 			// DestPodID: unknown
 			dchdr := []byte("x-nextensio-destcluster: unknown")

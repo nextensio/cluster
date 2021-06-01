@@ -15,6 +15,7 @@ func EnvHandler(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
 	MyInfo.Id = os.Getenv("MY_POD_CLUSTER")
 	MyInfo.DnsIp = os.Getenv("MY_DNS")
 	MyInfo.MongoUri = os.Getenv("MY_MONGO_URI")
+	MyInfo.Host = os.Getenv("HOSTNAME")
 
 	sugar.Infow("env", "Node", MyInfo.Node)
 	sugar.Infow("env", "Pod", MyInfo.Pod)

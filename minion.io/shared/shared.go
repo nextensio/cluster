@@ -18,6 +18,7 @@ type Params struct {
 	Id        string
 	DnsIp     string
 	MongoUri  string
+	Host      string
 }
 
 // Structure for storing forwarding result
