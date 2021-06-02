@@ -366,6 +366,11 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	if onboard.Agent {
 		// We're on an Apod, trying to send the frame to a Cpod
 		tag = aaa.RouteLookup(atype(onboard), onboard.Userid, flow.DestAgent, s)
+		if tag == "deny" {
+			s.Debugf("Agent %s access to service %s denied",
+				onboard.Userid, flow.DestAgent)
+			return nil, nil
+		}
 
 		host := strings.ReplaceAll(flow.DestAgent, ".", "-")
 		if tag == "" {
