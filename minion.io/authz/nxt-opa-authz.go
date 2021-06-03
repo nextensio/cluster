@@ -189,7 +189,8 @@ func NxtUsrAllowed(which string, userid string, cluster string, podname string) 
 		return true
 	}
 	gw := cluster + ".nextensio.net"
-	if gw != nxtGw {
+	// gateway.nextensio.net is basically 'any gateway'
+	if gw != "gateway.nextensio.net" && gw != nxtGw {
 		nxtLogDebug("UsrAllow", fmt.Sprintf("Gw mismatch for %s, gw=%s", userid, gw))
 		return false
 	}
