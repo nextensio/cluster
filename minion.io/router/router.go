@@ -203,6 +203,8 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 	// TODO: This dot dash business has to go away, we have to unify the usage
 	// of services everywhere to either dot or dash
 	service := strings.ReplaceAll(flow.DestAgent, ".", "-")
+	// There can be multiple agents (devices) with the same userid, we have to get the flow
+	// back to the exact agent that originated it
 	if flow.ResponseData {
 		service = service + flow.AgentUuid
 	}
@@ -354,7 +356,7 @@ func podDelete(key string) {
 
 // Lookup destination stream to send an L4 tcp/udp/http proxy packet on
 func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context,
-	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) (*nxthdr.NxtOnboard, common.Transport) {
+	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, Suuid uuid.UUID) (*nxthdr.NxtOnboard, common.Transport) {
 	var consul_key, tag string
 	var fwd shared.Fwd
 	var err error
@@ -394,7 +396,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 		} else {
 			// Remote destination
 			fwd.DestType = shared.RemoteDest
-			fwd.Dest = consul.RemotePrePrefix + flow.UserCluster + consul.RemotePostPrefix
+			fwd.Dest = flow.UserCluster + consul.RemotePostPrefix
 		}
 		fwd.Pod = flow.UserPod
 		fwd.Id = flow.UserCluster
@@ -402,23 +404,12 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 
 	// Add http headers specific to this session/stream
 	hdrs := make(http.Header)
-	// Add following header for stats dimensions:
+	// Add following headers for stats dimensions:
 	hdrs.Add("x-nextensio-sourceagent", flow.SourceAgent)
-	// Just a value which lets the other end identify that this is a new "session"
-	hdrs.Add("x-nextensio-session", uuid.New().String())
-	// Take this session to the remote or local pod hosting the particular agent/connector
-	// For agent -> connector, the -for header will have the connector service
-	// For connector -> agent, the -for header will have the destination Apod.
-	if onboard.Agent {
-		// On Apod, so this is for a service (on a Cpod)
-		hdrs.Add("x-nextensio-for", flow.DestAgent)
-		// On apod we do not know destination cpod
-		hdrs.Add("x-nextensio-destpod", "unknown")
-	} else {
-		// On Cpod, destination pod is from flow.UserPod sent in flow header by Apod
-		hdrs.Add("x-nextensio-for", fwd.Pod)
-		hdrs.Add("x-nextensio-destpod", fwd.Pod)
-	}
+	hdrs.Add("x-nextensio-destpod", fwd.Pod)
+	hdrs.Add("x-nextensio-session", Suuid.String())
+	// This is the header that gets this flow to the right pod
+	hdrs.Add("x-nextensio-for", fwd.Pod)
 
 	switch fwd.DestType {
 	case shared.SelfDest:
@@ -560,10 +551,12 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				flow.AgentUuid = onboard.Uuid
 				flow.UserCluster = MyInfo.Id
 				flow.UserPod = MyInfo.Host
+			} else {
+				flow.ResponseData = true
 			}
 			// Route lookup just one time
 			if dest == nil {
-				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow)
+				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow, Suuid)
 				// L4 routing failures need to terminate the flow
 				if dest == nil {
 					s.Debugf("Agent flow dest fail: %v", flow)
@@ -634,12 +627,8 @@ func pakDrop(s *zap.SugaredLogger) {
 			schdr := []byte("x-nextensio-sourcecluster: " + info.myInfo.Id)
 			// SourcePodID: MyInfo.Host
 			sphdr := []byte("x-nextensio-sourcepod: " + info.myInfo.Host)
-			// DestClusterID: unknown
-			// DestPodID: unknown
-			dchdr := []byte("x-nextensio-destcluster: unknown")
-			dphdr := []byte("x-nextensio-destpod: unknown")
 			clenhdr := []byte("Content-length: 0\r\n\r\n")
-			pak := bytes.Join([][]byte{reqhdr, drophdr, sahdr, schdr, sphdr, dchdr, dphdr, clenhdr},
+			pak := bytes.Join([][]byte{reqhdr, drophdr, sahdr, schdr, sphdr, clenhdr},
 				[]byte("\r\n"))
 			_, e := nullConn.Write(pak)
 			if e != nil {

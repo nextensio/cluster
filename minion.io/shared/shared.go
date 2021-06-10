@@ -27,5 +27,4 @@ type Fwd struct {
 	Pod      string
 	Id       string
 	Dest     string
-	PodIp    string
 }

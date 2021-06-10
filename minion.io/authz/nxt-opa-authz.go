@@ -185,7 +185,7 @@ func NxtUsrAllowed(which string, userid string, cluster string, podname string) 
 	if initDone == false || mongoInitDone == false {
 		return false
 	}
-	if podname != nxtPod {
+	if podname != "" && podname != nxtPod {
 		nxtLogDebug("UsrAllow", fmt.Sprintf("Pod mismatch for %s, pod=%s", userid, podname))
 		return false
 	}
