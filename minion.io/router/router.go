@@ -118,6 +118,12 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	aLock.Lock()
 	defer aLock.Unlock()
 
+	if !onboard.Agent {
+		// We're on a Cpod. Allow only one connector per Cpod
+		if len(users[onboard.Userid]) > 0 {
+			return fmt.Errorf("Only one connector allowed per pod")
+		}
+	}
 	if !aaa.UsrAllowed(atype(onboard), onboard.Userid, onboard.Cluster, onboard.Podname, s) {
 		return fmt.Errorf("User disallowed")
 	}
