@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	common "gitlab.com/nextensio/common/go"
 	"gitlab.com/nextensio/common/go/messages/nxthdr"
@@ -67,6 +68,7 @@ var unusedChan chan common.NxtStream
 var routeLock sync.RWMutex
 var localRoutes map[string]*nxthdr.NxtOnboard
 var pakdropReq chan dropInfo
+var totGoroutines int32
 
 // NOTE: About all the multitude of UUIDs.
 // onboard.userid: This everyone understands - its like foobar@nextensio.net
@@ -242,7 +244,7 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 // TODO2: These remote pod sessions need to be aged out at some point, will need some reference
 // counting / last used timestamp etc..
 func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
-	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd) common.Transport {
+	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd, Suuid uuid.UUID) common.Transport {
 	var tunnel common.Transport
 	var pending bool = false
 	var key string
@@ -271,7 +273,7 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 		p = pods[key]
 		if p == nil {
 			pods[key] = &podInfo{pending: true, tunnel: nil}
-			podDial(s, ctx, MyInfo, onboard, flow, fwd)
+			podDial(s, ctx, MyInfo, onboard, flow, fwd, Suuid)
 			tunnel = pods[key].tunnel
 		} else {
 			tunnel = p.tunnel
@@ -282,9 +284,38 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	return tunnel
 }
 
+// The concept is that there is one "session" to the destination over which there are
+// "streams", and if the "session" is closed for some reason then we have to create a
+// new one. For http2 in specific, we dont really need this tunnel monitor, because
+// in golang http2 lib, everything is a "stream" - what we call here as the main "session"
+// is just a stream. And a NewStream() over it just ends up doing an http2 request which
+// the lib will smartly figure out whether the existing session is closed, a new session
+// is needed etc.. But if not for http2, if we are using some other transport, we need to
+// keep this semantics intact of session + stream and monitoring a session etc..
+func podTunnelMonitor(s *zap.SugaredLogger, key string, tunnel common.Transport, fwd shared.Fwd) {
+	hdr := &nxthdr.NxtHdr{}
+	flow := nxthdr.NxtFlow{}
+	hdr.Hdr = &nxthdr.NxtHdr_Flow{Flow: &flow}
+	hdr.Streamop = nxthdr.NxtHdr_KEEP_ALIVE
+	agentBuf := net.Buffers{}
+
+	for {
+		err := tunnel.Write(hdr, agentBuf)
+		if err != nil {
+			tunnel.Close()
+			s.Debugf("Monitor tunnel closed", err, key)
+			pLock.Lock()
+			pods[key] = nil
+			pLock.Unlock()
+			return
+		}
+		time.Sleep(10 * time.Second)
+	}
+}
+
 // Create the initial session to a destination pod/remote cluser
 func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
-	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd) {
+	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd, Suuid uuid.UUID) {
 	var pubKey []byte
 	var key string
 
@@ -293,9 +324,13 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	hdrs.Add("x-nextensio-sourcecluster", MyInfo.Id)
 	hdrs.Add("x-nextensio-sourcepod", MyInfo.Host)
 	hdrs.Add("x-nextensio-destcluster", fwd.Id)
+	hdrs.Add("x-nextensio-destpod", fwd.Pod)
+	// This is the header that gets this flow to the right pod
+	hdrs.Add("x-nextensio-for", fwd.Pod)
+	hdrs.Add("x-nextensio-session", Suuid.String())
 
 	lg := log.New(&zap2log{s: s}, "http2", 0)
-	client := nhttp2.NewClient(ctx, lg, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs)
+	client := nhttp2.NewClient(ctx, lg, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs, &totGoroutines)
 	// For pod to pod connectivity, a pod will always dial-out another one,
 	// we dont expect a stream to come in from the other end on a dial-out session,
 	// and hence the reason we use the unusedChan on which no one is listening.
@@ -315,6 +350,7 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	}
 	pods[key].pending = false
 	pods[key].tunnel = client
+	go podTunnelMonitor(s, key, client, fwd)
 }
 
 func localRouteAdd(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard) {
@@ -347,17 +383,6 @@ func localRouteDel(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 		localRoutes[s] = nil
 		routeLock.Unlock()
 	}
-}
-
-// Not called
-func podDelete(key string) {
-	pLock.Lock()
-	session := pods[key]
-	if session != nil {
-		session.tunnel.Close()
-		pods[key] = nil
-	}
-	pLock.Unlock()
 }
 
 // Lookup destination stream to send an L4 tcp/udp/http proxy packet on
@@ -412,10 +437,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	hdrs := make(http.Header)
 	// Add following headers for stats dimensions:
 	hdrs.Add("x-nextensio-sourceagent", flow.SourceAgent)
-	hdrs.Add("x-nextensio-destpod", fwd.Pod)
 	hdrs.Add("x-nextensio-session", Suuid.String())
-	// This is the header that gets this flow to the right pod
-	hdrs.Add("x-nextensio-for", fwd.Pod)
 
 	switch fwd.DestType {
 	case shared.SelfDest:
@@ -424,12 +446,12 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 			return bundle, dest.NewStream(nil)
 		}
 	case shared.LocalDest:
-		dest := podLookup(s, ctx, MyInfo, onboard, flow, fwd)
+		dest := podLookup(s, ctx, MyInfo, onboard, flow, fwd, Suuid)
 		if dest != nil {
 			return nil, dest.NewStream(hdrs)
 		}
 	case shared.RemoteDest:
-		dest := podLookup(s, ctx, MyInfo, onboard, flow, fwd)
+		dest := podLookup(s, ctx, MyInfo, onboard, flow, fwd, Suuid)
 		if dest != nil {
 			return nil, dest.NewStream(hdrs)
 		}
@@ -467,12 +489,14 @@ func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel co
 		// If the very first stream on which we onboarded goes away, then we assume the
 		// session goes away
 		sessionDel(Suuid)
-		e := agentDel(s, MyInfo, onboard, Suuid)
-		if e != nil {
-			// TODO: agent delete fail is a bad thing, it can mean that consul entries
-			// are hanging around, which is bad for routing! Not sure what should be done
-			// if agent del fails
-			s.Debugf("Agent del failed", e)
+		if onboard != nil {
+			e := agentDel(s, MyInfo, onboard, Suuid)
+			if e != nil {
+				// TODO: agent delete fail is a bad thing, it can mean that consul entries
+				// are hanging around, which is bad for routing! Not sure what should be done
+				// if agent del fails
+				s.Debugf("Agent del failed", e)
+			}
 		}
 	}
 	if (r != "") && (f != nil) {
@@ -504,7 +528,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		// this means we are not the first stream in this session
 		first = false
 	}
-	s.Debugf("New agent stream %s : %v", Suuid, onboard)
+	s.Debugf("New agent stream %s : %v, goroutines %d", Suuid, onboard, totGoroutines)
 
 	for {
 		hdr, agentBuf, err := tunnel.Read()
@@ -672,40 +696,44 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 			streamFromPodClose(tunnel, dest, MyInfo, nil, "")
 			return
 		}
-		switch hdr.Hdr.(type) {
-		case *nxthdr.NxtHdr_Flow:
-			flow := hdr.Hdr.(*nxthdr.NxtHdr_Flow).Flow
-			if flow.Type == nxthdr.NxtFlow_L3 {
-				panic("Not expecting anything other than L4 flows at this time")
-			}
-			// Route lookup just one time
-			if dest == nil {
-				onboard, dest = localRouteLookup(s, flow)
+		if hdr.Streamop == nxthdr.NxtHdr_KEEP_ALIVE {
+			// nothing to do
+		} else {
+			switch hdr.Hdr.(type) {
+			case *nxthdr.NxtHdr_Flow:
+				flow := hdr.Hdr.(*nxthdr.NxtHdr_Flow).Flow
+				if flow.Type == nxthdr.NxtFlow_L3 {
+					panic("Not expecting anything other than L4 flows at this time")
+				}
+				// Route lookup just one time
 				if dest == nil {
-					s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
-					streamFromPodClose(tunnel, dest, MyInfo, flow, "Couldn't get destination to agent")
+					onboard, dest = localRouteLookup(s, flow)
+					if dest == nil {
+						s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
+						streamFromPodClose(tunnel, dest, MyInfo, flow, "Couldn't get destination to agent")
+						return
+					}
+					s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
+					dest = dest.NewStream(nil)
+					if dest == nil {
+						s.Debugf("Interpod: cant open stream on dest tunnel for ", flow.DestAgent)
+						streamFromPodClose(tunnel, dest, MyInfo, flow, "Stream open to agent failed")
+						return
+					}
+					// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
+					// the close is cascaded to the other elements connected to the cluster (pods/agents)
+					dest.CloseCascade(tunnel)
+				}
+				if !bundleAccessAllowed(s, flow, onboard) {
+					streamFromPodClose(tunnel, dest, MyInfo, flow, "Agent access denied")
 					return
 				}
-				s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
-				dest = dest.NewStream(nil)
-				if dest == nil {
-					s.Debugf("Interpod: cant open stream on dest tunnel for ", flow.DestAgent)
-					streamFromPodClose(tunnel, dest, MyInfo, flow, "Stream open to agent failed")
+				err := dest.Write(hdr, podBuf)
+				if err != nil {
+					s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
+					streamFromPodClose(tunnel, dest, MyInfo, flow, "Write to destination pod failed")
 					return
 				}
-				// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
-				// the close is cascaded to the other elements connected to the cluster (pods/agents)
-				dest.CloseCascade(tunnel)
-			}
-			if !bundleAccessAllowed(s, flow, onboard) {
-				streamFromPodClose(tunnel, dest, MyInfo, flow, "Agent access denied")
-				return
-			}
-			err := dest.Write(hdr, podBuf)
-			if err != nil {
-				s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
-				streamFromPodClose(tunnel, dest, MyInfo, flow, "Write to destination pod failed")
-				return
 			}
 		}
 	}
@@ -746,7 +774,7 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 	var pvtKey []byte
 	var pubKey []byte
 	lg := log.New(&zap2log{s: s}, "http2", 0)
-	server := nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, "x-nextensio-session")
+	server := nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, "x-nextensio-session", &totGoroutines)
 	tchan := make(chan common.NxtStream)
 	go server.Listen(tchan)
 	for {

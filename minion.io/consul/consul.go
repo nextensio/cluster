@@ -179,7 +179,7 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 				fwd.Dest = fwd.Pod + "-in." + MyInfo.Namespace + LocalSuffix
 			}
 		}
-		sugar.Debugf("Consul: destination %s of type RemoteDest", fwd.Dest)
+		sugar.Debugf("Consul: destination %s of type %s", fwd.Dest, fwd.DestType)
 		return fwd, nil
 	}
 
