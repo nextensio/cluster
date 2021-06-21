@@ -235,26 +235,25 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 // identified by destAgent. The session creation is slow because of tcp/tls negotiation etc..
 // The next flow will find an existing session and just create a new stream over it, which is
 // a very fast operation compared to the tcp/tls negotiation for creating a session.
-// TODO1: We dont have to create a session to the destination pod + destAgent combo, we really want
-// it to go to the destination pod itself and then we can just create streams over that session.
-// As of today there is no istio rules installed to redirect a http request to a pod, its only
-// redirect-able to an agent, if we install some rule for the pod, we can reduce the number of
-// sessions created here. We can do just destination pod for local cluster pod to pod case, but
-// just keeping the code same for local and remote cluster at the moment.
-// TODO2: These remote pod sessions need to be aged out at some point, will need some reference
-// counting / last used timestamp etc..
+//
+// NOTE NOTE NOTE: The way istio/envoy handles http2 sessions/streams can be confusing. Lets
+// say we have two remote pods cpod1 and cpod2. Now from apod1 we first want to send traffic
+// to cpod1. So we open an http2 session to remote-gateway, add x-nextensio-for: cpod1 and that
+// stream reaches cpod1. Now if we want to send to cpod2, one might logically assume that we
+// can use the same session as above because that just takes the packet to the remote-gateway
+// ingress istio gateway and then if we add a different x-nextensio-for: cpod2, it will reach
+// cpod2. But that assumption is erroneous, as can be easily verified with experimentation.
+// From remote gateway istio/envoy ingress perpsective, once a "session" is established to a
+// pod (cpod1 in our example), we can open thousands of streams on that session with all kinds of
+// different http headers, but all those streams will only go to cpod1. And hence the reason
+// why wwe key here using the destination + pod combo
 func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
-	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd, Suuid uuid.UUID) common.Transport {
+	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd) common.Transport {
 	var tunnel common.Transport
 	var pending bool = false
-	var key string
 
-	// Pod name if local, else cluster name
-	if fwd.DestType == shared.LocalDest {
-		key = fwd.Pod
-	} else {
-		key = fwd.Id
-	}
+	key := fwd.Id + ":" + fwd.Pod
+
 	// Try read lock first since the most common case should be that tunnels are
 	// already setup
 	pLock.RLock()
@@ -273,7 +272,7 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 		p = pods[key]
 		if p == nil {
 			pods[key] = &podInfo{pending: true, tunnel: nil}
-			podDial(s, ctx, MyInfo, onboard, flow, fwd, Suuid)
+			podDial(s, ctx, MyInfo, onboard, flow, fwd, key)
 			tunnel = pods[key].tunnel
 		} else {
 			tunnel = p.tunnel
@@ -315,19 +314,16 @@ func podTunnelMonitor(s *zap.SugaredLogger, key string, tunnel common.Transport,
 
 // Create the initial session to a destination pod/remote cluser
 func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
-	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd, Suuid uuid.UUID) {
+	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd, key string) {
 	var pubKey []byte
-	var key string
 
 	// Add headers for tunnel between source pod and destination pod or cluster
 	hdrs := make(http.Header)
 	hdrs.Add("x-nextensio-sourcecluster", MyInfo.Id)
 	hdrs.Add("x-nextensio-sourcepod", MyInfo.Host)
 	hdrs.Add("x-nextensio-destcluster", fwd.Id)
-	hdrs.Add("x-nextensio-destpod", fwd.Pod)
 	// This is the header that gets this flow to the right pod
 	hdrs.Add("x-nextensio-for", fwd.Pod)
-	hdrs.Add("x-nextensio-session", Suuid.String())
 
 	lg := log.New(&zap2log{s: s}, "http2", 0)
 	client := nhttp2.NewClient(ctx, lg, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs, &totGoroutines)
@@ -342,12 +338,7 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 		return
 	}
 	s.Debugf("Dialed pod for %s at %s", flow.DestAgent, fwd.Dest)
-	// Pod name if local, else cluster name
-	if fwd.DestType == shared.LocalDest {
-		key = fwd.Pod
-	} else {
-		key = fwd.Id
-	}
+
 	pods[key].pending = false
 	pods[key].tunnel = client
 	go podTunnelMonitor(s, key, client, fwd)
@@ -387,16 +378,16 @@ func localRouteDel(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 
 // Lookup destination stream to send an L4 tcp/udp/http proxy packet on
 func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context,
-	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, Suuid uuid.UUID) (*nxthdr.NxtOnboard, common.Transport) {
+	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) (*nxthdr.NxtOnboard, common.Transport) {
 	var consul_key, tag string
 	var fwd shared.Fwd
 	var err error
 
 	// Do a Consul DNS lookup for the user -> connector direction only
-	// For the connector -> user direction, the target cluster and pod are
+	// For the reply connector -> user direction, the target cluster and pod are
 	// obtained from the flow header fields UserCluster and UserPod. UserPod is set
 	// as the value of the x-nextensio-for header.
-	if onboard.Agent {
+	if !flow.ResponseData {
 		// We're on an Apod, trying to send the frame to a Cpod
 		tag = aaa.RouteLookup(atype(onboard), onboard.Userid, flow.DestAgent, s)
 		if tag == "deny" {
@@ -419,7 +410,6 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 			return nil, nil
 		}
 	} else {
-		// We're on a Cpod, trying to send the frame to an Apod
 		if flow.UserCluster == MyInfo.Id {
 			// Local destination
 			fwd.DestType = shared.LocalDest
@@ -437,7 +427,6 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	hdrs := make(http.Header)
 	// Add following headers for stats dimensions:
 	hdrs.Add("x-nextensio-sourceagent", flow.SourceAgent)
-	hdrs.Add("x-nextensio-session", Suuid.String())
 
 	switch fwd.DestType {
 	case shared.SelfDest:
@@ -446,12 +435,12 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 			return bundle, dest.NewStream(nil)
 		}
 	case shared.LocalDest:
-		dest := podLookup(s, ctx, MyInfo, onboard, flow, fwd, Suuid)
+		dest := podLookup(s, ctx, MyInfo, onboard, flow, fwd)
 		if dest != nil {
 			return nil, dest.NewStream(hdrs)
 		}
 	case shared.RemoteDest:
-		dest := podLookup(s, ctx, MyInfo, onboard, flow, fwd, Suuid)
+		dest := podLookup(s, ctx, MyInfo, onboard, flow, fwd)
 		if dest != nil {
 			return nil, dest.NewStream(hdrs)
 		}
@@ -586,7 +575,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			}
 			// Route lookup just one time
 			if dest == nil {
-				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow, Suuid)
+				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow)
 				// L4 routing failures need to terminate the flow
 				if dest == nil {
 					s.Debugf("Agent flow dest fail: %v", flow)
@@ -682,7 +671,11 @@ func streamFromPodClose(tunnel common.Transport, dest common.Transport, MyInfo *
 // Handle data that arrives from other pods, the other pod can be on the local cluster or it might be on
 // a remote cluster. Basically the other pod did a route lookup and found that this pod (where this API runs)
 // is hosting the agent/connector of its choice, so as far as this API is concerned, its destination stream
-// is always local
+// is always local.
+// NOTE: The "Suuid" is supposed to be the "session uuid", ie there can be one session uniquely identified
+// by it and many streams under that session. But not all transport types offer the ability to identify a
+// session uniquely, for example http2 does not (see comments in httpHandler in common repo http2.go). So
+// before using Suuid see if the underlying transport supports it
 func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, Suuid uuid.UUID, tunnel common.Transport) {
 	var dest common.Transport
 	var onboard *nxthdr.NxtOnboard
@@ -774,7 +767,7 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 	var pvtKey []byte
 	var pubKey []byte
 	lg := log.New(&zap2log{s: s}, "http2", 0)
-	server := nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, "x-nextensio-session", &totGoroutines)
+	server := nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, &totGoroutines)
 	tchan := make(chan common.NxtStream)
 	go server.Listen(tchan)
 	for {
