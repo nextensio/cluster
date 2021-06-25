@@ -119,24 +119,25 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, uuid string, suga
 func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogger) (fwd shared.Fwd, e error) {
 	sugar.Infof("consul dns lookup for %s", name)
 
+	dnsIp := MyInfo.Id + "-consul-dns.consul-system.svc.cluster.local"
 	qType, _ := dns.StringToType["SRV"]
 	fqdn_name := name + ".query.consul."
 	client := new(dns.Client)
 	msg := &dns.Msg{}
 	msg.SetQuestion(fqdn_name, qType)
 	i := 1
-	resp, _, e := client.Exchange(msg, MyInfo.DnsIp+":53")
+	resp, _, e := client.Exchange(msg, dnsIp+":53")
 	if e != nil {
 		for ; i < consulRetries; i = i + 1 {
 			time.Sleep(1 * 1000 * time.Millisecond)
-			resp, _, e = client.Exchange(msg, MyInfo.DnsIp+":53")
+			resp, _, e = client.Exchange(msg, dnsIp+":53")
 			if e == nil {
 				break
 			}
 		}
 	}
 	if e != nil {
-		sugar.Errorf("Consul: dns lookup for %s at %s failed with %v retries", name, MyInfo.DnsIp, consulRetries)
+		sugar.Errorf("Consul: dns lookup for %s at %s failed with %v retries", name, dnsIp, consulRetries)
 		return fwd, e
 	}
 

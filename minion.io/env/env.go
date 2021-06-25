@@ -13,7 +13,6 @@ func EnvHandler(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
 	MyInfo.Namespace = os.Getenv("MY_POD_NAMESPACE")
 	MyInfo.PodIp = os.Getenv("MY_POD_IP")
 	MyInfo.Id = os.Getenv("MY_POD_CLUSTER")
-	MyInfo.DnsIp = os.Getenv("MY_DNS")
 	MyInfo.MongoUri = os.Getenv("MY_MONGO_URI")
 	MyInfo.Host = os.Getenv("HOSTNAME")
 
@@ -22,6 +21,5 @@ func EnvHandler(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
 	sugar.Infow("env", "Namespace", MyInfo.Namespace)
 	sugar.Infow("env", "PodIp", MyInfo.PodIp)
 	sugar.Infow("env", "Id", MyInfo.Id)
-	sugar.Infow("env", "DnsIp", MyInfo.DnsIp)
 	sugar.Infow("env", "MongoUri", MyInfo.MongoUri)
 }

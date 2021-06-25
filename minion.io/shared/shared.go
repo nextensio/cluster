@@ -16,7 +16,6 @@ type Params struct {
 	Namespace string
 	PodIp     string
 	Id        string
-	DnsIp     string
 	MongoUri  string
 	Host      string
 }
