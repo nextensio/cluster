@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/open-policy-agent/opa/rego"
+	common "gitlab.com/nextensio/common/go"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -377,7 +378,7 @@ func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.
 
 	ctx := context.Background()
 	slog = sl
-	tenant = ns
+	tenant = common.NamespaceToTenant(ns)
 	nxtPod = pod
 	nxtGw = gateway
 	st = zap.String("Tenant", tenant)
@@ -391,7 +392,7 @@ func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.
 	go nxtOpaProcess(ctx)
 	procStarted = true
 
-	mongoClient, err = nxtMongoDBInit(ctx, ns, mongouri)
+	mongoClient, err = nxtMongoDBInit(ctx, tenant, mongouri)
 	if err != nil {
 		nxtLogError(nxtMongoDBName, fmt.Sprintf("DB init error - %v", err))
 		return err

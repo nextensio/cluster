@@ -246,7 +246,12 @@ func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOn
 // From remote gateway istio/envoy ingress perpsective, once a "session" is established to a
 // pod (cpod1 in our example), we can open thousands of streams on that session with all kinds of
 // different http headers, but all those streams will only go to cpod1. And hence the reason
-// why wwe key here using the destination + pod combo
+// why wwe key here using the destination + pod combo.
+// See https://istio.io/latest/blog/2021/zero-config-istio/ for more details. There they say that
+// a session to "one backend" can then loadbalance streams to multiple replicas in that backend.
+// Theoretically a session to an ingress gateway should be able to load balance to multiple
+// backends too, but its not clear from that article whether they do that. Till we know that for
+// sure, we will open a session to each "backend" (ie pod)
 func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd) common.Transport {
 	var tunnel common.Transport
