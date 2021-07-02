@@ -455,3 +455,100 @@ when it comes to getting code from private repos, it needs a few flags and tweak
 all described in the README.md file in the common repo
 
 https://gitlab.com/nextensio/common/-/blob/master/README.md
+
+## Pod replicas Load balancing, health checks, outlier detection
+
+The primary architecture goal here is to let kubernetes/istio figure out how 
+connections are allocated pods - there were alternate proposals to let the 
+controller control pod allocations. But we dont want to get into that business
+becase if we do, then we need to be aware of various k8s parameters like load,
+memory, failure rate etc.. ourselves, and then we are just replicating the stuff
+that k8s/istio has already built-in. And our goal is to work like a regular web
+application in a k8s/istio environment, so lets just align as much as possible to
+how people generally do stuff in kubernetes/istio
+
+### Stateful sets
+
+The agent pods (apods) are configured as stateful sets with replicas. The agent pods are 
+stateful sets because the apod to connector pod (cpods) session is unidirectional (http2)
+and the response from cpod is a new session, and the response has to reach the same
+apod as the one that originated the request.
+
+The cpods are also configured as stateful sets, althought that is not necessary. Because
+it is configured as stateful sets, we are using a headless service by which consul monitors
+the health of each cpod replica - but we should be able to find some other way for consul
+to monitor replicas, so if need be, cpods can move away from being stateful sets
+
+When agents connect to the cluster, istio loadbalances the agents to one of the apods, 
+and as mentioned before, the cpod to apod connection is targeted to a *specific* pod and
+hence there is no loadbalancing there.
+
+### Cpod replica allocation
+
+When connector connects to the cluster, istio loadbalances that too, although there is a subtle
+difference compared to the apod case. For a customer who has say a thousand users, we might 
+provision say 50 apods. And the users might keep coming and going based on when they connect
+their device or how they roam around etc.., and so we expect that to be very 'dynamic' - and
+istio can loadbalance thousand users among 50 pods pretty well.
+
+But in case of connectors, its a more static / less dynamic situation. Each connector has its
+own cpod/cpod-replicas. How a customer will provision a cpod for a connector is based on the
+customers knowledge of how much bandwidth they need for that connector. So for example a streaming
+video connector service might need more bandwidth and hence more cpod replicas than another
+connector used for point-of-sales billing systems. So the customer might say that "I need totally
+100Mbps bandwidth for this connector" and then nextensio will say "based on our performance, we
+will need 10 replicas for this connector, because one connector can do only 10Mbps (for example)"
+
+And so on the cluster side we will create 10 replicas, and at the customers data center, they will
+spawn ten connectors and try to connect to our cluster. Now, kubernetes is not all that great when
+it comes to loadbalancing a small number of sessions - it can end up such that customers ten 
+connectors land up on say five replicas, with each replica having two connectors. And that defeats
+the purpose of us having allocated 10 replicas if 5 are unused. So in this case, we are not really
+interested in "load balancing", we just need to allocate one connector to each replica. 
+
+### Outlier detection
+
+We do that in pretty simple terms by basicaly not allowing any connections on port 443 (onto which
+connectors connect) after a replica has one succesful connection. So next time a connector attempts
+to connect and istio directs it to this replica, it will reject the connection. But this brings in
+a new problem which is that istio/envoy will keep on trying new connections to this replica which
+will not accept any more - its not too bad, because istio will move onto try other pods since we 
+are just configuring it to do round robin loadbalancing. But every now and then the round robin will
+land up on this replica and we will again reject the connection - its good if we can avoid that, and
+yes we can ! So for that we use a simple outlier detection in envoy - we tell envoy that "if you see
+a rejection, then take it out of the loadbalancing pool, add this to the pool again after xyz time 
+and give it a chance to see if it can connect at that point, if not take it out again" - and this
+is what envoy calls "outlier detection", and it has simple tunable parameters, some are exposed 
+via istio configs and some unfortunately has to be plugged in as envoy filter configs
+
+### Health check
+
+The above talks about connections from connectors to the cpod. Now lets think about connections
+from apods to cpod (on port 80). What we do is we start off with port 80 being closed till we
+have at least one connector connect to the cpod - because we cant accept connections from apod
+unless we have a connector on this cpod. And when we have a connector connecting to the cpod,
+we open up port 80, and when connector goes away, we close port 80 etc..
+
+We can in theory use the same outlier detection for port 80 also and it will work just fine,
+except there is one issue - the outlier detection will bring the replica back into the loadbalancer
+pool every now and then, and that means the apod to cpod session will every now and then
+fail and then work fine again for a while (because envoy takes it out of loadbalancing) and 
+then have one failure again etc.. - and thats not acceptable.
+
+So for port 80 (apod to cpod port), we resort to "active health check" - outlier detection is
+a "passive health check". So we tell envoy to "actively" check if port 80 is open using a 
+keepalive kind of check (rather than waiting for customer connection to fail) and if the 
+active check fails, then take the replica out of loadbalancing. Unfortunately this needs an
+envoy filter config, its not natively supported in istio.
+
+### Consul health check
+
+Lets say we registered a service with consul from cpod. And now we go and remove the cpods - 
+ie kubectl delete -f cpod.yaml. Unless we do something specific, the service will stay forever
+in consul. So we have to register a health check with consul. For this reason we create a 
+"headless service" for the cpod stateful set - the headless service basically exposes a DNS
+domain name for each replica of the stateful set. And on each replicas dns name, we use 
+port 8080 as a consul health check port. So if the pods are removed, then the health check will
+eventually fail and consul will remove the entries from its catalog
+
+

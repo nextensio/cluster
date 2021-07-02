@@ -9,16 +9,17 @@ const (
 
 // Structure for storing various parameters for this program
 type Params struct {
-	Iport     int
-	Oport     int
-	Node      string
-	Pod       string
-	PodType   string
-	Namespace string
-	PodIp     string
-	Id        string
-	MongoUri  string
-	Host      string
+	Iport      int
+	Oport      int
+	HealthPort int
+	Node       string
+	Pod        string
+	PodType    string
+	Namespace  string
+	PodIp      string
+	Id         string
+	MongoUri   string
+	Host       string
 }
 
 // Structure for storing forwarding result

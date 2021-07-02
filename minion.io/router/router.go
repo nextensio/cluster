@@ -71,6 +71,7 @@ var routeLock sync.RWMutex
 var localRoutes map[string]*nxthdr.NxtOnboard
 var pakdropReq chan dropInfo
 var totGoroutines int32
+var insideOpen bool
 
 // NOTE: About all the multitude of UUIDs.
 // onboard.userid: This everyone understands - its like foobar@nextensio.net
@@ -783,6 +784,7 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	go pakDrop(s)
 	go outsideListener(s, MyInfo, ctx, "websocket")
 	go insideListener(s, MyInfo, ctx, "http2")
+	go healthCheck(s, MyInfo, ctx)
 	// For apods, inside/outside is always open. For cpod, outside is open only
 	// if there is no connector connected to it yet, and inside is open only if
 	// there is a connector connected as of now. In other words, a cpod will accept
@@ -844,12 +846,14 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 				if server == nil {
 					server = nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, &totGoroutines)
 					go server.Listen(tchan)
+					insideOpen = true
 				}
 			} else {
 				if server != nil {
 					s.Debugf("Closing http2 server")
 					server.Close()
 					server = nil
+					insideOpen = false
 				}
 			}
 		}
@@ -876,4 +880,28 @@ func outsideListener(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		// Unknown encap
 		panic(encap)
 	}
+}
+
+func healthHandler(s *zap.SugaredLogger, w http.ResponseWriter, r *http.Request) {
+	if insideOpen {
+		s.Debugf("Health ok")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	} else {
+		s.Debugf("Health not ok")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("NotOK"))
+	}
+}
+
+func healthCheck(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		healthHandler(s, w, r)
+	})
+	addr := ":" + strconv.Itoa(MyInfo.HealthPort)
+	server := http.Server{
+		Addr: addr, Handler: mux,
+	}
+	server.ListenAndServe()
 }
