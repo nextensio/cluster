@@ -65,6 +65,8 @@ var users map[string][]*agentTunnel
 var pLock sync.RWMutex
 var pods map[string]*podInfo
 var unusedChan chan common.NxtStream
+var outsideMsg chan bool
+var insideMsg chan bool
 var routeLock sync.RWMutex
 var localRoutes map[string]*nxthdr.NxtOnboard
 var pakdropReq chan dropInfo
@@ -120,15 +122,23 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	aLock.Lock()
 	defer aLock.Unlock()
 
-	if !onboard.Agent {
-		// We're on a Cpod. Allow only one connector per Cpod
-		if len(users[onboard.Userid]) > 0 {
-			return fmt.Errorf("Only one connector allowed per pod")
+	// The reason we allow only one connector per cpod is because connectors are
+	// few in number (say in hundreds), and has stable long lived connections.
+	// So we dont want a scenario where we allocated 100 replicas, and there are 100
+	// connectors, but all of them got loadbalanced to just ten of the replicas! And
+	// moreover, if we have more than one connector in this pod, now we have to figure
+	// out how to loadbalance among them.
+	if MyInfo.PodType == "cpod" {
+		if len(agents) != 0 {
+			s.Debugf("More than one agent", agents)
+			return fmt.Errorf("Only one connector allowed per cpod")
 		}
 	}
+
 	if !aaa.UsrAllowed(atype(onboard), onboard.Userid, onboard.Cluster, onboard.Podname, s) {
 		return fmt.Errorf("User disallowed")
 	}
+
 	// Here is where we assume there is only one active tunnel from an agent device to the cluster,
 	// so if that needs to change in future, this is the place to come looking for
 	agentT := &agentTunnel{tunnel: tunnel, suuid: Suuid}
@@ -143,6 +153,16 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 			return err
 		}
 	}
+
+	// First connector in this cpod, disallow any more connectors, and allow
+	// apods to connect to this cpod
+	if MyInfo.PodType == "cpod" {
+		if len(agents) == 1 {
+			outsideMsg <- false
+			insideMsg <- true
+		}
+	}
+
 	s.Debugf("AgentAdd: user %s, Suuid %s, total tunnels %d", onboard.Userid, Suuid, len(users[onboard.Userid]))
 	return nil
 }
@@ -154,10 +174,27 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	var err error
 	agentT := agents[onboard.Uuid]
 	// Here is where we assume there is only one active tunnel from an agent device to the cluster,
-	// so if that needs to change in future, this is the place to come looking for
+	// so if that needs to change in future, this is the place to come looking for.
+	// NOTE: We check for the Suuid here because it can happen that from the same device
+	// 1. A tunnel A was established (suuid X)
+	// 2. The tunnel A was torn down (suuid X)
+	// 3. New tunnel B is establshed (suuid Y)
+	// But on the minion side since these are all asynchronous go routines, it can end up being
+	// processed reordered as below
+	// 1. A tunnel A was established (suuid X)
+	// 2. A Tunnel B is established (suuid Y) - so this overwrites the agents[onboard.UUID] with tunnel B
+	// 3. Now tunnel A is torn down, now we shouldnt end up removing tunnel B !
 	if agentT != nil && agentT.suuid == Suuid {
 		delete(agents, onboard.Uuid)
 		localRouteDel(s, MyInfo, onboard)
+	}
+	// No more connectors in this pod, allow new ones to come in from outside,
+	// and disallow apods to try and connect here from inside
+	if MyInfo.PodType == "cpod" {
+		if len(agents) == 0 {
+			outsideMsg <- true
+			insideMsg <- false
+		}
 	}
 	cur := users[onboard.Userid]
 	lcur := len(cur)
@@ -352,8 +389,6 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 func localRouteAdd(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard) {
 	// Register to the local routing table so that we know what services are
 	// available on this pod.
-	// TODO: handle the case where there are multiple local agents advertising the same service
-	// and maybe we want to loadbalance across them ?
 	for _, s := range onboard.Services {
 		s = strings.ReplaceAll(s, ".", "-")
 		// Multiple agents can login with the same userid, each agent tunnel has a unique uuid
@@ -367,8 +402,6 @@ func localRouteAdd(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 }
 
 func localRouteDel(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard) {
-	// TODO: handle the case where there are multiple local agents advertising the same service
-	// and maybe we want to loadbalance across them ? So delete only one agent for that service here
 	for _, s := range onboard.Services {
 		s = strings.ReplaceAll(s, ".", "-")
 		// Multiple agents can login with the same userid, each agent tunnel has a unique uuid
@@ -744,10 +777,26 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	pods = make(map[string]*podInfo)
 	localRoutes = make(map[string]*nxthdr.NxtOnboard)
 	unusedChan = make(chan common.NxtStream)
+	outsideMsg = make(chan bool)
+	insideMsg = make(chan bool)
 	pakdropReq = make(chan dropInfo)
 	go pakDrop(s)
 	go outsideListener(s, MyInfo, ctx, "websocket")
 	go insideListener(s, MyInfo, ctx, "http2")
+	// For apods, inside/outside is always open. For cpod, outside is open only
+	// if there is no connector connected to it yet, and inside is open only if
+	// there is a connector connected as of now. In other words, a cpod will accept
+	// only one outside connection (connection from a connector) and a cpod will
+	// accept inside connection (from an apod) only if there is a connector connected
+	if MyInfo.PodType == "apod" {
+		outsideMsg <- true
+		insideMsg <- true
+	} else {
+		// accept a connection, and when a connection is established, it will ensure
+		// to send an insideMsg <- true at that point
+		outsideMsg <- true
+		insideMsg <- false
+	}
 }
 
 // Open a Websocket server side socket and listen for incoming connections
@@ -755,30 +804,52 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context) {
 	var pvtKey, pubKey []byte
 	lg := log.New(&zap2log{s: s}, "websock", 0)
-	server := websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport)
+	var server *websock.WebStream = nil
 	tchan := make(chan common.NxtStream)
-	go server.Listen(tchan)
 	for {
 		select {
 		case client := <-tchan:
 			go streamFromAgent(s, MyInfo, ctx, client.Parent, client.Stream)
+		case open := <-outsideMsg:
+			if open {
+				if server == nil {
+					server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport)
+					go server.Listen(tchan)
+				}
+			} else {
+				if server != nil {
+					server.Close()
+					server = nil
+				}
+			}
 		}
 	}
 }
 
-// Open a Quic socket to listen for incoming connections from other pods in the
+// Open an http2 socket to listen for incoming connections from other pods in the
 // same cluster or other pods from outside this cluster
 func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context) {
 	var pvtKey []byte
 	var pubKey []byte
 	lg := log.New(&zap2log{s: s}, "http2", 0)
-	server := nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, &totGoroutines)
+	var server *nhttp2.HttpStream = nil
 	tchan := make(chan common.NxtStream)
-	go server.Listen(tchan)
 	for {
 		select {
 		case client := <-tchan:
 			go streamFromPod(s, MyInfo, ctx, client.Parent, client.Stream)
+		case open := <-insideMsg:
+			if open {
+				if server == nil {
+					server := nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, &totGoroutines)
+					go server.Listen(tchan)
+				}
+			} else {
+				if server != nil {
+					server.Close()
+					server = nil
+				}
+			}
 		}
 	}
 }

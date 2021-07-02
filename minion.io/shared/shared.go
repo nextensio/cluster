@@ -13,6 +13,7 @@ type Params struct {
 	Oport     int
 	Node      string
 	Pod       string
+	PodType   string
 	Namespace string
 	PodIp     string
 	Id        string
