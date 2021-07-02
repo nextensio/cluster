@@ -213,8 +213,8 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 		}
 		aaa.UsrLeave(atype(onboard), onboard.Userid, s)
 	}
-	s.Debugf("AgentDel: user %s, Suuid %s, total tunnels %d / %d",
-		onboard.Userid, Suuid, lcur, len(users[onboard.Userid]))
+	s.Debugf("AgentDel: user %s, Suuid %s, total tunnels %d / %d / %d",
+		onboard.Userid, Suuid, lcur, len(users[onboard.Userid]), len(agents))
 	return err
 }
 
@@ -818,6 +818,7 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 				}
 			} else {
 				if server != nil {
+					s.Debugf("Closing websocket server")
 					server.Close()
 					server = nil
 				}
@@ -841,11 +842,12 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 		case open := <-insideMsg:
 			if open {
 				if server == nil {
-					server := nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, &totGoroutines)
+					server = nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, &totGoroutines)
 					go server.Listen(tchan)
 				}
 			} else {
 				if server != nil {
+					s.Debugf("Closing http2 server")
 					server.Close()
 					server = nil
 				}
