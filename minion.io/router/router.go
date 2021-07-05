@@ -884,11 +884,9 @@ func outsideListener(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 
 func healthHandler(s *zap.SugaredLogger, w http.ResponseWriter, r *http.Request) {
 	if insideOpen {
-		s.Debugf("Health ok")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	} else {
-		s.Debugf("Health not ok")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte("NotOK"))
 	}

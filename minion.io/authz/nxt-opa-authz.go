@@ -287,7 +287,7 @@ func nxtOpaProcess(ctx context.Context) int {
 		// Process if new version of UserAttr collection
 		nxtProcessUserAttrChanges(ctx)
 
-		if (QStateMap[opaUseCases[0]].WrVer == true) ||
+		if (usrAttrWrVer == true) ||
 			(QStateMap[opaUseCases[2]].WrVer == true) ||
 			(QStateMap[opaUseCases[3]].WrVer == true) {
 			nxtWriteAttrVersions()
@@ -670,6 +670,7 @@ type usrCache struct {
 var userAttr map[string]usrCache
 var userAttrLock sync.Mutex
 var usrAttrHdr DataHdr
+var usrAttrWrVer bool
 
 // If new version of user attribues collection is available, read the
 // extended attributes spec doc and update the cache for active users
@@ -677,7 +678,7 @@ func nxtProcessUserAttrChanges(ctx context.Context) {
 	tmphdr := nxtReadUserAttrHdr(ctx)
 	if (tmphdr.Majver > usrAttrHdr.Majver) || (tmphdr.Minver > usrAttrHdr.Minver) {
 		usrAttrHdr = tmphdr
-		QStateMap[opaUseCases[0]].WrVer = true // for testing infra
+		usrAttrWrVer = true // for testing infra
 		nxtReadUserExtAttrDoc(ctx)
 		nxtUpdateUserAttrCache()
 	}
@@ -1388,7 +1389,7 @@ func nxtWriteAttrVersions() {
 		usrAttrHdr.Majver, usrAttrHdr.Minver, qsm2.RefHdr.Majver, qsm2.RefHdr.Minver,
 		qsm2.PStruct.Majver, qsm2.PStruct.Minver, qsm3.RefHdr.Majver, qsm3.RefHdr.Minver)
 	ioutil.WriteFile("/tmp/opa_attr_versions", []byte(versions), 0644)
-	QStateMap[opaUseCases[0]].WrVer = false
+	usrAttrWrVer = false
 	QStateMap[opaUseCases[2]].WrVer = false
 	QStateMap[opaUseCases[3]].WrVer = false
 }

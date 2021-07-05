@@ -1,6 +1,5 @@
 FROM golang:1.15-alpine3.12
 RUN apk add git openssh
-MAINTAINER Davi Gupta <davigupta@gmail.com>
 COPY files /go
 RUN mkdir -p /root/.ssh
 RUN chmod +x /go/gitlab.sh
