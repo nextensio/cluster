@@ -177,17 +177,17 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 	client := new(dns.Client)
 	msg := &dns.Msg{}
 	msg.SetQuestion(fqdn_name, qType)
-	i := 1
+	// This additional OPT record is required to get the TXT records
+	// in the answer if there are multiple answers. Even without this,
+	// with just one record in the answer, we get TXT records properly,
+	// but with more than one record, without the OPT, we dont get TXT
+	o := new(dns.OPT)
+	o.Hdr.Name = "."
+	o.Hdr.Rrtype = dns.TypeOPT
+	o.SetDo()
+	o.SetUDPSize(4096)
+	msg.Extra = append(msg.Extra, o)
 	resp, _, e := client.Exchange(msg, dnsIp+":53")
-	if e != nil {
-		for ; i < consulRetries; i = i + 1 {
-			time.Sleep(1 * 1000 * time.Millisecond)
-			resp, _, e = client.Exchange(msg, dnsIp+":53")
-			if e == nil {
-				break
-			}
-		}
-	}
 	if e != nil {
 		sugar.Errorf("Consul: dns lookup for %s at %s failed with %v retries", name, dnsIp, consulRetries)
 		return fwd, e
