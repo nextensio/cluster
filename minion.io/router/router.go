@@ -602,15 +602,12 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent not onboarded")
 				return
 			}
-			// Indicate to the connector which exact user device is originating this flow,
-			// so we can find the right user device in the return path.
-			if onboard.Agent {
-				flow.ResponseData = false
+			// Indicate to the destination connector which exact agent/connector is originating this flow,
+			// so we can find the right agent/connector in the return path.
+			if !flow.ResponseData {
 				flow.AgentUuid = onboard.Uuid
 				flow.UserCluster = MyInfo.Id
 				flow.UserPod = MyInfo.Host
-			} else {
-				flow.ResponseData = true
 			}
 			// Route lookup just one time
 			if dest == nil {
