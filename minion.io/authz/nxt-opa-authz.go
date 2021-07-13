@@ -235,9 +235,6 @@ func NxtRouteLookup(which string, uid string, host string) string {
 	if initDone == false || mongoInitDone == false {
 		return ""
 	}
-	if which != "agent" {
-		return ""
-	}
 	return nxtEvalUserRouting(opaUseCases[3], uid, host, nil)
 }
 
