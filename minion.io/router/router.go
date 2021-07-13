@@ -245,13 +245,14 @@ func DisconnectUser(userid string, s *zap.SugaredLogger) {
 }
 
 // Lookup a session to the agent/connector on this same pod.
-func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOnboard, common.Transport) {
+func localRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr.NxtFlow) (*nxthdr.NxtOnboard, common.Transport) {
 	// TODO: This dot dash business has to go away, we have to unify the usage
 	// of services everywhere to either dot or dash
 	service := strings.ReplaceAll(flow.DestAgent, ".", "-")
 	// There can be multiple agents (devices) with the same userid, we have to get the flow
-	// back to the exact agent that originated it
-	if flow.ResponseData {
+	// back to the exact agent that originated it - that is on the apod. But on the cpod we
+	// will have just one connector per pod
+	if flow.ResponseData && MyInfo.PodType == "apod" {
 		service = service + flow.AgentUuid
 	}
 	routeLock.RLock()
@@ -440,7 +441,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 			consul_key = strings.Join([]string{host, MyInfo.Namespace}, "-")
 		} else {
 			consul_key = strings.Join([]string{tag, host, MyInfo.Namespace}, "-")
-			flow.DestAgent = tag + "." + flow.Dest
+			flow.DestAgent = tag + "." + flow.DestSvc
 		}
 
 		fwd, err = consul.ConsulDnsLookup(MyInfo, consul_key, s)
@@ -469,7 +470,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 
 	switch fwd.DestType {
 	case shared.SelfDest:
-		bundle, dest := localRouteLookup(s, flow)
+		bundle, dest := localRouteLookup(s, MyInfo, flow)
 		if dest != nil {
 			return bundle, dest.NewStream(nil)
 		}
@@ -736,7 +737,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				}
 				// Route lookup just one time
 				if dest == nil {
-					onboard, dest = localRouteLookup(s, flow)
+					onboard, dest = localRouteLookup(s, MyInfo, flow)
 					if dest == nil {
 						s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
 						streamFromPodClose(tunnel, dest, MyInfo, flow, "Couldn't get destination to agent")
