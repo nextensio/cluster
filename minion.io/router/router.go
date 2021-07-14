@@ -816,7 +816,8 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 		case open := <-outsideMsg:
 			if open {
 				if server == nil {
-					server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport)
+					// as for a keepalive count of at least one data activity in 30 seconds
+					server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1)
 					go server.Listen(tchan)
 				}
 			} else {
