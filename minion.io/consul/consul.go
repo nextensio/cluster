@@ -21,7 +21,6 @@ import (
 var myClient = &http.Client{Timeout: 10 * time.Second}
 
 const (
-	consulRetries    = 2
 	LocalSuffix      = ".svc.cluster.local"
 	RemotePostPrefix = ".nextensio.net"
 )
@@ -68,20 +67,13 @@ func makeCheck(MyInfo *shared.Params, serviceID string) Check {
 /*
  * Register DNS entry for the service
  */
-func RegisterConsul(MyInfo *shared.Params, service []string, uuid string, sugar *zap.SugaredLogger) (e error) {
+func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredLogger) (e error) {
 	var dns Entry
 	dns.Address = MyInfo.PodIp
 	dns.Meta.NextensioCluster = MyInfo.Id
 
-	var url string
-	var h string
-	var js []byte
-	var r *http.Request
 	for _, val := range service {
-		if val == "" {
-			break
-		}
-		h = strings.Replace(val, ".", "-", -1)
+		h := strings.Replace(val, ".", "-", -1)
 		dns.Meta.NextensioPod = MyInfo.Pod
 		dns.Name = h + "-" + MyInfo.Namespace
 		// ID needs to be unique per cpod replica .. every replica is registering the
@@ -89,47 +81,48 @@ func RegisterConsul(MyInfo *shared.Params, service []string, uuid string, sugar 
 		// unregisters the service, the consul catalog will still have the service from
 		// other replicas
 		dns.ID = dns.Name + "-" + MyInfo.Host
-		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/register"
-		js, _ = json.Marshal(dns)
-		r, _ = http.NewRequest("PUT", url, bytes.NewReader(js))
+		url := "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/register"
+		js, e := json.Marshal(dns)
+		if e != nil {
+			sugar.Errorf("Consul: failed to make make json at %s, error %s", url, e)
+			return e
+		}
+		r, e := http.NewRequest("PUT", url, bytes.NewReader(js))
+		if e != nil {
+			sugar.Errorf("Consul: failed to make http request at %s, error %s", url, e)
+			return e
+		}
 		r.Header.Add("Content-Type", "application/json")
 		r.Header.Add("Accept-Charset", "UTF-8")
-		for i := 0; i < consulRetries; i = i + 1 {
-			_, e = myClient.Do(r)
-			if e == nil {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-
-		if e == nil {
+		resp, e := myClient.Do(r)
+		if e == nil && resp.StatusCode == 200 {
 			sugar.Debugf("Consul: registered via http PUT at %s", url)
 			sugar.Debugf("Consul: registered service json %s", js)
 		} else {
-			sugar.Errorf("Consul: failed to register via http PUT at %s, error %s", url, e)
+			sugar.Errorf("Consul: failed to register via http PUT at %s, error %s", url, e, resp.StatusCode)
 			sugar.Errorf("Consul: failed to register service json %s", js)
-			DeRegisterConsul(MyInfo, service, uuid, sugar)
 			return e
 		}
 
 		check := makeCheck(MyInfo, dns.ID)
 		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/check/register"
-		js, _ = json.Marshal(check)
-		r, _ = http.NewRequest("PUT", url, bytes.NewReader(js))
+		js, e = json.Marshal(check)
+		if e != nil {
+			sugar.Errorf("Consul: failed to make make json at %s, error %s", url, e)
+			return e
+		}
+		r, e = http.NewRequest("PUT", url, bytes.NewReader(js))
+		if e != nil {
+			sugar.Errorf("Consul: failed to make http request at %s, error %s", url, e)
+			return e
+		}
 		r.Header.Add("Content-Type", "application/json")
 		r.Header.Add("Accept-Charset", "UTF-8")
-		for i := 0; i < consulRetries; i = i + 1 {
-			_, e = myClient.Do(r)
-			if e == nil {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		if e == nil {
+		resp, e = myClient.Do(r)
+		if e == nil && resp.StatusCode == 200 {
 			sugar.Debugf("Consul: registered check via http PUT at %s", url)
 		} else {
-			sugar.Errorf("Consul: failed to register via http PUT at %s, error %s", url, e)
-			DeRegisterConsul(MyInfo, service, uuid, sugar)
+			sugar.Errorf("Consul: failed to register via http PUT at %s, error %s", url, e, resp.StatusCode)
 			return e
 		}
 	}
@@ -139,33 +132,34 @@ func RegisterConsul(MyInfo *shared.Params, service []string, uuid string, sugar 
 
 /*
  * DeRegister DNS entry and PodIP:Podname key:value pair for the service
+ * Service being deregistered automatically deletes the consul health check
  */
-func DeRegisterConsul(MyInfo *shared.Params, service []string, uuid string, sugar *zap.SugaredLogger) (e error) {
-	var url string
-	var h string
-	var sid string
-	var r *http.Request
+func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredLogger) (e error) {
+	var err error
 	for _, val := range service {
-		if val == "" {
-			break
-		}
-		h = strings.Replace(val, ".", "-", -1)
-		sid = h + "-" + MyInfo.Namespace + "-" + MyInfo.Host
-		url = "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + sid
-		r, _ = http.NewRequest("PUT", url, nil)
-		for i := 0; i < 2*consulRetries; i = i + 1 {
-			_, e = myClient.Do(r)
-			if e == nil {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		h := strings.Replace(val, ".", "-", -1)
+		sid := h + "-" + MyInfo.Namespace + "-" + MyInfo.Host
+		url := "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + sid
+		r, e := http.NewRequest("PUT", url, nil)
 		if e != nil {
-			sugar.Errorf("Consul: http PUT of nil at %s failed with %v retries", url, 2*consulRetries)
+			sugar.Errorf("Consul: deregister failed to make http request at %s, error %s", url, e)
+			return e
+		}
+		resp, e := myClient.Do(r)
+		if e != nil || resp.StatusCode != 200 {
+			if e != nil {
+				err = e
+			} else {
+				err = fmt.Errorf("ErrStatus %d", resp.StatusCode)
+			}
+			sugar.Errorf("Consul: http PUT of nil at %s failed err %s, code %s", url, e, resp.StatusCode)
+			// Well, keep going and delete all the services even if this one failed.
+			// If the service is really going away from the pod, the health check will
+			// eventually fail and remove this service in approx 1.5 minutes
 		}
 	}
 
-	return nil
+	return err
 }
 
 func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogger) (fwd shared.Fwd, e error) {
@@ -187,13 +181,13 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 	o.SetDo()
 	o.SetUDPSize(4096)
 	msg.Extra = append(msg.Extra, o)
-	resp, _, e := client.Exchange(msg, dnsIp+":53")
+	resp, t, e := client.Exchange(msg, dnsIp+":53")
 	if e != nil {
-		sugar.Errorf("Consul: dns lookup for %s at %s failed with %v retries", name, dnsIp, consulRetries)
+		sugar.Errorf("Consul: dns lookup for %s at %s failed with %s error", name, dnsIp, e)
 		return fwd, e
 	}
 
-	sugar.Debugf("Consul: DNS lookup for %s returned %v answers", name, len(resp.Answer))
+	sugar.Debugf("Consul: DNS lookup for %s returned %v answers, with %s latency", name, len(resp.Answer), t)
 	if len(resp.Answer) < 1 {
 		return fwd, errors.New("not found")
 	}

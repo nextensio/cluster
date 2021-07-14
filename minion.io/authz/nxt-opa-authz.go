@@ -201,6 +201,8 @@ func NxtUsrLeave(which string, userid string) {
 	if which == "agent" {
 		// Don't check mongoInitDone as we purge the data in local cache
 		nxtPurgeUserAttrJSON(userid)
+	} else {
+		nxtPurgeAppAttrJSON(userid)
 	}
 }
 
@@ -215,7 +217,8 @@ func NxtGetUsrAttr(which string, userid string) (string, bool) {
 		uajson, _, ok := nxtGetUserAttrJSON(userid)
 		return uajson, ok
 	} else {
-		return "", false
+		uajson, _, ok := nxtGetAppAttrJSON(userid)
+		return uajson, ok
 	}
 }
 
@@ -235,10 +238,7 @@ func NxtRouteLookup(which string, uid string, host string) string {
 	if initDone == false || mongoInitDone == false {
 		return ""
 	}
-	if which != "agent" {
-		return ""
-	}
-	return nxtEvalUserRouting(opaUseCases[3], uid, host, nil)
+	return nxtEvalUserRouting(which, opaUseCases[3], uid, host, nil)
 }
 
 const RouteTag = "tag"
@@ -286,6 +286,7 @@ func nxtOpaProcess(ctx context.Context) int {
 		}
 		// Process if new version of UserAttr collection
 		nxtProcessUserAttrChanges(ctx)
+		nxtProcessAppAttrChanges(ctx)
 
 		if (usrAttrWrVer == true) ||
 			(QStateMap[opaUseCases[2]].WrVer == true) ||
@@ -422,6 +423,7 @@ func nxtOpaUseCaseInit(ctx context.Context) {
 	userAttr = make(map[string]usrCache, maxUsers)
 	appAttr = make(map[string]usrCache)
 	usrAttrHdr = nxtReadUserAttrHdr(ctx)
+	appAttrHdr = nxtReadAppAttrHdr(ctx)
 	nxtReadUserExtAttrDoc(ctx)
 
 	nxtWriteAttrVersions()
@@ -1113,7 +1115,7 @@ func nxtEvalConnectorAuthz(ctx context.Context, inp []byte) bool {
 // API for routing policy with the user id, destination host and the HTTP headers.
 // API returns a string tag which may be null for default case. Minion uses the tag
 // to determine the routing.
-func nxtEvalUserRouting(ucase string, uid string, host string, hdr *http.Header) string {
+func nxtEvalUserRouting(which string, ucase string, uid string, host string, hdr *http.Header) string {
 	// Use uid to get user attributes from local cache, hdr to get runtime attributes
 	// from HTTP headers. Combine these attributes with host to generate a unified json
 	// string of the form:
@@ -1127,7 +1129,12 @@ func nxtEvalUserRouting(ucase string, uid string, host string, hdr *http.Header)
 		nxtLogError(ucase, "Qstate error for route query for "+uid+" to "+host)
 		return ""
 	}
-	uajson, _, _ := nxtGetUserAttrJSON(uid)
+	var uajson string
+	if which == "agent" {
+		uajson, _, _ = nxtGetUserAttrJSON(uid)
+	} else {
+		uajson, _, _ = nxtGetAppAttrJSON(uid)
+	}
 	//ueajson := nxtGetUserAttrFromHTTP(uid, hdr)
 	rs, ok := nxtExecOpaQry(nxtEvalUserRoutingJSON(host, uajson), ucase)
 	if ok {
@@ -1338,7 +1345,7 @@ func nxtTestUserRouting(ctx context.Context) {
 				continue
 			}
 			user := fmt.Sprintf("%s", val[kuser])
-			res[k] = nxtEvalUserRouting(ucase, user, tsm.Keys[k], &hdr)
+			res[k] = nxtEvalUserRouting("agent", ucase, user, tsm.Keys[k], &hdr)
 			nxtLogInfo(uid+" accessing "+tsm.Keys[k], fmt.Sprintf("Result = %v", res[k]))
 		}
 	}

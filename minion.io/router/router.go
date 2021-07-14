@@ -149,8 +149,9 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	localRouteAdd(s, MyInfo, onboard)
 	// Do not register any service with Consul for users, only for connectors.
 	if !onboard.Agent {
-		err := consul.RegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
+		err := consul.RegisterConsul(MyInfo, onboard.Services, s)
 		if err != nil {
+			consul.DeRegisterConsul(MyInfo, onboard.Services, s)
 			return err
 		}
 	}
@@ -164,7 +165,8 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 		}
 	}
 
-	s.Debugf("AgentAdd: user %s, Suuid %s, total tunnels %d", onboard.Userid, Suuid, len(users[onboard.Userid]))
+	s.Debugf("AgentAdd: user %s, Suuid %s, total user tunnels %d, total agents %d", onboard.Userid, Suuid,
+		len(users[onboard.Userid]), len(agents))
 	return nil
 }
 
@@ -210,12 +212,12 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 		delete(users, onboard.Userid)
 		if !onboard.Agent {
 			// Deregister services from Consul if it's a connector
-			err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
+			err = consul.DeRegisterConsul(MyInfo, onboard.Services, s)
 		}
 		aaa.UsrLeave(atype(onboard), onboard.Userid, s)
 	}
-	s.Debugf("AgentDel: user %s, Suuid %s, total tunnels %d / %d / %d",
-		onboard.Userid, Suuid, lcur, len(users[onboard.Userid]), len(agents))
+	s.Debugf("AgentDel: err %s, user %s, Suuid %s, total user tunnels prev %d / new %d, total agents  %d",
+		err, onboard.Userid, Suuid, lcur, len(users[onboard.Userid]), len(agents))
 	return err
 }
 
@@ -245,13 +247,14 @@ func DisconnectUser(userid string, s *zap.SugaredLogger) {
 }
 
 // Lookup a session to the agent/connector on this same pod.
-func localRouteLookup(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*nxthdr.NxtOnboard, common.Transport) {
+func localRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr.NxtFlow) (*nxthdr.NxtOnboard, common.Transport) {
 	// TODO: This dot dash business has to go away, we have to unify the usage
 	// of services everywhere to either dot or dash
 	service := strings.ReplaceAll(flow.DestAgent, ".", "-")
 	// There can be multiple agents (devices) with the same userid, we have to get the flow
-	// back to the exact agent that originated it
-	if flow.ResponseData {
+	// back to the exact agent that originated it - that is on the apod. But on the cpod we
+	// will have just one connector per pod
+	if flow.ResponseData && MyInfo.PodType == "apod" {
 		service = service + flow.AgentUuid
 	}
 	routeLock.RLock()
@@ -440,7 +443,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 			consul_key = strings.Join([]string{host, MyInfo.Namespace}, "-")
 		} else {
 			consul_key = strings.Join([]string{tag, host, MyInfo.Namespace}, "-")
-			flow.DestAgent = tag + "." + flow.Dest
+			flow.DestAgent = tag + "." + flow.DestSvc
 		}
 
 		fwd, err = consul.ConsulDnsLookup(MyInfo, consul_key, s)
@@ -469,7 +472,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 
 	switch fwd.DestType {
 	case shared.SelfDest:
-		bundle, dest := localRouteLookup(s, flow)
+		bundle, dest := localRouteLookup(s, MyInfo, flow)
 		if dest != nil {
 			return bundle, dest.NewStream(nil)
 		}
@@ -556,6 +559,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		// this means we are not the first stream in this session
 		first = false
 	}
+
 	s.Debugf("New agent stream %s : %v, goroutines %d", Suuid, onboard, totGoroutines)
 
 	for {
@@ -565,8 +569,8 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			s.Debugf("Agent read error - %v", err)
 			return
 		}
-		switch hdr.Hdr.(type) {
 
+		switch hdr.Hdr.(type) {
 		case *nxthdr.NxtHdr_Onboard:
 			// The handshake is that we get onboard info and we write it back. This is only
 			// if the transport is non reliable like dtls, so the other end knows we received
@@ -602,15 +606,12 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent not onboarded")
 				return
 			}
-			// Indicate to the connector which exact user device is originating this flow,
-			// so we can find the right user device in the return path.
-			if onboard.Agent {
-				flow.ResponseData = false
+			// Indicate to the destination connector which exact agent/connector is originating this flow,
+			// so we can find the right agent/connector in the return path.
+			if !flow.ResponseData {
 				flow.AgentUuid = onboard.Uuid
 				flow.UserCluster = MyInfo.Id
 				flow.UserPod = MyInfo.Host
-			} else {
-				flow.ResponseData = true
 			}
 			// Route lookup just one time
 			if dest == nil {
@@ -739,7 +740,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				}
 				// Route lookup just one time
 				if dest == nil {
-					onboard, dest = localRouteLookup(s, flow)
+					onboard, dest = localRouteLookup(s, MyInfo, flow)
 					if dest == nil {
 						s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
 						streamFromPodClose(tunnel, dest, MyInfo, flow, "Couldn't get destination to agent")
@@ -815,7 +816,8 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 		case open := <-outsideMsg:
 			if open {
 				if server == nil {
-					server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport)
+					// as for a keepalive count of at least one data activity in 30 seconds
+					server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1)
 					go server.Listen(tchan)
 				}
 			} else {
