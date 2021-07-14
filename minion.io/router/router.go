@@ -149,8 +149,9 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 	localRouteAdd(s, MyInfo, onboard)
 	// Do not register any service with Consul for users, only for connectors.
 	if !onboard.Agent {
-		err := consul.RegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
+		err := consul.RegisterConsul(MyInfo, onboard.Services, s)
 		if err != nil {
+			consul.DeRegisterConsul(MyInfo, onboard.Services, s)
 			return err
 		}
 	}
@@ -164,7 +165,8 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 		}
 	}
 
-	s.Debugf("AgentAdd: user %s, Suuid %s, total tunnels %d", onboard.Userid, Suuid, len(users[onboard.Userid]))
+	s.Debugf("AgentAdd: user %s, Suuid %s, total user tunnels %d, total agents %d", onboard.Userid, Suuid,
+		len(users[onboard.Userid]), len(agents))
 	return nil
 }
 
@@ -210,12 +212,12 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 		delete(users, onboard.Userid)
 		if !onboard.Agent {
 			// Deregister services from Consul if it's a connector
-			err = consul.DeRegisterConsul(MyInfo, onboard.Services, onboard.Uuid, s)
+			err = consul.DeRegisterConsul(MyInfo, onboard.Services, s)
 		}
 		aaa.UsrLeave(atype(onboard), onboard.Userid, s)
 	}
-	s.Debugf("AgentDel: user %s, Suuid %s, total tunnels %d / %d / %d",
-		onboard.Userid, Suuid, lcur, len(users[onboard.Userid]), len(agents))
+	s.Debugf("AgentDel: err %s, user %s, Suuid %s, total user tunnels prev %d / new %d, total agents  %d",
+		err, onboard.Userid, Suuid, lcur, len(users[onboard.Userid]), len(agents))
 	return err
 }
 
@@ -533,6 +535,26 @@ func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel co
 	}
 }
 
+// Just checks if we got at least one keepalive in 30 seconds,
+// connector sends one keepalive every 2 seconds
+func keepAliveCheck(s *zap.SugaredLogger, Suuid uuid.UUID, tunnel *common.Transport, count *int) {
+	for {
+		time.Sleep(30 * time.Second)
+		// Tunnel is closed, we dont need to monitor anymore
+		if (*tunnel).IsClosed() {
+			return
+		}
+		// No keeps for long time, close the tunnel
+		if *count == 0 {
+			(*tunnel).Close()
+			s.Debugf("Keepalive failed for tunnel %s", Suuid)
+			return
+		}
+		// there is no worries of atomicity here since we are just overwriting to 0
+		*count = 0
+	}
+}
+
 // Agent/Connector is trying to connect to minion. The first stream from the agent/connector
 // will be used to onboard AND send L3 data. The next streams on the session will not need
 // onboarding, and they will send L4/Proxy data. There will be one stream per L4/Proxy session,
@@ -552,11 +574,13 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 	var dest common.Transport
 	var bundle *nxthdr.NxtOnboard
 
+	keepAlive := 0
 	onboard := sessionGet(Suuid)
 	if onboard != nil {
 		// this means we are not the first stream in this session
 		first = false
 	}
+
 	s.Debugf("New agent stream %s : %v, goroutines %d", Suuid, onboard, totGoroutines)
 
 	for {
@@ -566,8 +590,13 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			s.Debugf("Agent read error - %v", err)
 			return
 		}
+		// All data is considered keepalive too
+		keepAlive++
+		if hdr.Streamop == nxthdr.NxtHdr_KEEP_ALIVE {
+			// no data in the keepalive frame
+			continue
+		}
 		switch hdr.Hdr.(type) {
-
 		case *nxthdr.NxtHdr_Onboard:
 			// The handshake is that we get onboard info and we write it back. This is only
 			// if the transport is non reliable like dtls, so the other end knows we received
@@ -583,6 +612,9 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 					s.Debugf("Agent add failed, closing tunnels - %v", e)
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
 					return
+				}
+				if !onboard.Agent {
+					go keepAliveCheck(s, Suuid, &tunnel, &keepAlive)
 				}
 			}
 
