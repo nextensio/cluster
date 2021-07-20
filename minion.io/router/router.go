@@ -469,6 +469,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	hdrs := make(http.Header)
 	// Add following headers for stats dimensions:
 	hdrs.Add("x-nextensio-sourceagent", flow.SourceAgent)
+	hdrs.Add("x-nextensio-userid", onboard.Userid)
 
 	switch fwd.DestType {
 	case shared.SelfDest:
