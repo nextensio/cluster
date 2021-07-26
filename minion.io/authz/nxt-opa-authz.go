@@ -59,12 +59,13 @@ const appAttrCollection = "NxtAppAttr"
 const userAttrCollection = "NxtUserAttr"
 const policyCollection = "NxtPolicies"
 const hostAttrCollection = "NxtHostAttr"
-const RouteCollection = "NxtRoutes"
+const traceReqCollection = "NxtTraceRequests"
 
 const AAuthzQry = "data.app.access.allow"
 const CAuthzQry = "data.app.access.allow"
 const AccessQry = "data.app.access.allow"
 const RouteQry = "data.user.routing.route_tag"
+const TraceQry = "data.user.tracing.request"
 
 // These need to be created via the Dockerfiles for the policy and refdata files
 // required at run-time by OPA
@@ -72,11 +73,7 @@ const agentldir = "authz/agent-authz"
 const connldir = "authz/conn-authz"
 const accessldir = "authz/app-access"
 const routeldir = "authz/routing"
-
-const agentauthzpolicy = "agent-authz.rego"
-const connauthzpolicy = "conn-authz.rego"
-const appaccesspolicy = "app-access.rego"
-const userroutepolicy = "user-routing.rego"
+const traceldir = "authz/tracing"
 
 const userExtAttrDocKey = "UserExtAttr"
 const HDRKEY = "Header"
@@ -88,9 +85,10 @@ const kbid = "bid"        // App-bundle ID from AppInfo and AppAttr collections
 const kuser = "uid"       // User ID from UserInfo and UserAttr collections
 const khost = "host"      // Host ID from HostAttr collection
 // These are key names that anchor a group of attributes for use in OPA Rego policies
-const kbundleattrs = "bundles" // Anchor for all refdata app-bundle attributes
-const khostattrs = "hosts"     // Anchor for all refdata host attributes
-const kuserattrs = "user"      // Anchor for input user attributes in routing
+const kbundleattrs = "bundles"    // Anchor for all refdata app-bundle attributes
+const khostattrs = "hosts"        // Anchor for all refdata host attributes
+const kuserattrs = "user"         // Anchor for input user attributes in routing
+const ktracereq = "tracerequests" // Anchor for all trace requests
 //const khostrouteattrs = "routeattrs" // Anchor for attributes per route tag for a host
 
 // Common struct for all policies
@@ -145,14 +143,50 @@ type TState struct { // For testing
 var QStateMap = make(map[string]*QState, maxOpaUseCases) // indexed by opaUseCases
 var TStateMap = make(map[string]*TState, maxOpaUseCases)
 
-var opaUseCases = []string{"AgentAuthz", "ConnAuthz", "AppAccess", "RoutePol"}
-var initUseCase = []int{0, 0, 1, 1}
-var policyType = []string{"AgentPolicy", "ConnPolicy", "AccessPolicy", "RoutePolicy"} // Policy doc Keys
-var hdrKeyNm = []string{"UserInfo", "AppInfo", "AppAttr", "HostAttr"}                 // Ref Data Header doc keys
-var hdrKeyNm2 = []string{"UserAttr", "AppAttr", "UserAttr", "UserAttr"}               // Header doc keys for associated cltns
-var opaQuery = []string{AAuthzQry, CAuthzQry, AccessQry, RouteQry}
-var loadDir = []string{agentldir, connldir, accessldir, routeldir}
-var DColls = []string{userInfoCollection, connInfoCollection, appAttrCollection, hostAttrCollection}
+var opaUseCases = []string{
+	"AgentAuthz",
+	"ConnAuthz",
+	"AppAccess",
+	"RoutePol",
+	"TracePol",
+}
+var initUseCase = []int{ // 0 = disable; 1 = enable
+	0, // Agent authorization
+	0, // Connector authorization
+	1, // App-bundle access authorization
+	1, // Host routing
+	1, // Tracing
+}
+
+// policyType - Policy doc Keys
+var policyType = []string{
+	"AgentPolicy",
+	"ConnPolicy",
+	"AccessPolicy",
+	"RoutePolicy",
+	"TracePolicy",
+}
+var opaQuery = []string{
+	AAuthzQry,
+	CAuthzQry,
+	AccessQry,
+	RouteQry,
+	TraceQry,
+}
+var loadDir = []string{
+	agentldir,
+	connldir,
+	accessldir,
+	routeldir,
+	traceldir,
+}
+var DColls = []string{
+	userInfoCollection,
+	connInfoCollection,
+	appAttrCollection,
+	hostAttrCollection,
+	traceReqCollection,
+}
 
 var initExit = make(chan bool, 1)
 var initDone bool
@@ -241,7 +275,16 @@ func NxtRouteLookup(which string, uid string, host string) string {
 	return nxtEvalUserRouting(which, opaUseCases[3], uid, host, nil)
 }
 
-const RouteTag = "tag"
+// Trace policy is run only on Apod
+func NxtTraceLookup(which string, uattr string) string {
+	if initDone == false || mongoInitDone == false {
+		return "no"
+	}
+	if which != "agent" {
+		return "no"
+	}
+	return nxtEvalUserTracing(opaUseCases[4], uattr)
+}
 
 /*********************************************************************/
 
@@ -450,10 +493,9 @@ func nxtMongoDBInit(ctx context.Context, ns string, mURI string) (*mongo.Client,
 	// Required on apod only
 	CollMap[userInfoCollection] = db.Collection(userInfoCollection)
 	CollMap[hostAttrCollection] = db.Collection(hostAttrCollection)
+	CollMap[traceReqCollection] = db.Collection(traceReqCollection)
 	// Required on apod. Required on cpod for testing app-access authz
 	CollMap[userAttrCollection] = db.Collection(userAttrCollection)
-
-	CollMap[RouteCollection] = db.Collection(RouteCollection) // temporary
 
 	return cl, nil
 }
@@ -522,14 +564,11 @@ func nxtCreateOpaUseCase(i int, ucase string) {
 	var NewState QState
 	var NewTS TState
 
-	hdrKeyNm[i] = nxtGetHdrKey(hdrKeyNm[i])
-	hdrKeyNm2[i] = nxtGetHdrKey(hdrKeyNm2[i])
-
 	NewState.QUCase = ucase
 	NewState.PolType = policyType[i]
 	NewState.LDir = loadDir[i]
 	NewState.Qry = opaQuery[i]
-	NewState.HdrKey = hdrKeyNm[i]
+	NewState.HdrKey = HDRKEY
 	NewState.DColl = DColls[i]
 	NewState.QError = true
 	QStateMap[ucase] = &NewState
@@ -652,10 +691,20 @@ func nxtReadRefDataDoc(ctx context.Context, ucase string) {
 	case opaUseCases[1]:
 		return
 	case opaUseCases[2]:
-		QStateMap[ucase].RefData = nxtCreateCollJSON(ctx, ucase, kbid, "{ \""+kbundleattrs+"\":  [")
+		// { "bundles": [ {"bid": "id1", ...}, {"bid": "id2", ...} ] }
+		QStateMap[ucase].RefData = nxtCreateRefDataDoc(ctx, ucase, kbid, "{ \""+kbundleattrs+"\":  [")
 		return
 	case opaUseCases[3]:
-		QStateMap[ucase].RefData = nxtCreateCollJSON(ctx, ucase, khost, "{ \""+khostattrs+"\":  [")
+		// { "hosts": [
+		//       {"host": "host1", ... "routeattrs": [{"tag": "v1", ...}, {"tag": "v2", ...}, {"tag": ...}]},
+		//       {"host": "host2", ... "routeattrs": [{"tag": "v3", ...}, {"tag": "v4", ...}]}
+		//            ]
+		// }
+		QStateMap[ucase].RefData = nxtCreateRefDataDoc(ctx, ucase, khost, "{ \""+khostattrs+"\":  [")
+		return
+	case opaUseCases[4]:
+		// { "tracerequests": [ {"traceid": "id1", ...}, {"traceid": "id2", ...}, {"traceid": "id3", ...} ] }
+		QStateMap[ucase].RefData = nxtCreateRefDataDoc(ctx, ucase, "traceid", "{ \""+ktracereq+"\":  [")
 		return
 	}
 }
@@ -690,12 +739,12 @@ func nxtProcessUserAttrChanges(ctx context.Context) {
 func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 	// read header document for user attr collection used as input
 	var uahdr DataHdr
-	var errhdr = DataHdr{ID: hdrKeyNm2[0], Majver: 0, Minver: 0}
+	var errhdr = DataHdr{ID: HDRKEY, Majver: 0, Minver: 0}
 
 	coll := CollMap[userAttrCollection]
-	err := coll.FindOne(ctx, bson.M{"_id": hdrKeyNm2[0]}).Decode(&uahdr)
+	err := coll.FindOne(ctx, bson.M{"_id": HDRKEY}).Decode(&uahdr)
 	if err != nil {
-		nxtLogError(hdrKeyNm2[0], fmt.Sprintf("Failed to find user attr header doc - %v", err))
+		nxtLogError(HDRKEY, fmt.Sprintf("Failed to find user attr header doc - %v", err))
 		nxtMongoError()
 		return errhdr
 	}
@@ -818,7 +867,7 @@ func nxtReadAppAttrHdr(ctx context.Context) DataHdr {
 	coll := CollMap[appAttrCollection]
 	err := coll.FindOne(ctx, bson.M{"_id": HDRKEY}).Decode(&apphdr)
 	if err != nil {
-		nxtLogError(hdrKeyNm2[0], fmt.Sprintf("Failed to find app attr header doc - %v", err))
+		nxtLogError(HDRKEY, fmt.Sprintf("Failed to find app attr header doc - %v", err))
 		nxtMongoError()
 		return errhdr
 	}
@@ -990,7 +1039,7 @@ func nxtGetUserAttrFromHTTP(uid string, hdr *http.Header) string {
 // Read all records (documents) from collection in DB
 // Add header document fields (versions, tenant, ...) to each attribute doc
 // Convert to json and return a consolidated attributes file (collection)
-func nxtCreateCollJSON(ctx context.Context, ucase string, keyid string, istr string) []byte {
+func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr string) []byte {
 
 	var attrstr string
 	var docs []bson.M
@@ -1153,6 +1202,37 @@ func nxtEvalUserRoutingJSON(host string, uajson string) []byte {
 	return []byte(jsonResp)
 }
 
+//
+//--------------------------------- User Tracing ----------------------------------
+//
+// User Tracing Policy
+// Evaluate the tracing query using a user's attributes and trace request attributes.
+// When the minion code in an apod receives a stream to be forwarded, it calls the
+// API for tracing policy with the user attributes.
+// API returns a string which can be either "no" or "none" if the flow is not to be
+// traced, else a configured string that represents the trace request id. This trace
+// request id is then inserted in the trace spans so that the spans can be matched
+// back to the trace request. For eg., for a request to trace all nonemployee users
+// who are located in California, the request id could be "NonemployeeCaliforniaUsers".
+// The spans for traced flows will then contain the tag
+//   "nxt-trace-requestid": "NonemployeeCaliforniaUsers"
+func nxtEvalUserTracing(ucase string, uattr string) string {
+
+	if ucase != QStateMap[ucase].QUCase {
+		return "0"
+	}
+	if QStateMap[ucase].QError {
+		nxtLogError(ucase, "Qstate error for trace query")
+		return "0"
+	}
+	rs, ok := nxtExecOpaQry([]byte(uattr), ucase)
+	if ok {
+		return fmt.Sprintf("%v", rs[0].Expressions[0].Value)
+	}
+	nxtLogError(ucase, "Trace query execution failure")
+	return "0"
+}
+
 //---------------------------------Rego interface functions-----------------------------
 // Prime the load directory with the policy file and the reference data file
 func nxtPrimeLoadDir(ucase string) {
@@ -1293,14 +1373,14 @@ func nxtTestUserAccess(ctx context.Context) {
 
 		// skip header document and spec document for extended attributes
 		uid := fmt.Sprintf("%s", val["_id"])
-		if (uid == hdrKeyNm2[0]) || (uid == userExtAttrDocKey) {
+		if (uid == HDRKEY) || (uid == userExtAttrDocKey) {
 			continue
 		}
 
 		// Evaluate query for each user trying to access each app bundle
 		//
 		for k := 0; k < tsm.Count; k = k + 1 {
-			if tsm.Keys[k] == hdrKeyNm[idx] {
+			if tsm.Keys[k] == HDRKEY {
 				continue
 			}
 			res[k] = nxtEvalAppAccessAuthz(ucase, nxtConvertToJSON(val), tsm.Keys[k])
@@ -1334,14 +1414,14 @@ func nxtTestUserRouting(ctx context.Context) {
 
 		// Ignore header doc and extended (runtime) attributes doc
 		uid := fmt.Sprintf("%s", val["_id"])
-		if (uid == hdrKeyNm2[0]) || (uid == userExtAttrDocKey) {
+		if (uid == HDRKEY) || (uid == userExtAttrDocKey) {
 			continue
 		}
 
 		// Evaluate query for each user trying to access each app
 		//
 		for k := 0; k < tsm.Count; k = k + 1 {
-			if tsm.Keys[k] == hdrKeyNm[idx] {
+			if tsm.Keys[k] == HDRKEY {
 				continue
 			}
 			user := fmt.Sprintf("%s", val[kuser])
@@ -1380,7 +1460,7 @@ func nxtReadAllUserAttrDocuments(ctx context.Context) *[]bson.M {
 	for i := 0; i < nusers; i++ {
 		// Ignore header doc and extended (runtime) attributes doc
 		uid := fmt.Sprintf("%s", users[i]["_id"])
-		if (uid != hdrKeyNm2[0]) && (uid != userExtAttrDocKey) {
+		if (uid != HDRKEY) && (uid != userExtAttrDocKey) {
 			// Change "_id" only for attribute docs, not header or ext attr spec
 			users[i] = nxtFixupAttrID(users[i], kuser)
 			users[i] = nxtAddVerToDoc(users[i], tstRefHdr)

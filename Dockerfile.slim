@@ -7,5 +7,6 @@ COPY bin .
 RUN mkdir -p authz
 RUN mkdir -p authz/app-access
 RUN mkdir -p authz/routing
+RUN mkdir -p authz/tracing
 EXPOSE 80/tcp 8002/tcp
 CMD ["/go/bin/minion.io"]

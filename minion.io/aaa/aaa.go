@@ -41,3 +41,7 @@ func RouteLookup(which string, uid string, host string, s *zap.SugaredLogger) st
 	}
 	return tag
 }
+
+func TraceLookup(which string, uattr string, s *zap.SugaredLogger) string {
+	return authz.NxtTraceLookup(which, uattr)
+}

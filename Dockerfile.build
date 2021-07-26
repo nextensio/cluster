@@ -17,5 +17,6 @@ RUN rm /go/gitlab_rsa
 RUN mkdir -p authz
 RUN mkdir -p authz/app-access
 RUN mkdir -p authz/routing
+RUN mkdir -p authz/tracing
 EXPOSE 80/tcp 443/tcp 8080/tcp
 CMD ["/go/bin/minion.io"]

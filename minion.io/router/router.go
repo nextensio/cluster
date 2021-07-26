@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -22,6 +23,12 @@ import (
 	"minion.io/shared"
 
 	"github.com/google/uuid"
+
+	opentracing "github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go/ext"
+	jaegercfg "github.com/uber/jaeger-client-go/config"
+	jaegerlog "github.com/uber/jaeger-client-go/log"
+	"github.com/uber/jaeger-lib/metrics/prometheus"
 )
 
 type zap2log struct {
@@ -47,6 +54,12 @@ type dropInfo struct {
 type agentTunnel struct {
 	tunnel common.Transport
 	suuid  uuid.UUID
+}
+
+type nxtSpan struct {
+	span     opentracing.Span
+	active   bool
+	tracereq string
 }
 
 // TODO: The lock is a big fat lock here and is liberally taken during the entire duration
@@ -420,7 +433,8 @@ func localRouteDel(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 
 // Lookup destination stream to send an L4 tcp/udp/http proxy packet on
 func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context,
-	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) (*nxthdr.NxtOnboard, common.Transport) {
+	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, spaninfo *nxtSpan) (*nxthdr.NxtOnboard,
+	common.Transport) {
 	var consul_key, tag string
 	var fwd shared.Fwd
 	var err error
@@ -470,6 +484,17 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	// Add following headers for stats dimensions:
 	hdrs.Add("x-nextensio-sourceagent", flow.SourceAgent)
 	hdrs.Add("x-nextensio-userid", onboard.Userid)
+	if spaninfo.active {
+		//hdrs.Add("x-envoy-force-trace", "true")  // To ask Envoy to trace - doesn't work
+		//hdrs.Add("x-client-trace-id", uuid.New().String()) // To ask Envoy to trace
+		hdrs.Add("x-nextensio-trace-requestid", MyInfo.Namespace+"-trace-"+spaninfo.tracereq)
+		spaninfo.span.Tracer().Inject(
+			spaninfo.span.Context(),
+			opentracing.HTTPHeaders,
+			opentracing.HTTPHeadersCarrier(hdrs),
+		)
+		spanSetTags(spaninfo, MyInfo, flow, &fwd, s)
+	}
 
 	switch fwd.DestType {
 	case shared.SelfDest:
@@ -492,23 +517,30 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	return nil, nil
 }
 
-func userAccessAllowed(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, onboard *nxthdr.NxtOnboard, bundle *nxthdr.NxtOnboard) bool {
+func userGetAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard) string {
 	usrattr, attrok := aaa.GetUsrAttr(atype(onboard), onboard.Userid, s)
 	if attrok {
-		flow.Usrattr = usrattr
-	}
-	// TODO: This check is not really needed as it's for DestType == SelfDest, ie., for any
-	// traffic between user and connector within the same pod.
-	// Users and connectors cannot connect to the same pod as per POR.
-	if bundle != nil {
-		if !aaa.AccessOk(atype(bundle), (*bundle).Userid, flow.Usrattr, s) {
-			return false
-		}
-		// Going to another agent/connector, we dont need the attributes anymore
-		flow.Usrattr = ""
+		return usrattr
 	}
 
-	return true
+	return ""
+}
+
+func spanSetTags(spaninfo *nxtSpan, MyInfo *shared.Params, flow *nxthdr.NxtFlow,
+	fwd *shared.Fwd, s *zap.SugaredLogger) {
+
+	// Request id of matching trace request returned by trace policy
+	spaninfo.span.SetTag("nxt-trace-requestid", spaninfo.tracereq)
+	// Minion apod where trace is originating - <cluster>-<ns>-<podid>
+	spaninfo.span.SetTag("nxt-trace-originpod", MyInfo.Id+"-"+MyInfo.Host)
+	// Destination pod for this flow
+	spaninfo.span.SetTag("nxt-trace-destpod", fwd.Id+"-"+fwd.Pod)
+	// Source agent for this flow
+	spaninfo.span.SetTag("nxt-trace-sourceagent", flow.SourceAgent)
+	// Destination agent for this flow
+	spaninfo.span.SetTag("nxt-trace-destagent", flow.DestAgent)
+
+	s.Debugf("Trace: span set for request %s-%s", MyInfo.Namespace, spaninfo.tracereq)
 }
 
 func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel common.Transport,
@@ -554,6 +586,8 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 	var first bool = true
 	var dest common.Transport
 	var bundle *nxthdr.NxtOnboard
+	var userAttr string
+	var spaninfo nxtSpan
 
 	onboard := sessionGet(Suuid)
 	if onboard != nil {
@@ -614,14 +648,36 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				flow.UserCluster = MyInfo.Id
 				flow.UserPod = MyInfo.Host
 			}
+			if userAttr == "" {
+				userAttr = userGetAttrs(s, onboard)
+			}
+			flow.Usrattr = userAttr
 			// Route lookup just one time
 			if dest == nil {
-				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow)
+				if onboard.Agent {
+					// If apod, check if we need to trace this flow
+					tracereq := aaa.TraceLookup(atype(onboard), flow.Usrattr, s)
+					if (tracereq != "no") && (tracereq != "none") {
+						// some non-default trace request returned, so trace this flow
+						tracer := opentracing.GlobalTracer()
+						span := tracer.StartSpan(MyInfo.Id + "-" + MyInfo.Host)
+						spaninfo.span = span
+						spaninfo.active = true
+						spaninfo.tracereq = tracereq
+						ext.SpanKindRPCClient.Set(span)
+						ext.HTTPUrl.Set(span, "http://"+flow.Dest)
+						ext.HTTPMethod.Set(span, "PUT")
+					}
+				}
+				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow, &spaninfo)
 				// L4 routing failures need to terminate the flow
 				if dest == nil {
 					s.Debugf("Agent flow dest fail: %v", flow)
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard,
 						flow, "Couldn't get destination pod or open stream to it")
+					if spaninfo.active {
+						spaninfo.span.Finish()
+					}
 					return
 				}
 				s.Debugf("Agent L4 Lookup: flow=%v bundle=%v stream=%v", flow, bundle, dest)
@@ -629,12 +685,11 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				// the close is cascaded to the other elements connected to the cluster (pods/agents)
 				dest.CloseCascade(tunnel)
 			}
-			if !userAccessAllowed(s, flow, onboard, bundle) {
-				s.Debugf("Agent access fail: bundle=%v DestAgent=%s", bundle, flow.DestAgent)
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent access denied")
-				return
-			}
 			err := dest.Write(hdr, agentBuf)
+			if spaninfo.active {
+				spaninfo.span.Finish()
+				spaninfo.active = false
+			}
 			if err != nil {
 				s.Debugf("Agent flow write fail: flow=%v, error=%v", flow, err)
 				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Write to Agent failed")
@@ -720,6 +775,8 @@ func streamFromPodClose(tunnel common.Transport, dest common.Transport, MyInfo *
 func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, Suuid uuid.UUID, tunnel common.Transport, http *http.Header) {
 	var dest common.Transport
 	var onboard *nxthdr.NxtOnboard
+	var span opentracing.Span
+	var spanActive bool
 
 	s.Debugf("New interpod stream", Suuid)
 
@@ -741,10 +798,26 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				}
 				// Route lookup just one time
 				if dest == nil {
+					tracer := opentracing.GlobalTracer()
+					spanCtx, serr := tracer.Extract(opentracing.HTTPHeaders,
+						opentracing.HTTPHeadersCarrier(*http))
+					if (serr == nil) && (spanCtx != nil) {
+						spanActive = true
+						span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, ext.RPCServerOption(spanCtx))
+						span.SetTag("nxt-trace-originpod", flow.UserCluster+"-"+flow.UserPod)
+						span.SetTag("nxt-trace-spanpod", MyInfo.Id+"-"+MyInfo.Host)
+						span.SetTag("nxt-trace-sourceagent", flow.SourceAgent)
+						span.SetTag("nxt-trace-destagent", flow.DestAgent)
+						s.Debugf("Trace: Found span context in stream from %s-%s",
+							flow.UserCluster, flow.UserPod)
+					}
 					onboard, dest = localRouteLookup(s, MyInfo, flow)
 					if dest == nil {
 						s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
 						streamFromPodClose(tunnel, dest, MyInfo, flow, "Couldn't get destination to agent")
+						if spanActive {
+							span.Finish()
+						}
 						return
 					}
 					s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
@@ -752,6 +825,9 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 					if dest == nil {
 						s.Debugf("Interpod: cant open stream on dest tunnel for ", flow.DestAgent)
 						streamFromPodClose(tunnel, dest, MyInfo, flow, "Stream open to agent failed")
+						if spanActive {
+							span.Finish()
+						}
 						return
 					}
 					// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
@@ -760,9 +836,16 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				}
 				if !bundleAccessAllowed(s, flow, onboard) {
 					streamFromPodClose(tunnel, dest, MyInfo, flow, "Agent access denied")
+					if spanActive {
+						span.Finish()
+					}
 					return
 				}
 				err := dest.Write(hdr, podBuf)
+				if spanActive {
+					span.Finish()
+					spanActive = false
+				}
 				if err != nil {
 					s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
 					streamFromPodClose(tunnel, dest, MyInfo, flow, "Write to destination pod failed")
@@ -803,6 +886,33 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	}
 }
 
+func initJaegerTrace(service string, MyInfo *shared.Params, s *zap.SugaredLogger) io.Closer {
+	cfg := &jaegercfg.Configuration{
+		ServiceName: service,
+		Sampler: &jaegercfg.SamplerConfig{
+			Type:  "const",
+			Param: 1,
+		},
+		Reporter: &jaegercfg.ReporterConfig{
+			LogSpans: true,
+		},
+	}
+	jLogger := jaegerlog.StdLogger
+	debugLogger := jaegerlog.DebugLogAdapter(jLogger)
+	jMetricsFactory := prometheus.New()
+	tracer, closer, err := cfg.NewTracer(
+		jaegercfg.Logger(debugLogger),
+		jaegercfg.Metrics(jMetricsFactory),
+	)
+	if err != nil {
+		s.Errorf("JaegerTraceInit Failed - %v", err)
+		cfg.Disabled = true
+		tracer, closer, err = cfg.NewTracer()
+	}
+	opentracing.SetGlobalTracer(tracer)
+	return closer
+}
+
 // Open a Websocket server side socket and listen for incoming connections
 // from agents, and for each agent connection, spawn a goroutine to handle that
 func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context) {
@@ -810,6 +920,14 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 	lg := log.New(&zap2log{s: s}, "websock", 0)
 	var server *websock.WebStream = nil
 	tchan := make(chan common.NxtStream)
+	var closer io.Closer
+
+	if MyInfo.PodType == "apod" {
+		closer = initJaegerTrace(MyInfo.Namespace+"-trace", MyInfo, s)
+		if closer != nil {
+			defer closer.Close()
+		}
+	}
 	for {
 		select {
 		case client := <-tchan:
@@ -840,6 +958,14 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 	lg := log.New(&zap2log{s: s}, "http2", 0)
 	var server *nhttp2.HttpStream = nil
 	tchan := make(chan common.NxtStream)
+	var closer io.Closer
+
+	if MyInfo.PodType != "apod" {
+		closer = initJaegerTrace(MyInfo.Namespace+"-trace", MyInfo, s)
+		if closer != nil {
+			defer closer.Close()
+		}
+	}
 	for {
 		select {
 		case client := <-tchan:
