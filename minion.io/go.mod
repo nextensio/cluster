@@ -13,7 +13,10 @@ require (
 	github.com/google/uuid v1.1.2
 	github.com/miekg/dns v1.1.31
 	github.com/open-policy-agent/opa v0.23.2
-	gitlab.com/nextensio/common/go v0.0.0-20210714171628-b7eb9d5f9114
+	github.com/opentracing/opentracing-go v1.2.0
+	github.com/uber/jaeger-client-go v2.29.1+incompatible
+	github.com/uber/jaeger-lib v2.4.1+incompatible
+	gitlab.com/nextensio/common/go v0.0.0-20210727210405-84ac2e3a6c0c
 	go.mongodb.org/mongo-driver v1.4.1
 	go.uber.org/zap v1.15.0
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0

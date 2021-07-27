@@ -403,19 +403,26 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	go podTunnelMonitor(s, key, client, fwd)
 }
 
+func localOneRouteAdd(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, svc string) {
+	svc = strings.ReplaceAll(svc, ".", "-")
+	// Multiple agents can login with the same userid, each agent tunnel has a unique uuid
+	if onboard.Agent {
+		svc = svc + onboard.Uuid
+	}
+	routeLock.Lock()
+	localRoutes[svc] = onboard
+	routeLock.Unlock()
+}
+
 func localRouteAdd(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard) {
 	// Register to the local routing table so that we know what services are
 	// available on this pod.
 	for _, s := range onboard.Services {
-		s = strings.ReplaceAll(s, ".", "-")
-		// Multiple agents can login with the same userid, each agent tunnel has a unique uuid
-		if onboard.Agent {
-			s = s + onboard.Uuid
-		}
-		routeLock.Lock()
-		localRoutes[s] = onboard
-		routeLock.Unlock()
+		localOneRouteAdd(sl, MyInfo, onboard, s)
 	}
+	// The agents and connectors sets flow.SourceAgent field to their connectId. The return
+	// traffic will look for a tunnel with that name in the route table
+	localOneRouteAdd(sl, MyInfo, onboard, onboard.ConnectId)
 }
 
 func localRouteDel(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard) {
