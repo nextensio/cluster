@@ -140,6 +140,12 @@ type TState struct { // For testing
 	Keys  [500]string // Keys - Bids or Hosts or ...
 }
 
+type UserInfo struct {
+	Userid  string
+	Cluster string
+	Podname string
+}
+
 var QStateMap = make(map[string]*QState, maxOpaUseCases) // indexed by opaUseCases
 var TStateMap = make(map[string]*TState, maxOpaUseCases)
 
@@ -216,12 +222,12 @@ func NxtAaaInit(namespace string, pod string, gateway string, mongouri string, s
 }
 
 // Check on Apod for user and Cpod for connector
-func NxtUsrAllowed(which string, userid string, cluster string, podname string) bool {
+func NxtUsrAllowed(which string, info UserInfo) bool {
 	if initDone == false || mongoInitDone == false {
 		return false
 	}
-	if podname != "" && podname != nxtPod {
-		nxtLogDebug("UsrAllow", fmt.Sprintf("Pod mismatch for %s, pod=%s", userid, podname))
+	if info.Podname != "" && info.Podname != nxtPod {
+		nxtLogDebug("UsrAllow", fmt.Sprintf("Pod mismatch for %s, pod=%s", info.Userid, info.Podname))
 		return false
 	}
 	return true

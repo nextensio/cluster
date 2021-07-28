@@ -19,6 +19,7 @@ import (
 	websock "gitlab.com/nextensio/common/go/transport/websocket"
 	"go.uber.org/zap"
 	"minion.io/aaa"
+	"minion.io/authz"
 	"minion.io/consul"
 	"minion.io/shared"
 
@@ -149,7 +150,12 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 		}
 	}
 
-	if !aaa.UsrAllowed(atype(onboard), onboard.Userid, onboard.Cluster, onboard.Podname, s) {
+	info := authz.UserInfo{
+		Userid:  onboard.Userid,
+		Cluster: onboard.Cluster,
+		Podname: onboard.Podname,
+	}
+	if !aaa.UsrAllowed(atype(onboard), info, s) {
 		return fmt.Errorf("User disallowed")
 	}
 
@@ -947,8 +953,13 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 		case open := <-outsideMsg:
 			if open {
 				if server == nil {
-					// as for a keepalive count of at least one data activity in 30 seconds
-					server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1)
+					if MyInfo.PodType == "apod" {
+						// We dont want any keepalives from umpteen agents
+						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 0, 0)
+					} else {
+						// as for a keepalive count of at least one data activity in 30 seconds
+						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1)
+					}
 					go server.Listen(tchan)
 				}
 			} else {
