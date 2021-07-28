@@ -425,17 +425,22 @@ func localRouteAdd(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 	localOneRouteAdd(sl, MyInfo, onboard, onboard.ConnectId)
 }
 
+func localOneRouteDel(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, svc string) {
+	svc = strings.ReplaceAll(svc, ".", "-")
+	// Multiple agents can login with the same userid, each agent tunnel has a unique uuid
+	if onboard.Agent {
+		svc = svc + onboard.Uuid
+	}
+	routeLock.Lock()
+	localRoutes[svc] = nil
+	routeLock.Unlock()
+}
+
 func localRouteDel(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard) {
 	for _, s := range onboard.Services {
-		s = strings.ReplaceAll(s, ".", "-")
-		// Multiple agents can login with the same userid, each agent tunnel has a unique uuid
-		if onboard.Agent {
-			s = s + onboard.Uuid
-		}
-		routeLock.Lock()
-		localRoutes[s] = nil
-		routeLock.Unlock()
+		localOneRouteDel(sl, MyInfo, onboard, s)
 	}
+	localOneRouteDel(sl, MyInfo, onboard, onboard.ConnectId)
 }
 
 // Lookup destination stream to send an L4 tcp/udp/http proxy packet on
