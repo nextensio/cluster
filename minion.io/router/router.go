@@ -586,6 +586,61 @@ func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel co
 	}
 }
 
+func onboardDiff(sl *zap.SugaredLogger, MyInfo *shared.Params, old *nxthdr.NxtOnboard, new *nxthdr.NxtOnboard) error {
+	add := []string{}
+	del := []string{}
+
+	for _, o := range old.Services {
+		found := false
+		for _, n := range new.Services {
+			if o == n {
+				found = true
+				break
+			}
+		}
+		if !found {
+			del = append(del, o)
+		}
+	}
+
+	for _, n := range new.Services {
+		found := false
+		for _, o := range old.Services {
+			if n == o {
+				found = true
+				break
+			}
+		}
+		if !found {
+			add = append(add, n)
+		}
+	}
+
+	sl.Debugf("Adding and Deleting:", add, del)
+
+	for _, s := range add {
+		localOneRouteAdd(sl, MyInfo, new, s)
+	}
+	for _, s := range del {
+		localOneRouteDel(sl, MyInfo, new, s)
+	}
+	if !new.Agent {
+		err := consul.RegisterConsul(MyInfo, add, sl)
+		if err != nil {
+			consul.DeRegisterConsul(MyInfo, add, sl)
+			return err
+		}
+		err = consul.DeRegisterConsul(MyInfo, del, sl)
+		if err != nil {
+			return err
+		}
+	}
+
+	old.Services = new.Services
+
+	return nil
+}
+
 // Agent/Connector is trying to connect to minion. The first stream from the agent/connector
 // will be used to onboard AND send L3 data. The next streams on the session will not need
 // onboarding, and they will send L4/Proxy data. There will be one stream per L4/Proxy session,
@@ -637,6 +692,13 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				sessionAdd(Suuid, onboard)
 				if e := agentAdd(s, MyInfo, onboard, Suuid, tunnel); e != nil {
 					s.Debugf("Agent add failed, closing tunnels - %v", e)
+					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
+					return
+				}
+			} else {
+				newOnb := hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
+				if e := onboardDiff(s, MyInfo, onboard, newOnb); e != nil {
+					s.Debugf("Onboard diff failed, closing tunnels - %v", e)
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
 					return
 				}
