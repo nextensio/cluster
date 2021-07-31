@@ -505,13 +505,17 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	if spaninfo.active {
 		//hdrs.Add("x-envoy-force-trace", "true")  // To ask Envoy to trace - doesn't work
 		//hdrs.Add("x-client-trace-id", uuid.New().String()) // To ask Envoy to trace
-		hdrs.Add("x-nextensio-trace-requestid", MyInfo.Namespace+"-trace-"+spaninfo.tracereq)
+		hdrs.Add("x-nextensio-trace-requestid", spaninfo.tracereq)
+		spaninfo.span.SetTag("nxt-trace-requestid", spaninfo.tracereq)
+		spaninfo.span.SetTag("nxt-trace-sourcepod", MyInfo.Id+"-"+MyInfo.Host)
+		spaninfo.span.SetTag("nxt-trace-destpod", fwd.Id+"-"+fwd.Pod)
+		spaninfo.span.SetTag("nxt-trace-destagent", flow.DestAgent)
+		spaninfo.span.SetTag("nxt-trace-userid", onboard.Userid)
 		spaninfo.span.Tracer().Inject(
 			spaninfo.span.Context(),
 			opentracing.HTTPHeaders,
 			opentracing.HTTPHeadersCarrier(hdrs),
 		)
-		spanSetTags(spaninfo, MyInfo, flow, &fwd, s)
 	}
 
 	switch fwd.DestType {
@@ -542,23 +546,6 @@ func userGetAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard) string {
 	}
 
 	return ""
-}
-
-func spanSetTags(spaninfo *nxtSpan, MyInfo *shared.Params, flow *nxthdr.NxtFlow,
-	fwd *shared.Fwd, s *zap.SugaredLogger) {
-
-	// Request id of matching trace request returned by trace policy
-	spaninfo.span.SetTag("nxt-trace-requestid", spaninfo.tracereq)
-	// Minion apod where trace is originating - <cluster>-<ns>-<podid>
-	spaninfo.span.SetTag("nxt-trace-originpod", MyInfo.Id+"-"+MyInfo.Host)
-	// Destination pod for this flow
-	spaninfo.span.SetTag("nxt-trace-destpod", fwd.Id+"-"+fwd.Pod)
-	// Source agent for this flow
-	spaninfo.span.SetTag("nxt-trace-sourceagent", flow.SourceAgent)
-	// Destination agent for this flow
-	spaninfo.span.SetTag("nxt-trace-destagent", flow.DestAgent)
-
-	s.Debugf("Trace: span set for request %s-%s", MyInfo.Namespace, spaninfo.tracereq)
 }
 
 func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel common.Transport,
@@ -858,7 +845,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 	var span opentracing.Span
 	var spanActive bool
 
-	s.Debugf("New interpod stream", Suuid)
+	s.Debugf("New interpod HTTP stream %v - %v", Suuid, http)
 
 	for {
 		hdr, podBuf, err := tunnel.Read()
@@ -884,10 +871,13 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 					if (serr == nil) && (spanCtx != nil) {
 						spanActive = true
 						span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, ext.RPCServerOption(spanCtx))
-						span.SetTag("nxt-trace-originpod", flow.UserCluster+"-"+flow.UserPod)
-						span.SetTag("nxt-trace-spanpod", MyInfo.Id+"-"+MyInfo.Host)
-						span.SetTag("nxt-trace-sourceagent", flow.SourceAgent)
+						span.SetTag("nxt-trace-sourcepod", flow.UserCluster+"-"+flow.UserPod)
+						span.SetTag("nxt-trace-destpod", MyInfo.Id+"-"+MyInfo.Host)
 						span.SetTag("nxt-trace-destagent", flow.DestAgent)
+						val := http.Get("x-nextensio-trace-requestid")
+						span.SetTag("nxt-trace-requestid", val)
+						val = http.Get("x-nextensio-userid")
+						span.SetTag("nxt-trace-userid", val)
 						s.Debugf("Trace: Found span context in stream from %s-%s",
 							flow.UserCluster, flow.UserPod)
 					}
