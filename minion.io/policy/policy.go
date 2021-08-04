@@ -249,10 +249,14 @@ func NxtGetUsrAttr(which string, userid string, extattr primitive.M) string {
 	} else {
 		uabson, _ = nxtGetAppAttr(userid)
 	}
-	for k, v := range extattr {
-		uabson[k] = v
+	// NOTE: uabson here is a shared value per userid, and it can be accessed from
+	// multiple threads/multiple users. So we cant modify uabson itself because its
+	// shared across users AND of course it will cause multi threading crashes, hence
+	// we modify the extattr instead
+	for k, v := range uabson {
+		extattr[k] = v
 	}
-	return nxtConvertToJSON(uabson)
+	return nxtConvertToJSON(extattr)
 }
 
 // Access policy is run only on Cpod
@@ -685,6 +689,9 @@ func nxtReadRefDataDoc(ctx context.Context, ucase string) {
 
 // Cache of user attributes for all active users. Cache is updated whenever
 // the collection version changes. Cache entries are purged when a user disconnects.
+// NOTE: uabson here can be accessed from multiple threads. So its OK to replace
+// uabson with an entirely new primitive.M, but we cant add or delete to the existing
+// uabson or else it will cause multi threading issues and crashes
 type usrCache struct {
 	uabson primitive.M
 }
@@ -1035,10 +1042,14 @@ func nxtEvalUserRouting(which string, ucase string, uid string, host string, ext
 	} else {
 		uabson, _ = nxtGetAppAttr(uid)
 	}
-	for k, v := range extattr {
-		uabson[k] = v
+	// NOTE: uabson here is a shared value per userid, and it can be accessed from
+	// multiple threads/multiple users. So we cant modify uabson itself because its
+	// shared across users AND of course it will cause multi threading crashes, hence
+	// we modify the extattr instead
+	for k, v := range uabson {
+		extattr[k] = v
 	}
-	uajson := nxtConvertToJSON(uabson)
+	uajson := nxtConvertToJSON(extattr)
 	rs, ok := nxtExecOpaQry(nxtEvalUserRoutingJSON(host, uajson), ucase)
 	if ok {
 		return (fmt.Sprintf("%v", rs[0].Expressions[0].Value))
