@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -13,10 +14,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
-	"minion.io/aaa"
-	"minion.io/args"
 	"minion.io/consul"
-	"minion.io/env"
+	"minion.io/policy"
 	"minion.io/router"
 	"minion.io/shared"
 )
@@ -35,6 +34,41 @@ func lumberjackZapHook(e zapcore.Entry) error {
 	return nil
 }
 
+func ArgHandler(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
+	inPortPtr := flag.Int("iport", 80, "inside port")
+	outPortPtr := flag.Int("oport", 443, "outside port")
+	healthPortPtr := flag.Int("hport", 8080, "outside port")
+
+	flag.Parse()
+
+	sugar.Infof("iport: %d", *inPortPtr)
+	sugar.Infof("oport: %d", *outPortPtr)
+	sugar.Infof("oport: %d", *healthPortPtr)
+
+	MyInfo.Iport = *inPortPtr
+	MyInfo.Oport = *outPortPtr
+	MyInfo.HealthPort = *healthPortPtr
+}
+
+func EnvHandler(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
+	MyInfo.Node = os.Getenv("MY_NODE_NAME")
+	MyInfo.Pod = os.Getenv("MY_POD_NAME")
+	MyInfo.PodType = os.Getenv("MY_POD_TYPE")
+	MyInfo.Namespace = os.Getenv("MY_POD_NAMESPACE")
+	MyInfo.PodIp = os.Getenv("MY_POD_IP")
+	MyInfo.Id = os.Getenv("MY_POD_CLUSTER")
+	MyInfo.MongoUri = os.Getenv("MY_MONGO_URI")
+	MyInfo.Host = os.Getenv("HOSTNAME")
+
+	sugar.Infow("env", "Node", MyInfo.Node)
+	sugar.Infow("env", "Pod", MyInfo.Pod)
+	sugar.Infow("env", "PodType", MyInfo.PodType)
+	sugar.Infow("env", "Namespace", MyInfo.Namespace)
+	sugar.Infow("env", "PodIp", MyInfo.PodIp)
+	sugar.Infow("env", "Id", MyInfo.Id)
+	sugar.Infow("env", "MongoUri", MyInfo.MongoUri)
+}
+
 func main() {
 	common.MAXBUF = (64 * 1024)
 	ctx := context.Background()
@@ -42,10 +76,10 @@ func main() {
 	logger, _ := zap.NewDevelopment(zap.Hooks(lumberjackZapHook))
 	defer logger.Sync()
 	sugar := logger.Sugar()
-	args.ArgHandler(sugar, &MyInfo)
-	env.EnvHandler(sugar, &MyInfo)
+	ArgHandler(sugar, &MyInfo)
+	EnvHandler(sugar, &MyInfo)
 	router.RouterInit(sugar, &MyInfo, ctx)
-	go aaa.AaaStart(MyInfo.Namespace, MyInfo.Pod, MyInfo.Id+consul.RemotePostPrefix, MyInfo.MongoUri, sugar, router.DisconnectUser)
+	go policy.NxtOpaInit(MyInfo.Namespace, MyInfo.Pod, MyInfo.Id+consul.RemotePostPrefix, MyInfo.MongoUri, sugar)
 
 	// Do kill -USR1 <pid of minion> to get all stack traces in app_debug.log
 	sigc := make(chan os.Signal, 1)

@@ -1,4 +1,4 @@
-package authz
+package policy
 
 /*************************************
 // TODO: break up file into modules
@@ -75,7 +75,6 @@ const accessldir = "authz/app-access"
 const routeldir = "authz/routing"
 const traceldir = "authz/tracing"
 
-const userExtAttrDocKey = "UserExtAttr"
 const HDRKEY = "Header"
 
 // These are key names that should be used in the OPA Rego policies
@@ -204,7 +203,6 @@ var mongoDBAddr string
 var tenant string
 var nxtPod string
 var nxtGw string
-var nxtDisconnect func(string, *zap.SugaredLogger)
 var slog *zap.SugaredLogger
 var st, sg, sm zap.Field // for tenant, gateway, module
 
@@ -213,8 +211,8 @@ var mongoClient *mongo.Client
 var nxtMongoDBName string // set to nxtMongoDB (legacy) or a unique name per tenant going forward
 
 /******************************** Calls from minion ******************/
-func NxtAaaInit(namespace string, pod string, gateway string, mongouri string, sl *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) int {
-	err := nxtOpaInit(namespace, pod, gateway, mongouri, sl, disconnectCb)
+func NxtOpaInit(namespace string, pod string, gateway string, mongouri string, sl *zap.SugaredLogger) int {
+	err := nxtOpaInit(namespace, pod, gateway, mongouri, sl)
 	if err != nil {
 		return 1
 	}
@@ -292,11 +290,6 @@ func NxtTraceLookup(which string, uattr string) string {
 	return nxtEvalUserTracing(opaUseCases[4], uattr)
 }
 
-/*********************************************************************/
-
-func authzMain() {
-}
-
 // For now, this function tests access for a number of users with each app bundle.
 // In production, this will monitor for DB updates and pull in any modified documents
 // to reinitialize any OPA stuff
@@ -344,7 +337,6 @@ func nxtOpaProcess(ctx context.Context) int {
 		}
 
 	}
-	return 0
 }
 
 func nxtOpaProcessInitCheck(ctx context.Context) {
@@ -413,9 +405,8 @@ func nxtOpaProcessMongoCheck(ctx context.Context) {
 	}
 }
 
-//-------------------------------- Init Functions ----------------------------------
 // API to init nxt OPA interface
-func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.SugaredLogger, disconnectCb func(string, *zap.SugaredLogger)) error {
+func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.SugaredLogger) error {
 	defer func() {
 		initExit <- true
 	}()
@@ -437,7 +428,6 @@ func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.
 
 	nxtMongoDBName = nxtGetTenantDBName(tenant)
 	mongoDBAddr = mongouri
-	nxtDisconnect = disconnectCb
 
 	go nxtOpaProcess(ctx)
 	procStarted = true
@@ -473,7 +463,6 @@ func nxtOpaUseCaseInit(ctx context.Context) {
 	appAttr = make(map[string]usrCache)
 	usrAttrHdr = nxtReadUserAttrHdr(ctx)
 	appAttrHdr = nxtReadAppAttrHdr(ctx)
-	nxtReadUserExtAttrDoc(ctx)
 
 	nxtWriteAttrVersions()
 	initDone = true
@@ -730,13 +719,12 @@ var usrAttrHdr DataHdr
 var usrAttrWrVer bool
 
 // If new version of user attribues collection is available, read the
-// extended attributes spec doc and update the cache for active users
+// attributes spec doc and update the cache for active users
 func nxtProcessUserAttrChanges(ctx context.Context) {
 	tmphdr := nxtReadUserAttrHdr(ctx)
 	if (tmphdr.Majver > usrAttrHdr.Majver) || (tmphdr.Minver > usrAttrHdr.Minver) {
 		usrAttrHdr = tmphdr
 		usrAttrWrVer = true // for testing infra
-		nxtReadUserExtAttrDoc(ctx)
 		nxtUpdateUserAttrCache()
 	}
 }
@@ -967,79 +955,6 @@ func nxtUpdateAppAttrCache() {
 	nxtLogDebug("AppAttrCache", fmt.Sprintf("Updated %v entries in local cache", len(appAttr)))
 }
 
-//-------------------------------Dynamic User Attributes Functions---------------------------------
-
-// Extended (runtime) user attributes spec. The mongoDB doc specifies the HTTP headers
-// as a JSON string of key-value pairs in Attrlist. The key is seen by OPA. The
-// value is the HTTP header name used to retrieve the attribute value from the
-// user packet.
-// For eg., in extUAttr:
-//  ["devOS"] -> "x-nxt-devOS"
-//  ["osver"] -> "x-nxt-osver"
-//  ["loc"]   -> "x-nxt-location"
-//
-// In extUAValues:
-//  ["devOS"] -> "<devOS string value>"
-//  ["osver"] -> <osver float64 value>
-//  ["loc"]   -> "<location string value>"
-type UserExtAttr struct {
-	Uid      string `bson:"_id" json:"uid"`
-	Attrlist string `bson:"attrlist" json:"attrlist"`
-}
-
-var extUAttr = make(map[string]interface{}, maxExtUAttr)
-var extUAValues = make(map[string]interface{}, maxExtUAttr)
-
-const maxExtUAttr = 10 // assume max 10 such attributes
-
-// Read spec document for extended attributes from mongoDB during init
-// and whenever collection version changes
-func nxtReadUserExtAttrDoc(ctx context.Context) {
-	var uahdr UserExtAttr
-
-	coll := CollMap[userAttrCollection]
-	err := coll.FindOne(ctx, bson.M{"_id": userExtAttrDocKey}).Decode(&uahdr)
-	if err != nil {
-		// Disable this error until it's fully implemented
-		//nxtLogError(userExtAttrDocKey, fmt.Sprintf("Failed to read user extended attributes doc - %v", err))
-		//nxtMongoError()
-		return
-	}
-
-	// Cache spec read from DB
-	for k := range extUAttr {
-		delete(extUAttr, k)
-	}
-	if err := json.Unmarshal([]byte(uahdr.Attrlist), &extUAttr); err != nil {
-		nxtLogError(userExtAttrDocKey, fmt.Sprintf("Unmarshal error for user extended attributes - %v", err))
-	}
-}
-
-// Get the attributes from HTTP headers for every call from minion
-func nxtGetUserAttrFromHTTP(uid string, hdr *http.Header) string {
-	for k := range extUAValues {
-		delete(extUAValues, k)
-	}
-	for idx, val := range extUAttr {
-		hval := hdr.Get(fmt.Sprintf("%s", val))
-		fval, err := strconv.ParseFloat(hval, 64)
-		if err != nil {
-			extUAValues[idx] = hval
-		} else {
-			extUAValues[idx] = fval
-		}
-	}
-	if len(extUAValues) == 0 {
-		return ""
-	}
-	uajson, err := json.Marshal(&extUAValues)
-	if err != nil {
-		nxtLogError(uid, fmt.Sprintf("Extended attributes JSON marshal error - %v", err))
-		return ""
-	}
-	return string(uajson)
-}
-
 //--------------------------Attributes Collection functions--------------------------
 
 // Read all records (documents) from collection in DB
@@ -1190,7 +1105,6 @@ func nxtEvalUserRouting(which string, ucase string, uid string, host string, hdr
 	} else {
 		uajson, _, _ = nxtGetAppAttrJSON(uid)
 	}
-	//ueajson := nxtGetUserAttrFromHTTP(uid, hdr)
 	rs, ok := nxtExecOpaQry(nxtEvalUserRoutingJSON(host, uajson), ucase)
 	if ok {
 		return (fmt.Sprintf("%v", rs[0].Expressions[0].Value))
@@ -1357,124 +1271,6 @@ func nxtLogDebug(ref string, msg string) {
 	slog.Debug(" ", st, sg, sm, zap.String("Ref", ref), zap.String("Msg", msg))
 }
 
-//-----------------------------------------Test functions-------------------------------
-// Test function for application access
-// It tests a combination of users with app bundles :
-// a) 5 users with max 100 documents populated in mongoDB AppAttr collection
-// b) documents in mongoDB UserAttr collection with max 100 documents in AppAttr collection
-//
-var tstRefHdr DataHdr
-
-func nxtTestUserAccess(ctx context.Context) {
-
-	var res [500]bool // 5 * 100 max
-	var users *[]bson.M
-
-	users = nxtReadUserAttrCollection(ctx) // user attributes from mongoDB
-
-	idx := 2 // Use case for access policy
-	ucase := opaUseCases[idx]
-	tsm := TStateMap[ucase]
-	for _, val := range *users {
-
-		// skip header document and spec document for extended attributes
-		uid := fmt.Sprintf("%s", val["_id"])
-		if (uid == HDRKEY) || (uid == userExtAttrDocKey) {
-			continue
-		}
-
-		// Evaluate query for each user trying to access each app bundle
-		//
-		for k := 0; k < tsm.Count; k = k + 1 {
-			if tsm.Keys[k] == HDRKEY {
-				continue
-			}
-			res[k] = nxtEvalAppAccessAuthz(ucase, nxtConvertToJSON(val), tsm.Keys[k])
-			nxtLogInfo(uid+" accessing "+tsm.Keys[k], fmt.Sprintf("Result = %v", res[k]))
-		}
-	}
-}
-
-func nxtTestUserRouting(ctx context.Context) {
-
-	var res [500]string // 5 * 100 max
-	var users *[]bson.M
-
-	hdr := make(http.Header, maxExtUAttr)
-	aval := make(map[string]string, maxExtUAttr)
-
-	aval["devOS"] = "MacOS"
-	aval["osver"] = "14.1"
-	aval["loc"] = "SJC"
-
-	for idx, val := range extUAttr {
-		hdr.Add(fmt.Sprintf("%s", val), aval[idx])
-	}
-
-	users = nxtReadUserAttrCollection(ctx) // user requests from mongoDB
-
-	idx := 3 // Use case for user routing
-	ucase := opaUseCases[idx]
-	tsm := TStateMap[ucase]
-	for _, val := range *users {
-
-		// Ignore header doc and extended (runtime) attributes doc
-		uid := fmt.Sprintf("%s", val["_id"])
-		if (uid == HDRKEY) || (uid == userExtAttrDocKey) {
-			continue
-		}
-
-		// Evaluate query for each user trying to access each app
-		//
-		for k := 0; k < tsm.Count; k = k + 1 {
-			if tsm.Keys[k] == HDRKEY {
-				continue
-			}
-			user := fmt.Sprintf("%s", val[kuser])
-			res[k] = nxtEvalUserRouting("agent", ucase, user, tsm.Keys[k], &hdr)
-			nxtLogInfo(uid+" accessing "+tsm.Keys[k], fmt.Sprintf("Result = %v", res[k]))
-		}
-	}
-}
-
-// Read header and user attr documents from collection. Build input from query for
-// each user document.
-func nxtReadUserAttrCollection(ctx context.Context) *[]bson.M {
-	tstRefHdr = nxtReadUserAttrHdr(ctx)
-	nxtReadUserExtAttrDoc(ctx)
-	return nxtReadAllUserAttrDocuments(ctx)
-}
-
-// Read user attr data from mongoDB collection and return bytes read
-func nxtReadAllUserAttrDocuments(ctx context.Context) *[]bson.M {
-
-	var users []bson.M
-
-	coll := CollMap[userAttrCollection]
-	cursor, err := coll.Find(ctx, bson.M{})
-	if err != nil {
-		nxtLogError("All users", fmt.Sprintf("Failed to find user attributes docs - %v", err))
-		nxtMongoError()
-		return &users
-	}
-	if err = cursor.All(ctx, &users); err != nil {
-		nxtLogError("All users", fmt.Sprintf("Failed to read user attributes docs - %v", err))
-		return &users
-	}
-
-	nusers := len(users)
-	for i := 0; i < nusers; i++ {
-		// Ignore header doc and extended (runtime) attributes doc
-		uid := fmt.Sprintf("%s", users[i]["_id"])
-		if (uid != HDRKEY) && (uid != userExtAttrDocKey) {
-			// Change "_id" only for attribute docs, not header or ext attr spec
-			users[i] = nxtFixupAttrID(users[i], kuser)
-			users[i] = nxtAddVerToDoc(users[i], tstRefHdr)
-		}
-	}
-	return &users
-}
-
 func nxtWriteAttrVersions() {
 	qsm2 := QStateMap[opaUseCases[2]] // Access policy usecase
 	qsm3 := QStateMap[opaUseCases[3]] // Route policy usecase
@@ -1486,5 +1282,3 @@ func nxtWriteAttrVersions() {
 	QStateMap[opaUseCases[2]].WrVer = false
 	QStateMap[opaUseCases[3]].WrVer = false
 }
-
-//--------------------------------------End------------------------------------

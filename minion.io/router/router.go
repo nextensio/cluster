@@ -18,9 +18,8 @@ import (
 	nhttp2 "gitlab.com/nextensio/common/go/transport/http2"
 	websock "gitlab.com/nextensio/common/go/transport/websocket"
 	"go.uber.org/zap"
-	"minion.io/aaa"
-	"minion.io/authz"
 	"minion.io/consul"
+	"minion.io/policy"
 	"minion.io/shared"
 
 	"github.com/google/uuid"
@@ -150,12 +149,12 @@ func agentAdd(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 		}
 	}
 
-	info := authz.UserInfo{
+	info := policy.UserInfo{
 		Userid:  onboard.Userid,
 		Cluster: onboard.Cluster,
 		Podname: onboard.Podname,
 	}
-	if !aaa.UsrAllowed(atype(onboard), info, s) {
+	if !policy.NxtUsrAllowed(atype(onboard), info) {
 		return fmt.Errorf("User disallowed")
 	}
 
@@ -233,7 +232,7 @@ func agentDel(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOn
 			// Deregister services from Consul if it's a connector
 			err = consul.DeRegisterConsul(MyInfo, onboard.Services, s)
 		}
-		aaa.UsrLeave(atype(onboard), onboard.Userid, s)
+		policy.NxtUsrLeave(atype(onboard), onboard.Userid)
 	}
 	s.Debugf("AgentDel: err %s, user %s, Suuid %s, total user tunnels prev %d / new %d, total agents  %d",
 		err, onboard.Userid, Suuid, lcur, len(users[onboard.Userid]), len(agents))
@@ -249,20 +248,6 @@ func agentTunnelGet(uuid string) common.Transport {
 		return nil
 	}
 	return agentT.tunnel
-}
-
-// Passed as callback when calling AaaStart() from minion.go
-func DisconnectUser(userid string, s *zap.SugaredLogger) {
-	aLock.RLock()
-	defer aLock.RUnlock()
-
-	cur := users[userid]
-	var i = 0
-	for ; i < len(cur); i++ {
-		cur[i].tunnel.Close()
-	}
-
-	s.Debugf("Force disconnected user %s, tunnels %d", userid, i)
 }
 
 // Lookup a session to the agent/connector on this same pod.
@@ -463,7 +448,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	// as the value of the x-nextensio-for header.
 	if !flow.ResponseData {
 		// We're on an Apod, trying to send the frame to a Cpod
-		tag = aaa.RouteLookup(atype(onboard), onboard.Userid, flow.DestAgent, s)
+		tag = policy.NxtRouteLookup(atype(onboard), onboard.Userid, flow.DestAgent)
 		if tag == "deny" {
 			s.Debugf("Agent %s access to service %s denied",
 				onboard.Userid, flow.DestAgent)
@@ -536,7 +521,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 }
 
 func userGetAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard) string {
-	usrattr, attrok := aaa.GetUsrAttr(atype(onboard), onboard.Userid, s)
+	usrattr, attrok := policy.NxtGetUsrAttr(atype(onboard), onboard.Userid)
 	if attrok {
 		return usrattr
 	}
@@ -736,7 +721,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			if dest == nil {
 				if onboard.Agent {
 					// If apod, check if we need to trace this flow
-					tracereq := aaa.TraceLookup(atype(onboard), flow.Usrattr, s)
+					tracereq := policy.NxtTraceLookup(atype(onboard), flow.Usrattr)
 					if (tracereq != "no") && (tracereq != "none") {
 						// some non-default trace request returned, so trace this flow
 						tracer := opentracing.GlobalTracer()
@@ -783,7 +768,7 @@ func bundleAccessAllowed(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, onboard *nx
 	// The AAA access check is done per packet today, we can save some performance if we
 	// do it once per flow like route lookup, but then we lose the ability to firewall the
 	// flow after its established
-	if !aaa.AccessOk(atype(onboard), (onboard).Userid, flow.Usrattr, s) {
+	if !policy.NxtAccessOk(atype(onboard), (onboard).Userid, flow.Usrattr) {
 		return false
 	}
 	// Going to an agent/connector, we dont need the attributes anymore
