@@ -17,6 +17,7 @@ import (
 	"gitlab.com/nextensio/common/go/messages/nxthdr"
 	nhttp2 "gitlab.com/nextensio/common/go/transport/http2"
 	websock "gitlab.com/nextensio/common/go/transport/websocket"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.uber.org/zap"
 	"minion.io/consul"
 	"minion.io/policy"
@@ -448,7 +449,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	// as the value of the x-nextensio-for header.
 	if !flow.ResponseData {
 		// We're on an Apod, trying to send the frame to a Cpod
-		tag = policy.NxtRouteLookup(atype(onboard), onboard.Userid, flow.DestAgent)
+		tag = policy.NxtRouteLookup(atype(onboard), onboard.Userid, flow.DestAgent, getExtAttr(onboard))
 		if tag == "deny" {
 			s.Debugf("Agent %s access to service %s denied",
 				onboard.Userid, flow.DestAgent)
@@ -524,13 +525,24 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	return nil, nil
 }
 
-func userGetAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard) string {
-	usrattr, attrok := policy.NxtGetUsrAttr(atype(onboard), onboard.Userid)
-	if attrok {
-		return usrattr
-	}
+func getExtAttr(onboard *nxthdr.NxtOnboard) primitive.M {
+	extAttr := make(map[string]interface{})
+	extAttr["_hostname"] = onboard.Hostname
+	extAttr["_model"] = onboard.Model
+	extAttr["_osType"] = onboard.OsType
+	extAttr["_osName"] = onboard.OsName
+	extAttr["_osPatch"] = onboard.OsPatch
+	extAttr["_osMajor"] = onboard.OsMajor
+	extAttr["_osMinor"] = onboard.OsMinor
 
-	return ""
+	return extAttr
+}
+
+func userGetAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard) string {
+
+	usrattr := policy.NxtGetUsrAttr(atype(onboard), onboard.Userid, getExtAttr(onboard))
+	return usrattr
+
 }
 
 func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel common.Transport,
