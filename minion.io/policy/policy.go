@@ -4,19 +4,20 @@ package policy
 // TODO: break up file into modules
 // Nextensio interface for Opa Rego library to provide policy based services covering
 // application access authorization, Agent authorization, Connector authorization,
-// routing, etc.
+// routing, tracing, etc.
 // This code will be compiled together with the minion code running in a service pod.
-// The minion code will first call nxtAaaInit() to set things up. After that, it will
+// The minion code will first call nxtOpaInit() to set things up. After that, it will
 // call an API specific to the authorization (or whatever) policy check required.
 // Some APIs are to be called in ingress service pod, some in egress service pod.
 // Common for every pod:
-// NxtAAAInit() - to be called once for initialization before any other API calls
-// Ingress pod APIs:
+// NxtOpaInit() - to be called once for initialization before any other API calls
+// Apod APIs:
 //     func NxtGetUsrAttr(userid string) (string, bool)
 //     func NxtUsrLeave(userid string)
 //     func NxtUsrAllowed(userid string) bool
 //     func NxtRouteLookup(userid string, host string, ...)
-// Egress pod APIs:
+//     func NxtTraceLookup(userattr string)
+// Cpod APIs:
 //     func NxtAccessOk(bundleid string, userattr string) bool
 //
 *************************************/
@@ -271,11 +272,11 @@ func NxtAccessOk(which string, bundleid string, userattr string) bool {
 }
 
 // Route policy is run only on Apod
-func NxtRouteLookup(which string, uid string, host string, extattr primitive.M) string {
+func NxtRouteLookup(which string, uid string, usrattr string, host string) string {
 	if !initDone || !mongoInitDone {
 		return ""
 	}
-	return nxtEvalUserRouting(which, opaUseCases[3], uid, host, extattr)
+	return nxtEvalUserRouting(which, opaUseCases[3], uid, usrattr, host)
 }
 
 // Trace policy is run only on Apod
@@ -1028,7 +1029,7 @@ func nxtEvalAppAccessAuthz(ucase string, uattr string, bid string) bool {
 // API for routing policy with the user id, destination host and the HTTP headers.
 // API returns a string tag which may be null for default case. Minion uses the tag
 // to determine the routing.
-func nxtEvalUserRouting(which string, ucase string, uid string, host string, extattr primitive.M) string {
+func nxtEvalUserRouting(which string, ucase string, uid string, uajson string, host string) string {
 	if ucase != QStateMap[ucase].QUCase {
 		return ""
 	}
@@ -1036,20 +1037,6 @@ func nxtEvalUserRouting(which string, ucase string, uid string, host string, ext
 		nxtLogError(ucase, "Qstate error for route query for "+uid+" to "+host)
 		return ""
 	}
-	var uabson primitive.M
-	if which == "agent" {
-		uabson, _ = nxtGetUserAttr(uid)
-	} else {
-		uabson, _ = nxtGetAppAttr(uid)
-	}
-	// NOTE: uabson here is a shared value per userid, and it can be accessed from
-	// multiple threads/multiple users. So we cant modify uabson itself because its
-	// shared across users AND of course it will cause multi threading crashes, hence
-	// we modify the extattr instead
-	for k, v := range uabson {
-		extattr[k] = v
-	}
-	uajson := nxtConvertToJSON(extattr)
 	rs, ok := nxtExecOpaQry(nxtEvalUserRoutingJSON(host, uajson), ucase)
 	if ok {
 		return (fmt.Sprintf("%v", rs[0].Expressions[0].Value))
@@ -1061,8 +1048,6 @@ func nxtEvalUserRouting(which string, ucase string, uid string, host string, ext
 func nxtEvalUserRoutingJSON(host string, uajson string) []byte {
 	str1 := "{\"" + khost + "\": \""
 	str2 := "\", \"" + kuserattrs + "\": "
-	//str3 := ", \"dynattr\": "
-	//jsonResp := fmt.Sprintf("%s%s%s%s%s%s }", str1, host, str2, uajson, str3, ueajson)
 	jsonResp := fmt.Sprintf("%s%s%s%s }", str1, host, str2, uajson)
 	return []byte(jsonResp)
 }

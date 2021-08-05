@@ -449,7 +449,7 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	// as the value of the x-nextensio-for header.
 	if !flow.ResponseData {
 		// We're on an Apod, trying to send the frame to a Cpod
-		tag = policy.NxtRouteLookup(atype(onboard), onboard.Userid, flow.DestAgent, getExtAttr(onboard))
+		tag = policy.NxtRouteLookup(atype(onboard), onboard.Userid, flow.Usrattr, flow.DestAgent)
 		if tag == "deny" {
 			s.Debugf("Agent %s access to service %s denied",
 				onboard.Userid, flow.DestAgent)
