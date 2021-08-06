@@ -50,6 +50,8 @@ const maxUsers = 10000   // max per tenant
 /*****************************
 // MongoDB database and collections
 *****************************/
+var tenantDB *mongo.Database
+
 const nxtMongoDB = "NxtDB" // default DB name prior to per-tenant DBs
 const userInfoCollection = "NxtUsers"
 const connInfoCollection = "NxtApps"
@@ -294,6 +296,8 @@ func NxtTraceLookup(which string, uattr string) string {
 // In production, this will monitor for DB updates and pull in any modified documents
 // to reinitialize any OPA stuff
 func nxtOpaProcess(ctx context.Context) int {
+	var cs *mongo.ChangeStream
+	var err error
 
 	// First, wait until the code exits nxtOpaInit()
 	select {
@@ -326,16 +330,77 @@ func nxtOpaProcess(ctx context.Context) int {
 				nxtSetupUseCase(ctx, i, ucase)
 			}
 		}
-		// Process if new version of UserAttr collection
+
+		// Watch the tenantDB. Retry for 5 times before bailing out of watch
+		for retries := 1; retries <= 5; retries++ {
+			cs, err = tenantDB.Watch(context.TODO(), mongo.Pipeline{}, options.ChangeStream().SetFullDocument(options.UpdateLookup))
+			if err != nil {
+				nxtLogError(nxtMongoDBName, fmt.Sprintf("Not able to register for change notification [err:%s]. Retrying...%d", err, retries))
+				time.Sleep(1 * time.Second)
+			} else {
+				nxtLogDebug(nxtMongoDBName, fmt.Sprintf("Database watch started."))
+				break
+			}
+		}
+		if err != nil {
+			// Failed to register watch; continue on mongoCheck
+			nxtLogError(nxtMongoDBName, fmt.Sprintf("DB watch register error - %v", err))
+			continue
+		}
+		fmt.Printf("\n *** %s DB watch started ***\n", nxtMongoDBName)
+		// Update the local cache from existing DB info first before processing change notification
 		nxtProcessUserAttrChanges(ctx)
 		nxtProcessAppAttrChanges(ctx)
-
 		if usrAttrWrVer ||
 			QStateMap[opaUseCases[2]].WrVer ||
 			QStateMap[opaUseCases[3]].WrVer {
 			nxtWriteAttrVersions()
 		}
 
+		// Wait for change notification from tenant DB for processing
+		for cs.Next(context.TODO()) {
+			var changeEvent bson.M
+
+			err = cs.Decode(&changeEvent)
+			if err != nil {
+				// We don't expect the decode to fail. Since, we missed to decode this event, lets close watch and rewatch again.
+				cs.Close(context.TODO())
+				break
+			}
+
+			// Get the collection info for this event first
+			ns := changeEvent["ns"].(primitive.M)
+			coll := ns["coll"].(string)
+			if coll == "NxtOnboardLog" {
+				continue
+			}
+			switch changeEvent["operationType"] {
+			case "insert", "update", "delete":
+
+				nxtLogDebug(nxtMongoDBName, fmt.Sprintf(" DB ChangeEvent: Coll:%s Event:%s\n", coll, changeEvent["operationType"]))
+				fmt.Printf("%s changeEvent: Coll:%s Event:%s\n", nxtMongoDBName, coll, changeEvent["operationType"])
+				for i, ucase := range opaUseCases {
+					if initUseCase[i] > 0 {
+						nxtSetupUseCase(ctx, i, ucase)
+					}
+				}
+				if coll == "NxtUserAttr" {
+					fmt.Printf("\n ***User attribute collection event - %s***\n", changeEvent["operationType"])
+					nxtProcessUserAttrChanges(ctx)
+
+				}
+				if coll == "NxtAppAttr" {
+					fmt.Printf("\n ***App attribute collection event - %s***\n", changeEvent["operationType"])
+					nxtProcessAppAttrChanges(ctx)
+				}
+				if usrAttrWrVer ||
+					QStateMap[opaUseCases[2]].WrVer ||
+					QStateMap[opaUseCases[3]].WrVer {
+					nxtWriteAttrVersions()
+				}
+			}
+		}
+		nxtLogDebug(nxtMongoDBName, fmt.Sprintf("Watch MongoDB change notification disconnected\n"))
 	}
 }
 
@@ -477,20 +542,20 @@ func nxtMongoDBInit(ctx context.Context, ns string, mURI string) (*mongo.Client,
 	}
 
 	CollMap = make(map[string]*mongo.Collection, maxMongoColls)
-	db := cl.Database(nxtMongoDBName)
+	tenantDB = cl.Database(nxtMongoDBName)
 	nxtLogDebug(nxtMongoDBName, fmt.Sprintf("The DB being used for tenant %s", ns))
 
 	// Required on both apod and cpod
-	CollMap[policyCollection] = db.Collection(policyCollection)
+	CollMap[policyCollection] = tenantDB.Collection(policyCollection)
 	// Required on cpod only
-	CollMap[connInfoCollection] = db.Collection(connInfoCollection)
-	CollMap[appAttrCollection] = db.Collection(appAttrCollection)
+	CollMap[connInfoCollection] = tenantDB.Collection(connInfoCollection)
+	CollMap[appAttrCollection] = tenantDB.Collection(appAttrCollection)
 	// Required on apod only
-	CollMap[userInfoCollection] = db.Collection(userInfoCollection)
-	CollMap[hostAttrCollection] = db.Collection(hostAttrCollection)
-	CollMap[traceReqCollection] = db.Collection(traceReqCollection)
+	CollMap[userInfoCollection] = tenantDB.Collection(userInfoCollection)
+	CollMap[hostAttrCollection] = tenantDB.Collection(hostAttrCollection)
+	CollMap[traceReqCollection] = tenantDB.Collection(traceReqCollection)
 	// Required on apod. Required on cpod for testing app-access authz
-	CollMap[userAttrCollection] = db.Collection(userAttrCollection)
+	CollMap[userAttrCollection] = tenantDB.Collection(userAttrCollection)
 
 	return cl, nil
 }
@@ -706,11 +771,9 @@ var usrAttrWrVer bool
 // attributes spec doc and update the cache for active users
 func nxtProcessUserAttrChanges(ctx context.Context) {
 	tmphdr := nxtReadUserAttrHdr(ctx)
-	if (tmphdr.Majver > usrAttrHdr.Majver) || (tmphdr.Minver > usrAttrHdr.Minver) {
-		usrAttrHdr = tmphdr
-		usrAttrWrVer = true // for testing infra
-		nxtUpdateUserAttrCache()
-	}
+	usrAttrHdr = tmphdr
+	usrAttrWrVer = true // for testing infra
+	nxtUpdateUserAttrCache()
 }
 
 // Read header doc from user attributes collection to get version info
@@ -826,11 +889,9 @@ var appAttrHdr DataHdr
 // attributes docs and update the cache for active apps
 func nxtProcessAppAttrChanges(ctx context.Context) {
 	tmphdr := nxtReadAppAttrHdr(ctx)
-	if (tmphdr.Majver > appAttrHdr.Majver) || (tmphdr.Minver > appAttrHdr.Minver) {
-		appAttrHdr = tmphdr
-		QStateMap[opaUseCases[2]].WrVer = true // for testing infra
-		nxtUpdateAppAttrCache()
-	}
+	appAttrHdr = tmphdr
+	QStateMap[opaUseCases[2]].WrVer = true // for testing infra
+	nxtUpdateAppAttrCache()
 }
 
 // Read header doc from app attributes collection to get version info
