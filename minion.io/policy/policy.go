@@ -347,7 +347,6 @@ func nxtOpaProcess(ctx context.Context) int {
 			nxtLogError(nxtMongoDBName, fmt.Sprintf("DB watch register error - %v", err))
 			continue
 		}
-		fmt.Printf("\n *** %s DB watch started ***\n", nxtMongoDBName)
 		// Update the local cache from existing DB info first before processing change notification
 		nxtProcessUserAttrChanges(ctx)
 		nxtProcessAppAttrChanges(ctx)
@@ -371,26 +370,23 @@ func nxtOpaProcess(ctx context.Context) int {
 			// Get the collection info for this event first
 			ns := changeEvent["ns"].(primitive.M)
 			coll := ns["coll"].(string)
-			if coll == "NxtOnboardLog" {
+			if coll == "NxtOnboardLog" { //No processing needed for collection NxtOnboardLog
 				continue
 			}
 			switch changeEvent["operationType"] {
 			case "insert", "update", "delete":
 
 				nxtLogDebug(nxtMongoDBName, fmt.Sprintf(" DB ChangeEvent: Coll:%s Event:%s\n", coll, changeEvent["operationType"]))
-				fmt.Printf("%s changeEvent: Coll:%s Event:%s\n", nxtMongoDBName, coll, changeEvent["operationType"])
 				for i, ucase := range opaUseCases {
 					if initUseCase[i] > 0 {
 						nxtSetupUseCase(ctx, i, ucase)
 					}
 				}
 				if coll == "NxtUserAttr" {
-					fmt.Printf("\n ***User attribute collection event - %s***\n", changeEvent["operationType"])
 					nxtProcessUserAttrChanges(ctx)
 
 				}
 				if coll == "NxtAppAttr" {
-					fmt.Printf("\n ***App attribute collection event - %s***\n", changeEvent["operationType"])
 					nxtProcessAppAttrChanges(ctx)
 				}
 				if usrAttrWrVer ||
