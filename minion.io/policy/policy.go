@@ -996,14 +996,11 @@ func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr s
 // Evaluate the app access query using a user's attributes and a target app bundle ID.
 // Return true or false
 // Minion code receives a packet to be sent to a Connector
-// It takes the HTTP header for user attributes and target app bundle ID for destination
-// Connector to call the API for app access authz
+// It takes the user attributes and target app bundle ID for destination Connector to
+// call this API for app access authz
 // It gets back a true or false as the authz result.
 func nxtEvalAppAccessAuthz(ucase string, uattr string, bid string) bool {
-	// Unmarshal uattr into a UserAttr struct and insert bid into it
-	// Convert back to a unified json string
-	// Call nxtEvalAppAccessAuthzCore() with json string
-	var ua bson.M
+	// Combine to create {"bid": <bundle id>, "user": { <user attribute key-value pairs> }}
 
 	if ucase != QStateMap[ucase].QUCase {
 		return false
@@ -1011,18 +1008,20 @@ func nxtEvalAppAccessAuthz(ucase string, uattr string, bid string) bool {
 	if QStateMap[ucase].QError {
 		return false
 	}
-	if err := json.Unmarshal([]byte(uattr), &ua); err != nil {
-		nxtLogError(ucase, fmt.Sprintf("Eval input JSON unmarshal error - %v", err))
-		return false
-	}
-	ua[kbid] = bid
-	rs, ok := nxtExecOpaQry(nxtConvertToJSONBytes(ua), ucase)
+	rs, ok := nxtExecOpaQry(nxtEvalAccessInputJSON(bid, uattr), ucase)
 	if ok {
 		retval := fmt.Sprintf("%v", rs[0].Expressions[0].Value)
 		return retval == "true"
 	}
-	nxtLogError(ucase, fmt.Sprintf("Query execution failure for %s access to %s", ua[kuser], bid))
+	nxtLogError(ucase, fmt.Sprintf("Query execution failure for access to %s", bid))
 	return false
+}
+
+func nxtEvalAccessInputJSON(bid string, uajson string) []byte {
+	str1 := "{\"" + kbid + "\": \""
+	str2 := "\", \"" + kuserattrs + "\": "
+	jsonResp := str1 + bid + str2 + uajson + " }"
+	return []byte(jsonResp)
 }
 
 //
@@ -1031,10 +1030,11 @@ func nxtEvalAppAccessAuthz(ucase string, uattr string, bid string) bool {
 // User Route Policy
 // Evaluate the user routing query using a user's attributes and a destination host.
 // When the minion code in an apod receives a packet to be forwarded, it calls the
-// API for routing policy with the user id, destination host and the HTTP headers.
-// API returns a string tag which may be null for default case. Minion uses the tag
-// to determine the routing.
+// API for routing policy with the user id, and destination host.
+// API returns a string tag which may be null for default case or "deny" to block host
+// access. Minion uses the tag to determine the routing or blocking host access.
 func nxtEvalUserRouting(which string, ucase string, uid string, uajson string, host string) string {
+	// Combine to create {"host": <host id>, "user": { <user attribute key-value pairs> }}
 	if ucase != QStateMap[ucase].QUCase {
 		return ""
 	}
@@ -1042,7 +1042,7 @@ func nxtEvalUserRouting(which string, ucase string, uid string, uajson string, h
 		nxtLogError(ucase, "Qstate error for route query for "+uid+" to "+host)
 		return ""
 	}
-	rs, ok := nxtExecOpaQry(nxtEvalUserRoutingJSON(host, uajson), ucase)
+	rs, ok := nxtExecOpaQry(nxtEvalRoutingInputJSON(host, uajson), ucase)
 	if ok {
 		return (fmt.Sprintf("%v", rs[0].Expressions[0].Value))
 	}
@@ -1050,10 +1050,10 @@ func nxtEvalUserRouting(which string, ucase string, uid string, uajson string, h
 	return ""
 }
 
-func nxtEvalUserRoutingJSON(host string, uajson string) []byte {
+func nxtEvalRoutingInputJSON(host string, uajson string) []byte {
 	str1 := "{\"" + khost + "\": \""
 	str2 := "\", \"" + kuserattrs + "\": "
-	jsonResp := fmt.Sprintf("%s%s%s%s }", str1, host, str2, uajson)
+	jsonResp := str1 + host + str2 + uajson + " }"
 	return []byte(jsonResp)
 }
 
@@ -1072,6 +1072,7 @@ func nxtEvalUserRoutingJSON(host string, uajson string) []byte {
 // The spans for traced flows will then contain the tag
 //   "nxt-trace-requestid": "NonemployeeCaliforniaUsers"
 func nxtEvalUserTracing(ucase string, uattr string) string {
+	// Create {"user": { <user attribute key-value pairs> }}
 
 	if ucase != QStateMap[ucase].QUCase {
 		return "0"
@@ -1080,12 +1081,18 @@ func nxtEvalUserTracing(ucase string, uattr string) string {
 		nxtLogError(ucase, "Qstate error for trace query")
 		return "0"
 	}
-	rs, ok := nxtExecOpaQry([]byte(uattr), ucase)
+	rs, ok := nxtExecOpaQry(nxtEvalTracingInputJSON(uattr), ucase)
 	if ok {
 		return fmt.Sprintf("%v", rs[0].Expressions[0].Value)
 	}
 	nxtLogError(ucase, "Trace query execution failure")
 	return "0"
+}
+
+func nxtEvalTracingInputJSON(uajson string) []byte {
+	str1 := "{\"" + kuserattrs + "\": \""
+	jsonResp := str1 + uajson + " }"
+	return []byte(jsonResp)
 }
 
 //---------------------------------Rego interface functions-----------------------------
