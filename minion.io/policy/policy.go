@@ -240,24 +240,29 @@ func NxtUsrLeave(which string, userid string) {
 // Get user attributes only on Apod. Passed to Cpod via flow header.
 func NxtGetUsrAttr(which string, userid string, extattr primitive.M) string {
 	if !initDone {
-		return nxtConvertToJSON(extattr)
+		return nxtConvertToJSONString(extattr)
 	}
 	// Don't check mongoInitDone as we may have the data in local cache
 	// The call handles the case where mongo init not done and data not in local cache
+	var uajson []byte
 	var uabson primitive.M
 	if which == "agent" {
-		uabson, _ = nxtGetUserAttr(userid)
+		uajson, _ = nxtGetUserAttr(userid)
 	} else {
-		uabson, _ = nxtGetAppAttr(userid)
+		uajson, _ = nxtGetAppAttr(userid)
 	}
-	// NOTE: uabson here is a shared value per userid, and it can be accessed from
-	// multiple threads/multiple users. So we cant modify uabson itself because its
-	// shared across users AND of course it will cause multi threading crashes, hence
-	// we modify the extattr instead
-	for k, v := range uabson {
-		extattr[k] = v
+	// NOTE: Since Go returns a pointer to a map stucture and not the structure itself,
+	// the code is changed to return a byte array so we can unmarshal into our own map
+	// struct for modifications. Helps avoid the possibility of inadvertently modifying
+	// the underlying common map structure in a multiple threads/multiple users case.
+	if err := json.Unmarshal(uajson, &uabson); err != nil {
+		nxtLogError("UserAttributes", fmt.Sprintf("JSON unmarshal error - %v", err))
+		return nxtConvertToJSONString(extattr)
 	}
-	return nxtConvertToJSON(extattr)
+	for k, v := range extattr {
+		uabson[k] = v
+	}
+	return nxtConvertToJSONString(uabson)
 }
 
 // Access policy is run only on Cpod
@@ -690,11 +695,11 @@ func nxtReadRefDataDoc(ctx context.Context, ucase string) {
 
 // Cache of user attributes for all active users. Cache is updated whenever
 // the collection version changes. Cache entries are purged when a user disconnects.
-// NOTE: uabson here can be accessed from multiple threads. So its OK to replace
-// uabson with an entirely new primitive.M, but we cant add or delete to the existing
-// uabson or else it will cause multi threading issues and crashes
+// Changed from a primitive.M map structure to a byte array so callers can unmarshal
+// into their own map structure to modify. Go passes a pointer to the map structure
+// which can't be used to modify the map in a multi-threaded environment.
 type usrCache struct {
-	uabson primitive.M
+	uajson []byte
 }
 
 var userAttr map[string]usrCache
@@ -729,34 +734,34 @@ func nxtReadUserAttrHdr(ctx context.Context) DataHdr {
 	return uahdr
 }
 
-func loadUserAttrFromDB(uuid string) (primitive.M, bool) {
+func loadUserAttrFromDB(uuid string) ([]byte, bool) {
 	var uaC usrCache
 
-	uastruct, ok := nxtReadUserAttrDB(uuid)
+	ua, ok := nxtReadUserAttrDB(uuid)
 	if ok {
+		// Cache json form of doc read from DB
 		userAttrLock.Lock()
-		// Cache doc read from DB
-		uaC.uabson = uastruct
+		uaC.uajson = ua
 		userAttr[uuid] = uaC
 		userAttrLock.Unlock()
-		return uastruct, ok
+		return ua, ok
 	}
-	return primitive.M{}, false
+	return []byte(""), false
 }
 
 // Read one user's attr data from mongoDB collection and return it together
 // with the json version with header info added. Called when user connects to service pod.
-func nxtGetUserAttr(uuid string) (primitive.M, bool) {
-	uastruct, ok := nxtReadUserAttrCache(uuid)
+func nxtGetUserAttr(uuid string) ([]byte, bool) {
+	uajson, ok := nxtReadUserAttrCache(uuid)
 	if ok {
-		return uastruct, ok // cached version
+		return uajson, ok // cached version
 	}
 
 	return loadUserAttrFromDB(uuid)
 }
 
 // Read a user attribute doc from local cache
-func nxtReadUserAttrCache(uuid string) (primitive.M, bool) {
+func nxtReadUserAttrCache(uuid string) ([]byte, bool) {
 	userAttrLock.Lock()
 	defer userAttrLock.Unlock()
 
@@ -764,18 +769,18 @@ func nxtReadUserAttrCache(uuid string) (primitive.M, bool) {
 	uaC, ok := userAttr[uuid]
 	if ok {
 		//nxtLogDebug(uuid, "Retrieved attributes for user from local cache")
-		return uaC.uabson, true
+		return uaC.uajson, true
 	}
 	//nxtLogDebug(uuid, "Failed to find attributes for user in local cache")
-	return nil, false
+	return []byte(""), false
 }
 
 // Read a user attribute doc from the DB and add header document info
-func nxtReadUserAttrDB(uuid string) (bson.M, bool) {
+func nxtReadUserAttrDB(uuid string) ([]byte, bool) {
 	var usera bson.M
 
 	if !mongoInitDone {
-		return bson.M{}, false
+		return []byte(""), false
 	}
 
 	ctx := context.Background()
@@ -786,11 +791,11 @@ func nxtReadUserAttrDB(uuid string) (bson.M, bool) {
 	if err != nil {
 		nxtLogError(uuid, fmt.Sprintf("Failed to find attributes doc for user - %v", err))
 		nxtMongoError()
-		return bson.M{}, false
+		return []byte(""), false
 	}
 	usera = nxtFixupAttrID(usera, kuser)
 	usera = nxtAddVerToDoc(usera, usrAttrHdr)
-	return usera, true
+	return nxtConvertToJSONBytes(usera), true
 }
 
 // Remove user attributes for a user on disconnect
@@ -807,8 +812,8 @@ func nxtUpdateUserAttrCache() {
 	userAttrLock.Lock()
 
 	for id, _ := range userAttr {
-		uastruct, _ := nxtReadUserAttrDB(id)
-		uaC.uabson = uastruct
+		ua, _ := nxtReadUserAttrDB(id)
+		uaC.uajson = ua
 		userAttr[id] = uaC
 	}
 
@@ -849,50 +854,50 @@ func nxtReadAppAttrHdr(ctx context.Context) DataHdr {
 	return apphdr
 }
 
-func loadAppAttrFromDB(uuid string) (primitive.M, bool) {
+func loadAppAttrFromDB(uuid string) ([]byte, bool) {
 	var appC usrCache
 
-	appstruct, ok := nxtReadAppAttrDB(uuid)
+	appa, ok := nxtReadAppAttrDB(uuid)
 	if ok {
-		appAttrLock.Lock()
 		// Cache doc read from DB
-		appC.uabson = appstruct
+		appAttrLock.Lock()
+		appC.uajson = appa
 		appAttr[uuid] = appC
 		appAttrLock.Unlock()
-		return appstruct, ok
+		return appa, ok
 	}
-	return primitive.M{}, false
+	return []byte(""), false
 }
 
 // Read one app's attr data from mongoDB collection and return it together
 // with the json version with header info added. Called when app connects to service pod.
-func nxtGetAppAttr(uuid string) (primitive.M, bool) {
-	appstruct, ok := nxtReadAppAttrCache(uuid)
+func nxtGetAppAttr(uuid string) ([]byte, bool) {
+	appajson, ok := nxtReadAppAttrCache(uuid)
 	if ok {
-		return appstruct, ok // cached version
+		return appajson, ok // cached version
 	}
 
 	return loadAppAttrFromDB(uuid)
 }
 
 // Read an app attribute doc from local cache
-func nxtReadAppAttrCache(uuid string) (primitive.M, bool) {
+func nxtReadAppAttrCache(uuid string) ([]byte, bool) {
 	appAttrLock.Lock()
 	defer appAttrLock.Unlock()
 
 	appC, ok := appAttr[uuid]
 	if ok {
-		return appC.uabson, true
+		return appC.uajson, true
 	}
-	return nil, false
+	return []byte(""), false
 }
 
 // Read an app attribute doc from the DB and add header document info
-func nxtReadAppAttrDB(appid string) (bson.M, bool) {
+func nxtReadAppAttrDB(appid string) ([]byte, bool) {
 	var appa bson.M
 
 	if !mongoInitDone {
-		return bson.M{}, false
+		return []byte(""), false
 	}
 
 	ctx := context.Background()
@@ -903,11 +908,11 @@ func nxtReadAppAttrDB(appid string) (bson.M, bool) {
 	if err != nil {
 		nxtLogError(appid, fmt.Sprintf("Failed to find attributes doc for app - %v", err))
 		nxtMongoError()
-		return bson.M{}, false
+		return []byte(""), false
 	}
 	appa = nxtFixupAttrID(appa, kuser)
 	appa = nxtAddVerToDoc(appa, appAttrHdr)
-	return appa, true
+	return nxtConvertToJSONBytes(appa), true
 }
 
 // Remove app attributes for a apps on disconnect
@@ -924,8 +929,8 @@ func nxtUpdateAppAttrCache() {
 	appAttrLock.Lock()
 
 	for id, _ := range appAttr {
-		appstruct, _ := nxtReadAppAttrDB(id)
-		appC.uabson = appstruct
+		appa, _ := nxtReadAppAttrDB(id)
+		appC.uajson = appa
 		appAttr[id] = appC
 	}
 
@@ -978,7 +983,7 @@ func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr s
 		if addComma {
 			attrstr = attrstr + ",\n"
 		}
-		attrstr = attrstr + nxtConvertToJSON(docs[i])
+		attrstr = attrstr + nxtConvertToJSONString(docs[i])
 		addComma = true
 	}
 	attrstr = attrstr + "\n]\n}"
@@ -1011,7 +1016,7 @@ func nxtEvalAppAccessAuthz(ucase string, uattr string, bid string) bool {
 		return false
 	}
 	ua[kbid] = bid
-	rs, ok := nxtExecOpaQry([]byte(nxtConvertToJSON(ua)), ucase)
+	rs, ok := nxtExecOpaQry(nxtConvertToJSONBytes(ua), ucase)
 	if ok {
 		retval := fmt.Sprintf("%v", rs[0].Expressions[0].Value)
 		return retval == "true"
@@ -1175,7 +1180,16 @@ func nxtFixupAttrID(attr bson.M, keyid string) bson.M {
 	return attr
 }
 
-func nxtConvertToJSON(inp bson.M) string {
+func nxtConvertToJSONBytes(inp bson.M) []byte {
+	jsonResp, merr := json.Marshal(inp)
+	if merr != nil {
+		nxtLogError("JSON-marshal", fmt.Sprintf("%v for %v", merr, inp))
+		return []byte("")
+	}
+	return jsonResp
+}
+
+func nxtConvertToJSONString(inp bson.M) string {
 	jsonResp, merr := json.Marshal(inp)
 	if merr != nil {
 		nxtLogError("JSON-marshal", fmt.Sprintf("%v for %v", merr, inp))
