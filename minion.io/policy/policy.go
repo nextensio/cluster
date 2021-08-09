@@ -1090,7 +1090,7 @@ func nxtEvalUserTracing(ucase string, uattr string) string {
 }
 
 func nxtEvalTracingInputJSON(uajson string) []byte {
-	str1 := "{\"" + kuserattrs + "\": \""
+	str1 := "{\"" + kuserattrs + "\": "
 	jsonResp := str1 + uajson + " }"
 	return []byte(jsonResp)
 }
