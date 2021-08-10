@@ -374,7 +374,7 @@ func nxtOpaProcess(ctx context.Context) int {
 				continue
 			}
 			switch changeEvent["operationType"] {
-			case "insert", "update", "delete":
+			case "insert", "update", "delete", "replace":
 
 				nxtLogDebug(nxtMongoDBName, fmt.Sprintf(" DB ChangeEvent: Coll:%s Event:%s\n", coll, changeEvent["operationType"]))
 				for i, ucase := range opaUseCases {
