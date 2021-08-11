@@ -373,28 +373,27 @@ func nxtOpaProcess(ctx context.Context) int {
 			if coll == "NxtOnboardLog" { //No processing needed for collection NxtOnboardLog
 				continue
 			}
-			switch changeEvent["operationType"] {
-			case "insert", "update", "delete", "replace":
-
-				nxtLogDebug(nxtMongoDBName, fmt.Sprintf(" DB ChangeEvent: Coll:%s Event:%s\n", coll, changeEvent["operationType"]))
-				for i, ucase := range opaUseCases {
-					if initUseCase[i] > 0 {
-						nxtSetupUseCase(ctx, i, ucase)
-					}
-				}
-				if coll == "NxtUserAttr" {
-					nxtProcessUserAttrChanges(ctx)
-
-				}
-				if coll == "NxtAppAttr" {
-					nxtProcessAppAttrChanges(ctx)
-				}
-				if usrAttrWrVer ||
-					QStateMap[opaUseCases[2]].WrVer ||
-					QStateMap[opaUseCases[3]].WrVer {
-					nxtWriteAttrVersions()
+			nxtLogDebug(nxtMongoDBName, fmt.Sprintf(" DB ChangeEvent: Coll:%s Event:%s\n", coll, changeEvent["operationType"]))
+			// Since we are using only operationTypes Insert, Update, Delete and Replace while updating the DB and the processing
+			// is same for all 4 types, we are not checking for operationTypes here.
+			for i, ucase := range opaUseCases {
+				if initUseCase[i] > 0 {
+					nxtSetupUseCase(ctx, i, ucase)
 				}
 			}
+			if coll == "NxtUserAttr" {
+				nxtProcessUserAttrChanges(ctx)
+
+			}
+			if coll == "NxtAppAttr" {
+				nxtProcessAppAttrChanges(ctx)
+			}
+			if usrAttrWrVer ||
+				QStateMap[opaUseCases[2]].WrVer ||
+				QStateMap[opaUseCases[3]].WrVer {
+				nxtWriteAttrVersions()
+			}
+
 		}
 		nxtLogDebug(nxtMongoDBName, fmt.Sprintf("Watch MongoDB change notification disconnected\n"))
 	}
