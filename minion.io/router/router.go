@@ -751,9 +751,15 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 							opentracing.HTTPHeadersCarrier(httpHdr))
 						if (serr == nil) && (spanCtx != nil) {
 							span := tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host,
-								ext.RPCServerOption(spanCtx))
+								opentracing.FollowsFrom(spanCtx))
 							spaninfo.active = true
 							spaninfo.span = span
+							span.Tracer().Inject(
+								span.Context(),
+								opentracing.HTTPHeaders,
+								opentracing.HTTPHeadersCarrier(httpHdr),
+							)
+							flow.TraceCtx = httpHdr.Get("Uber-Trace-Id")
 						} else {
 							s.Errorf("Error in extracting TraceCtx %s - %v",
 								flow.TraceCtx, serr)
@@ -898,12 +904,18 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 						if (serr == nil) && (spanCtx != nil) {
 							spanActive = true
 							span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host,
-								ext.RPCServerOption(spanCtx))
+								opentracing.FollowsFrom(spanCtx))
 							setSpanTags(span, flow, MyInfo)
 							if !flow.ResponseData {
 								// If cpod, set flow field for Connector
 								// ConnectorPod = <cluster>-<cpodreplica>
 								flow.ConnectorPod = MyInfo.Id + "-" + MyInfo.Host
+								span.Tracer().Inject(
+									span.Context(),
+									opentracing.HTTPHeaders,
+									opentracing.HTTPHeadersCarrier(hhdr),
+								)
+								flow.TraceCtx = hhdr.Get("Uber-Trace-Id")
 							}
 							s.Debugf("Trace: Found span context in stream from %s to %s",
 								flow.Userid, flow.DestAgent)
