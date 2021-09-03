@@ -37,7 +37,7 @@ func lumberjackZapHook(e zapcore.Entry) error {
 func ArgHandler(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
 	inPortPtr := flag.Int("iport", 80, "inside port")
 	outPortPtr := flag.Int("oport", 443, "outside port")
-	healthPortPtr := flag.Int("hport", 8080, "outside port")
+	healthPortPtr := flag.Int("hport", 8080, "consul healthcheck port")
 
 	flag.Parse()
 
@@ -91,6 +91,7 @@ func main() {
 			buf := make([]byte, 1<<16)
 			runtime.Stack(buf, true)
 			sugar.Debugf("%s", buf)
+			router.DumpInfo(sugar)
 		}
 	}()
 

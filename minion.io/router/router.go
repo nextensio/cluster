@@ -1,7 +1,6 @@
 package router
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -27,10 +26,46 @@ import (
 
 	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	jaegercfg "github.com/uber/jaeger-client-go/config"
 	jaegerlog "github.com/uber/jaeger-client-go/log"
-	"github.com/uber/jaeger-lib/metrics/prometheus"
+	jaegermetrics "github.com/uber/jaeger-lib/metrics/prometheus"
 )
+
+// NOTE1: About all the multitude of UUIDs.
+// onboard.userid: This everyone understands - its like foobar@nextensio.net
+//
+// onboard.Uuid: foobar@nextensio.net can have three devices, one laptop, one
+// ipad and one android phone. So when foobar connects to nextensio from all these devices,
+// each device will get a unique id, wihch is onboard.Uuid
+//
+// Suuid: Now foobar connecting from laptop might have multiple tunnels to the cluster - either
+// because we support multiple tunnels from the same device (eventually, not yet), or it can be
+// transient situations where one tunnel is going down and not cleaned up fully while the other
+// tunnel is coming up etc.. - this can very well happen because each tunnel is handled by
+// independent goroutines. Suuid means 'session UUid' - an identifier to the tunnel itself. There
+// can be many flows over the same tunnel.
+
+// NOTE2: About metrics
+// Each user has a totalBytes metric (for now). And the metric has a bunch of labels which will enable
+// to slice and dice the user's traffic based on which service the user is accessing, the direction
+// etc.. Prometheus very CLEARLY says not have label cardinality at the level of a userid or else the
+// time series will bloat and become unmanageable, hence the reason we have a metric per userid and
+// then a few labels underneath
+
+// NOTE3: About the nxthdr.NxtFlow structure and its fields
+// We always keep the flow structure fields (most of it) the same regardless of whether the flow
+// is upstream or downstream - we keep the flow field value the same as it is
+// when  going from agent to connector.
+//
+// The above intent is achieved by ensuring that the data in the "nxthdr.NxtFlow" is preserved
+// when going upstream and coming back. That is, the flow source/dest/port etc.. remains the same
+// value going up and coming down. The two things that gets modified are
+// 1. the SourceAgent/DestAgent: If we look at the connector code, the connector swaps the
+//    SourceAgent/DestAgent before sending a response back to the cpod.
+// 2. The flow.UserCluster and flow.UserPod - the cpod sets it to its own pod information before
+//    sending the response back to apod
 
 type zap2log struct {
 	s *zap.SugaredLogger
@@ -46,23 +81,27 @@ type podInfo struct {
 	tunnel  common.Transport
 }
 
-type dropInfo struct {
-	reason string
-	flow   *nxthdr.NxtFlow
-	myInfo *shared.Params
-}
-
 type agentTunnel struct {
 	tunnel common.Transport
 	suuid  uuid.UUID
 }
 
-type nxtSpan struct {
-	span   opentracing.Span
-	active bool
+type userMetrics struct {
+	count      uint
+	userid     string
+	totalBytes *prometheus.CounterVec
 }
 
-// TODO: The lock is a big fat lock here and is liberally taken during the entire duration
+type deleteMetrics struct {
+	um    *userMetrics
+	flow  *nxthdr.NxtFlow
+	qedAt time.Time
+}
+
+// Default prometheus scrape interval is one minute, we give additional 30 seconds
+const PROM_SCRAPE_TIMER = 90
+
+// TODO: The aLock is a big fat lock here and is liberally taken during the entire duration
 // of an agent add/del operation - including the time spent registering/deregistering with
 // consul etc.. The add and del of an agent can happen in parallel - one agent tunnel might
 // be going down and at the same time a new tunnel from the same agent might be coming up.
@@ -75,6 +114,8 @@ var aLock sync.RWMutex
 var sessions map[uuid.UUID]nxthdr.NxtOnboard
 var agents map[string]*agentTunnel
 var users map[string][]*agentTunnel
+var mLock sync.RWMutex
+var metrics map[string]*userMetrics
 var pLock sync.RWMutex
 var pods map[string]*podInfo
 var unusedChan chan common.NxtStream
@@ -82,22 +123,151 @@ var outsideMsg chan bool
 var insideMsg chan bool
 var routeLock sync.RWMutex
 var localRoutes map[string]*nxthdr.NxtOnboard
-var pakdropReq chan dropInfo
 var totGoroutines int32
 var insideOpen bool
+var pendingLock sync.Mutex
+var pendingFree []*deleteMetrics
 
-// NOTE: About all the multitude of UUIDs.
-// onboard.userid: This everyone understands - its like foobar@nextensio.net
-//
-// onboard.Uuid: foobar@nextensio.net can have three devices, one laptop, one
-// ipad and one android phone. So when foobar connects to nextensio from all these devices,
-// each device will get a unique id, wihch is onboard.Uuid
-//
-// Suuid: Now foobar conneting from laptop might have multiple tunnels to the cluster - either
-// because we support multiple tunnels from the same device (eventually, not yet), or it can be
-// transient situations where one tunnel is going down and not cleaned up fully while the other
-// tunnel is coming up etc.. - this can very well happen because each tunnel is handled by
-// independent goroutines. Suuid means 'session UUid'
+// When the flow is terminated, we have to wait for some time to ensure the stats is
+// collected before we remove the labels/free the counters, we just use a simple
+// pending list for that which is garbage collected every couple of minutes
+func pendingAdd(um *userMetrics, flow *nxthdr.NxtFlow) {
+	pendingLock.Lock()
+	defer pendingLock.Unlock()
+	d := deleteMetrics{
+		um:    um,
+		flow:  flow,
+		qedAt: time.Now(),
+	}
+	pendingFree = append(pendingFree, &d)
+}
+
+func pendingExpired() *deleteMetrics {
+	pendingLock.Lock()
+	defer pendingLock.Unlock()
+	if len(pendingFree) == 0 {
+		return nil
+	}
+	// The head is the oldest flow, if head has not expired, nothing
+	// else has expired
+	elapsed := time.Since(pendingFree[0].qedAt)
+	if elapsed < time.Duration(PROM_SCRAPE_TIMER*time.Second) {
+		return nil
+	}
+	dm := pendingFree[0]
+	pendingFree = pendingFree[1:]
+	return dm
+}
+
+func garbageCollectFlows() {
+	for {
+		for {
+			dm := pendingExpired()
+			if dm == nil {
+				break
+			}
+			metricFlowDel(dm.um, dm.flow)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// The metrics per-user are created when we see a new flow come in from that user
+// (either on apod or cpod, logic is same on both) and we keep a reference count of
+// how many flows are using that userMetric structure (there is a count field there).
+// So for every flow that ends up calling a metricUserGet(), there should be an equivalent
+// metricUserPut() when the flow is done or there is some failure, or else there will
+// be a memory leak of that structure.
+func metricUserNew(s *zap.SugaredLogger, userid string) *userMetrics {
+	var labels = []string{"userid", "service", "destIP", "destPort", "direction"}
+
+	// Prometheus wont allow certain characters in the string as the counter
+	name := strings.Replace(userid, "@", "_", -1)
+	name = strings.Replace(name, ".", "_", -1)
+	name = strings.Replace(name, "-", "_", -1)
+	totalBytes := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bytes_" + name,
+			Help: "Bytes from User to Cloud",
+		}, labels)
+
+	err := prometheus.Register(totalBytes)
+	if err != nil {
+		s.Debugf("Prometheus registration failed", err, userid, name)
+		return nil
+	}
+	m := &userMetrics{count: 1, userid: userid, totalBytes: totalBytes}
+	metrics[userid] = m
+	return m
+}
+
+func metricUserPut(m *userMetrics) {
+	mLock.Lock()
+	defer mLock.Unlock()
+
+	m.count -= 1
+	if m.count != 0 {
+		return
+	}
+	m.totalBytes.Reset()
+	prometheus.Unregister(m.totalBytes)
+	delete(metrics, m.userid)
+}
+
+func metricUserGet(s *zap.SugaredLogger, userid string) *userMetrics {
+	mLock.Lock()
+	defer mLock.Unlock()
+
+	m := metrics[userid]
+	if m == nil {
+		return metricUserNew(s, userid)
+	}
+	m.count++
+
+	return m
+}
+
+func getLabels(flow *nxthdr.NxtFlow) map[string]string {
+	labels := make(map[string]string)
+	labels["userid"] = flow.AgentUuid
+	labels["service"] = flow.DestSvc
+	labels["destIP"] = flow.Dest
+	labels["destPort"] = strconv.FormatUint(uint64(flow.Dport), 10)
+	if !flow.ResponseData {
+		labels["direction"] = "TO_CLOUD"
+	} else {
+		labels["direction"] = "FROM_CLOUD"
+	}
+	return labels
+}
+
+func metricFlowDel(m *userMetrics, flow *nxthdr.NxtFlow) {
+	labels := getLabels(flow)
+	m.totalBytes.Delete(labels)
+	metricUserPut(m)
+}
+
+func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *prometheus.Counter) {
+	// agentUuid is userid:uniqueid
+	user := strings.Split(flow.AgentUuid, ":")
+	if len(user) != 2 {
+		s.Debugf("Bad userid", flow.AgentUuid)
+		return nil, nil
+	}
+	m := metricUserGet(s, user[0])
+	if m == nil {
+		s.Debugf("Cant find prometheus counter vec", flow.AgentUuid)
+		return nil, nil
+	}
+	labels := getLabels(flow)
+	c, e := m.totalBytes.GetMetricWith(labels)
+	if e != nil {
+		metricUserPut(m)
+		s.Debugf("Cant get prometheus counter from labels", labels, flow.AgentUuid)
+		return nil, nil
+	}
+	return m, &c
+}
 
 func sessionAdd(Suuid uuid.UUID, onboard *nxthdr.NxtOnboard) {
 	aLock.Lock()
@@ -398,7 +568,7 @@ func localOneRouteAdd(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxt
 	svc = strings.ReplaceAll(svc, ".", "-")
 	// Multiple agents can login with the same userid, each agent tunnel has a unique uuid
 	if onboard.Agent {
-		svc = svc + onboard.Uuid
+		svc = svc + onboard.Userid + ":" + onboard.Uuid
 	}
 	routeLock.Lock()
 	localRoutes[svc] = onboard
@@ -436,7 +606,7 @@ func localRouteDel(sl *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 
 // Lookup destination stream to send an L4 tcp/udp/http proxy packet on
 func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context,
-	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, spaninfo *nxtSpan) (*nxthdr.NxtOnboard,
+	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, span *opentracing.Span) (*nxthdr.NxtOnboard,
 	common.Transport) {
 	var consul_key, tag string
 	var fwd shared.Fwd
@@ -487,12 +657,10 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 	// Add following headers for stats dimensions:
 	hdrs.Add("x-nextensio-sourceagent", flow.SourceAgent)
 	hdrs.Add("x-nextensio-userid", onboard.Userid)
-	if spaninfo.active {
-		//hdrs.Add("x-envoy-force-trace", "true")  // To ask Envoy to trace - doesn't work
-		//hdrs.Add("x-client-trace-id", uuid.New().String()) // To ask Envoy to trace
-		setSpanTags(spaninfo.span, flow, MyInfo)
-		spaninfo.span.Tracer().Inject(
-			spaninfo.span.Context(),
+	if span != nil {
+		setSpanTags(*span, flow, MyInfo)
+		(*span).Tracer().Inject(
+			(*span).Context(),
 			opentracing.HTTPHeaders,
 			opentracing.HTTPHeadersCarrier(hdrs),
 		)
@@ -551,7 +719,7 @@ func userGetAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard) string {
 }
 
 func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel common.Transport,
-	dest common.Transport, first bool, Suuid uuid.UUID, onboard *nxthdr.NxtOnboard, f *nxthdr.NxtFlow, r string) {
+	dest common.Transport, first bool, Suuid uuid.UUID, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, um *userMetrics, span *opentracing.Span, r string) {
 	tunnel.Close()
 	if dest != nil {
 		dest.Close()
@@ -570,8 +738,11 @@ func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel co
 			}
 		}
 	}
-	if (r != "") && (f != nil) {
-		pakdropReq <- dropInfo{reason: r, flow: f, myInfo: MyInfo}
+	if span != nil {
+		(*span).Finish()
+	}
+	if flow != nil && um != nil {
+		pendingAdd(um, flow)
 	}
 }
 
@@ -630,6 +801,49 @@ func onboardDiff(sl *zap.SugaredLogger, MyInfo *shared.Params, old *nxthdr.NxtOn
 	return nil
 }
 
+func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) *opentracing.Span {
+	if onboard.Agent {
+		// If apod, check if we need to trace this flow
+		tracereq := policy.NxtTraceLookup(atype(onboard), flow.Usrattr)
+		if (tracereq == "no") || (tracereq == "none") {
+			return nil
+		}
+		// some non-default trace request returned, so trace this flow
+		tracer := opentracing.GlobalTracer()
+		span := tracer.StartSpan(MyInfo.Id + "-" + MyInfo.Host)
+		ext.SpanKindRPCClient.Set(span)
+		ext.HTTPUrl.Set(span, "http://"+flow.Dest)
+		ext.HTTPMethod.Set(span, "PUT")
+		// Info to be propagated downstream up to Connector
+		flow.TraceRequestId = tracereq
+		return &span
+	} else {
+		// cpod. Check if this is the return for a traced flow
+		if flow.TraceCtx == "" {
+			return nil
+		}
+		// Create a dummy "uber-trace-id" http header.
+		// Then use it to create a spanCtx
+		httpHdr := make(http.Header)
+		httpHdr.Add("Uber-Trace-Id", flow.TraceCtx)
+		tracer := opentracing.GlobalTracer()
+		spanCtx, serr := tracer.Extract(opentracing.HTTPHeaders,
+			opentracing.HTTPHeadersCarrier(httpHdr))
+		if (serr != nil) || (spanCtx == nil) {
+			return nil
+		}
+		span := tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host,
+			opentracing.FollowsFrom(spanCtx))
+		span.Tracer().Inject(
+			span.Context(),
+			opentracing.HTTPHeaders,
+			opentracing.HTTPHeadersCarrier(httpHdr),
+		)
+		flow.TraceCtx = httpHdr.Get("Uber-Trace-Id")
+		return &span
+	}
+}
+
 // Agent/Connector is trying to connect to minion. The first stream from the agent/connector
 // will be used to onboard AND send L3 data. The next streams on the session will not need
 // onboarding, and they will send L4/Proxy data. There will be one stream per L4/Proxy session,
@@ -649,7 +863,10 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 	var dest common.Transport
 	var bundle *nxthdr.NxtOnboard
 	var userAttr string
-	var spaninfo nxtSpan
+	var span *opentracing.Span
+	var byteCount *prometheus.Counter
+	var um *userMetrics
+	var lastFlow *nxthdr.NxtFlow
 
 	onboard := sessionGet(Suuid)
 	if onboard != nil {
@@ -662,9 +879,13 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 	for {
 		hdr, agentBuf, err := tunnel.Read()
 		if err != nil {
-			streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
+			streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "")
 			s.Debugf("Agent read error - %v", err)
 			return
+		}
+		length := 0
+		for _, b := range agentBuf {
+			length += len(b)
 		}
 
 		switch hdr.Hdr.(type) {
@@ -681,39 +902,40 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				sessionAdd(Suuid, onboard)
 				if e := agentAdd(s, MyInfo, onboard, Suuid, tunnel); e != nil {
 					s.Debugf("Agent add failed, closing tunnels - %v", e)
-					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
+					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "")
 					return
 				}
 			} else {
 				newOnb := hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
 				if e := onboardDiff(s, MyInfo, onboard, newOnb); e != nil {
 					s.Debugf("Onboard diff failed, closing tunnels - %v", e)
-					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, nil, "")
+					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "")
 					return
 				}
 			}
 
 		case *nxthdr.NxtHdr_Flow:
 			flow := hdr.Hdr.(*nxthdr.NxtHdr_Flow).Flow
+			lastFlow = flow
 			if flow.Type == nxthdr.NxtFlow_L3 {
 				s.Debugf("Not expecting anything other than L4 flows at this time")
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent not onboarded")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "Agent not onboarded")
 				return
 			}
 			if first {
 				s.Debugf("We dont expect L4 flows on the first stream")
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent not onboarded")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "Agent not onboarded")
 				return
 			}
 			if onboard == nil {
 				s.Debugf("Agent not onboarded yet")
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Agent not onboarded")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "Agent not onboarded")
 				return
 			}
 			// Indicate to the destination connector which exact agent/connector is originating this flow,
 			// so we can find the right agent/connector in the return path.
 			if !flow.ResponseData {
-				flow.AgentUuid = onboard.Uuid
+				flow.AgentUuid = onboard.Userid + ":" + onboard.Uuid
 				flow.UserCluster = MyInfo.Id
 				flow.UserPod = MyInfo.Host
 			}
@@ -724,57 +946,14 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			flow.Userid = onboard.Userid
 			// Route lookup just one time
 			if dest == nil {
-				if onboard.Agent {
-					// If apod, check if we need to trace this flow
-					tracereq := policy.NxtTraceLookup(atype(onboard), flow.Usrattr)
-					if (tracereq != "no") && (tracereq != "none") {
-						// some non-default trace request returned, so trace this flow
-						tracer := opentracing.GlobalTracer()
-						span := tracer.StartSpan(MyInfo.Id + "-" + MyInfo.Host)
-						spaninfo.span = span
-						spaninfo.active = true
-						ext.SpanKindRPCClient.Set(span)
-						ext.HTTPUrl.Set(span, "http://"+flow.Dest)
-						ext.HTTPMethod.Set(span, "PUT")
-						// Info to be propagated downstream up to Connector
-						flow.TraceRequestId = tracereq
-					}
-				} else {
-					// cpod. Check if this is the return for a traced flow
-					if flow.TraceCtx != "" {
-						// Create a dummy "uber-trace-id" http header.
-						// Then use it to create a spanCtx
-						httpHdr := make(http.Header)
-						httpHdr.Add("Uber-Trace-Id", flow.TraceCtx)
-						tracer := opentracing.GlobalTracer()
-						spanCtx, serr := tracer.Extract(opentracing.HTTPHeaders,
-							opentracing.HTTPHeadersCarrier(httpHdr))
-						if (serr == nil) && (spanCtx != nil) {
-							span := tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host,
-								opentracing.FollowsFrom(spanCtx))
-							spaninfo.active = true
-							spaninfo.span = span
-							span.Tracer().Inject(
-								span.Context(),
-								opentracing.HTTPHeaders,
-								opentracing.HTTPHeadersCarrier(httpHdr),
-							)
-							flow.TraceCtx = httpHdr.Get("Uber-Trace-Id")
-						} else {
-							s.Errorf("Error in extracting TraceCtx %s - %v",
-								flow.TraceCtx, serr)
-						}
-					}
-				}
-				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow, &spaninfo)
+				span = traceAgentFlow(s, MyInfo, onboard, flow)
+				um, byteCount = metricFlowAdd(s, flow)
+				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow, span)
 				// L4 routing failures need to terminate the flow
 				if dest == nil {
 					s.Debugf("Agent flow dest fail: %v", flow)
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard,
-						flow, "Couldn't get destination pod or open stream to it")
-					if spaninfo.active {
-						spaninfo.span.Finish()
-					}
+						lastFlow, um, span, "Couldn't get destination pod or open stream to it")
 					return
 				}
 				s.Debugf("Agent L4 Lookup: flow=%v bundle=%v stream=%v", flow, bundle, dest)
@@ -783,14 +962,16 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				dest.CloseCascade(tunnel)
 			}
 			err := dest.Write(hdr, agentBuf)
-			if spaninfo.active {
-				spaninfo.span.Finish()
-				spaninfo.active = false
-			}
 			if err != nil {
 				s.Debugf("Agent flow write fail: flow=%v, error=%v", flow, err)
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, flow, "Write to Agent failed")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "Write to Agent failed")
 				return
+			}
+			if span != nil {
+				(*span).Finish()
+			}
+			if byteCount != nil {
+				(*byteCount).Add(float64(length))
 			}
 		}
 	}
@@ -814,51 +995,44 @@ func bundleAccessAllowed(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, onboard *nx
 	return true
 }
 
-var nullConn net.Conn = nil
-
-func pakDrop(s *zap.SugaredLogger) {
-	for {
-		select {
-		case info := <-pakdropReq:
-			s.Debugf("Dropping frame from %s - %s", info.flow.SourceAgent, info.reason)
-			continue // until blackhole support is in
-
-			if nullConn == nil {
-				servAddr := strings.Join([]string{"blackhole", strconv.Itoa(10000)}, ":")
-				conn, e := net.Dial("tcp", servAddr)
-				if e != nil {
-					continue
-				}
-				nullConn = conn
-			}
-			reqhdr := []byte("GET / HTTP/1.0")
-			drophdr := []byte("x-nextensio-drop: " + info.reason)
-			// SourceAgentID: NxtFlow.SourceAgent
-			sahdr := []byte("x-nextensio-sourceagent: " + info.flow.SourceAgent)
-			// SourceClusterID: MyInfo.Id
-			schdr := []byte("x-nextensio-sourcecluster: " + info.myInfo.Id)
-			// SourcePodID: MyInfo.Host
-			sphdr := []byte("x-nextensio-sourcepod: " + info.myInfo.Host)
-			clenhdr := []byte("Content-length: 0\r\n\r\n")
-			pak := bytes.Join([][]byte{reqhdr, drophdr, sahdr, schdr, sphdr, clenhdr},
-				[]byte("\r\n"))
-			_, e := nullConn.Write(pak)
-			if e != nil {
-				nullConn.Close()
-				nullConn = nil
-			}
-		}
-	}
-}
-
-func streamFromPodClose(tunnel common.Transport, dest common.Transport, MyInfo *shared.Params, f *nxthdr.NxtFlow, r string) {
+func streamFromPodClose(s *zap.SugaredLogger, tunnel common.Transport, dest common.Transport, MyInfo *shared.Params, flow *nxthdr.NxtFlow, um *userMetrics, span *opentracing.Span, r string) {
 	tunnel.Close()
 	if dest != nil {
 		dest.Close()
 	}
-	if (r != "") && (f != nil) {
-		pakdropReq <- dropInfo{reason: r, flow: f, myInfo: MyInfo}
+	if span != nil {
+		(*span).Finish()
 	}
+	if flow != nil && um != nil {
+		pendingAdd(um, flow)
+	}
+}
+
+func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr.NxtFlow) *opentracing.Span {
+	if flow.TraceCtx == "" {
+		return nil
+	}
+	tracer := opentracing.GlobalTracer()
+	hhdr := make(http.Header)
+	hhdr.Add("Uber-Trace-Id", flow.TraceCtx)
+	spanCtx, serr := tracer.Extract(opentracing.HTTPHeaders,
+		opentracing.HTTPHeadersCarrier(hhdr))
+	if (serr != nil) || (spanCtx == nil) {
+		return nil
+	}
+	span := tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host,
+		opentracing.FollowsFrom(spanCtx))
+	setSpanTags(span, flow, MyInfo)
+	if !flow.ResponseData {
+		span.Tracer().Inject(
+			span.Context(),
+			opentracing.HTTPHeaders,
+			opentracing.HTTPHeadersCarrier(hhdr),
+		)
+		flow.TraceCtx = hhdr.Get("Uber-Trace-Id")
+	}
+	s.Debugf("Trace: Found span context in stream from %s to %s", flow.Userid, flow.DestAgent)
+	return &span
 }
 
 // Handle data that arrives from other pods, the other pod can be on the local cluster or it might be on
@@ -872,8 +1046,10 @@ func streamFromPodClose(tunnel common.Transport, dest common.Transport, MyInfo *
 func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, Suuid uuid.UUID, tunnel common.Transport, httphdrs *http.Header) {
 	var dest common.Transport
 	var onboard *nxthdr.NxtOnboard
-	var span opentracing.Span
-	var spanActive bool
+	var span *opentracing.Span
+	var byteCount *prometheus.Counter
+	var um *userMetrics
+	var lastFlow *nxthdr.NxtFlow
 
 	s.Debugf("New interpod HTTP stream %v - %v", Suuid, httphdrs)
 
@@ -881,63 +1057,39 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 		hdr, podBuf, err := tunnel.Read()
 		if err != nil {
 			s.Debugf("InterPod Error", err)
-			streamFromPodClose(tunnel, dest, MyInfo, nil, "")
+			streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "")
 			return
 		}
+		length := 0
+		for _, b := range podBuf {
+			length += len(b)
+		}
+
 		if hdr.Streamop == nxthdr.NxtHdr_KEEP_ALIVE {
 			// nothing to do
 		} else {
 			switch hdr.Hdr.(type) {
 			case *nxthdr.NxtHdr_Flow:
 				flow := hdr.Hdr.(*nxthdr.NxtHdr_Flow).Flow
+				lastFlow = flow
 				if flow.Type == nxthdr.NxtFlow_L3 {
 					panic("Not expecting anything other than L4 flows at this time")
 				}
 				// Route lookup just one time
 				if dest == nil {
-					if flow.TraceCtx != "" {
-						tracer := opentracing.GlobalTracer()
-						hhdr := make(http.Header)
-						hhdr.Add("Uber-Trace-Id", flow.TraceCtx)
-						spanCtx, serr := tracer.Extract(opentracing.HTTPHeaders,
-							opentracing.HTTPHeadersCarrier(hhdr))
-						if (serr == nil) && (spanCtx != nil) {
-							spanActive = true
-							span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host,
-								opentracing.FollowsFrom(spanCtx))
-							setSpanTags(span, flow, MyInfo)
-							if !flow.ResponseData {
-								// If cpod, set flow field for Connector
-								// ConnectorPod = <cluster>-<cpodreplica>
-								flow.ConnectorPod = MyInfo.Id + "-" + MyInfo.Host
-								span.Tracer().Inject(
-									span.Context(),
-									opentracing.HTTPHeaders,
-									opentracing.HTTPHeadersCarrier(hhdr),
-								)
-								flow.TraceCtx = hhdr.Get("Uber-Trace-Id")
-							}
-							s.Debugf("Trace: Found span context in stream from %s to %s",
-								flow.Userid, flow.DestAgent)
-						}
-					}
+					span = traceInterpodFlow(s, MyInfo, flow)
+					um, byteCount = metricFlowAdd(s, flow)
 					onboard, dest = localRouteLookup(s, MyInfo, flow)
 					if dest == nil {
 						s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
-						streamFromPodClose(tunnel, dest, MyInfo, flow, "Couldn't get destination to agent")
-						if spanActive {
-							span.Finish()
-						}
+						streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Couldn't get destination to agent")
 						return
 					}
 					s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
 					dest = dest.NewStream(nil)
 					if dest == nil {
 						s.Debugf("Interpod: cant open stream on dest tunnel for ", flow.DestAgent)
-						streamFromPodClose(tunnel, dest, MyInfo, flow, "Stream open to agent failed")
-						if spanActive {
-							span.Finish()
-						}
+						streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Stream open to agent failed")
 						return
 					}
 					// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
@@ -945,21 +1097,20 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 					dest.CloseCascade(tunnel)
 				}
 				if !bundleAccessAllowed(s, flow, onboard) {
-					streamFromPodClose(tunnel, dest, MyInfo, flow, "Agent access denied")
-					if spanActive {
-						span.Finish()
-					}
+					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Agent access denied")
 					return
 				}
 				err := dest.Write(hdr, podBuf)
-				if spanActive {
-					span.Finish()
-					spanActive = false
-				}
 				if err != nil {
 					s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
-					streamFromPodClose(tunnel, dest, MyInfo, flow, "Write to destination pod failed")
+					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Write to destination pod failed")
 					return
+				}
+				if span != nil {
+					(*span).Finish()
+				}
+				if byteCount != nil {
+					(*byteCount).Add(float64(length))
 				}
 			}
 		}
@@ -971,15 +1122,17 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	agents = make(map[string]*agentTunnel)
 	users = make(map[string][]*agentTunnel)
 	pods = make(map[string]*podInfo)
+	metrics = make(map[string]*userMetrics)
+	pendingFree = make([]*deleteMetrics, 0)
 	localRoutes = make(map[string]*nxthdr.NxtOnboard)
 	unusedChan = make(chan common.NxtStream)
 	outsideMsg = make(chan bool)
 	insideMsg = make(chan bool)
-	pakdropReq = make(chan dropInfo)
-	go pakDrop(s)
 	go outsideListener(s, MyInfo, ctx, "websocket")
 	go insideListener(s, MyInfo, ctx, "http2")
 	go healthCheck(s, MyInfo, ctx)
+	go metricsHandler()
+	go garbageCollectFlows()
 	// For apods, inside/outside is always open. For cpod, outside is open only
 	// if there is no connector connected to it yet, and inside is open only if
 	// there is a connector connected as of now. In other words, a cpod will accept
@@ -1009,7 +1162,7 @@ func initJaegerTrace(service string, MyInfo *shared.Params, s *zap.SugaredLogger
 	}
 	jLogger := jaegerlog.StdLogger
 	debugLogger := jaegerlog.DebugLogAdapter(jLogger)
-	jMetricsFactory := prometheus.New()
+	jMetricsFactory := jaegermetrics.New()
 	tracer, closer, err := cfg.NewTracer(
 		jaegercfg.Logger(debugLogger),
 		jaegercfg.Metrics(jMetricsFactory),
@@ -1146,4 +1299,38 @@ func healthCheck(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Contex
 		Addr: addr, Handler: mux,
 	}
 	server.ListenAndServe()
+}
+
+func metricsHandler() {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	addr := ":" + strconv.Itoa(8888)
+	server := http.Server{
+		Addr: addr, Handler: mux,
+	}
+	server.ListenAndServe()
+}
+
+func DumpInfo(s *zap.SugaredLogger) {
+	aLock.RLock()
+	s.Debugf("Total Sessions: ", len(sessions))
+	s.Debugf("Total Users: ", len(users))
+	s.Debugf("Total agents: ", len(agents))
+	aLock.Unlock()
+
+	routeLock.RLock()
+	s.Debugf("Total local routes: ", len(localRoutes))
+	routeLock.Unlock()
+
+	pLock.RLock()
+	s.Debugf("Total pods: ", len(pods))
+	pLock.Unlock()
+
+	mLock.RLock()
+	s.Debugf("Total prometheus counters: ", len(metrics))
+	mLock.Unlock()
+
+	pendingLock.Lock()
+	s.Debugf("Total pending free flows: ", len(pendingFree))
+	pendingLock.Unlock()
 }
