@@ -111,24 +111,22 @@ type DataHdr struct {
 
 // Data object to track every use case
 type QState struct {
-	NewVer   bool                   // new version of policy or refdata
-	NewPol   bool                   // new version of rego poloicy
-	NewData  bool                   // new version of reference data
-	WrVer    bool                   // write versions to file (for testing infra)
-	QCreated bool                   // query object created
-	QError   bool                   // error in query state
-	Qry      string                 // the OPA Rego query
-	QUCase   string                 // query use case
-	QryObj   *rego.Rego             // raw query
-	PrepQry  rego.PreparedEvalQuery // compiled query
-	PolType  string                 // key for policy
-	PStruct  Policy                 // Policy struct
-	RegoPol  []byte                 // rego policy
-	LDir     string                 // load directory for OPA
-	DColl    string                 // name of reference data collection
-	HdrKey   string                 // Header doc keys for reference data collections
-	RefHdr   DataHdr                // reference data header doc
-	RefData  []byte                 // reference data
+	NewVer  bool                   // new version of policy or refdata
+	NewPol  bool                   // new version of rego poloicy
+	NewData bool                   // new version of reference data
+	WrVer   bool                   // write versions to file (for testing infra)
+	QError  bool                   // error in query state
+	Qry     string                 // the OPA Rego query
+	QUCase  string                 // query use case
+	PrepQry rego.PreparedEvalQuery // compiled query
+	PolType string                 // key for policy
+	PStruct Policy                 // Policy struct
+	RegoPol []byte                 // rego policy
+	LDir    string                 // load directory for OPA
+	DColl   string                 // name of reference data collection
+	HdrKey  string                 // Header doc keys for reference data collections
+	RefHdr  DataHdr                // reference data header doc
+	RefData []byte                 // reference data
 }
 
 // Info for test cases
@@ -581,11 +579,8 @@ func nxtCheckUseCaseLoading(ctx context.Context, i int, ucase string) {
 		if qs.PStruct.Majver == qs.RefHdr.Majver {
 			nxtPrimeLoadDir(ucase)
 			qs.NewVer = false
-			if !qs.QCreated {
-				qs.QryObj = nxtCreateOpaQry(qs.Qry, qs.LDir)
-				qs.QCreated = true
-			}
-			qs.PrepQry, qs.QError = nxtPrepOpaQry(ctx, qs.QryObj, ucase)
+			QryObj := nxtCreateOpaQry(qs.Qry, qs.LDir)
+			qs.PrepQry, qs.QError = nxtPrepOpaQry(ctx, ucase, QryObj)
 		}
 	}
 }
@@ -1136,7 +1131,7 @@ func nxtCreateOpaQry(query string, ldir string) *rego.Rego {
 }
 
 // Create a prepared query that can be evaluated.
-func nxtPrepOpaQry(ctx context.Context, r *rego.Rego, ucase string) (rego.PreparedEvalQuery, bool) {
+func nxtPrepOpaQry(ctx context.Context, ucase string, r *rego.Rego) (rego.PreparedEvalQuery, bool) {
 
 	rs, err := r.PrepareForEval(ctx)
 	if err != nil {
