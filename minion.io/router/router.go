@@ -969,6 +969,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			}
 			if span != nil {
 				(*span).Finish()
+				span = nil
 			}
 			if byteCount != nil {
 				(*byteCount).Add(float64(length))
@@ -1108,6 +1109,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				}
 				if span != nil {
 					(*span).Finish()
+					span = nil
 				}
 				if byteCount != nil {
 					(*byteCount).Add(float64(length))
