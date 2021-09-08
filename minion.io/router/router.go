@@ -127,6 +127,7 @@ var totGoroutines int32
 var insideOpen bool
 var pendingLock sync.Mutex
 var pendingFree []*deleteMetrics
+var wireTracer opentracing.Tracer
 
 // When the flow is terminated, we have to wait for some time to ensure the stats is
 // collected before we remove the labels/free the counters, we just use a simple
@@ -801,6 +802,17 @@ func onboardDiff(sl *zap.SugaredLogger, MyInfo *shared.Params, old *nxthdr.NxtOn
 	return nil
 }
 
+// This will generate spans for the duration when the packet is on the wire
+// (From agent/pod/connector tunnel write() to tunnel read() of this pod
+func generateOnWireSpan(spanCtx opentracing.SpanContext, flow *nxthdr.NxtFlow, s *zap.SugaredLogger, tracer opentracing.Tracer) {
+	if flow.WireSpanStartTime != "" {
+		var startTime time.Time
+		startTime.UnmarshalJSON([]byte(flow.WireSpanStartTime))
+		span := wireTracer.StartSpan("On Wire", opentracing.StartTime(startTime), opentracing.FollowsFrom(spanCtx))
+		span.Finish()
+	}
+}
+
 func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) *opentracing.Span {
 	if onboard.Agent {
 		// If apod, check if we need to trace this flow
@@ -832,6 +844,9 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 		if (serr != nil) || (spanCtx == nil) {
 			return nil
 		}
+		// Create a dummy span while the packet is on the wire from write() of the agent/connector
+		// to tunnel.read() of this pod
+		generateOnWireSpan(spanCtx, flow, s, tracer)
 		span := tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host,
 			opentracing.FollowsFrom(spanCtx))
 		span.Tracer().Inject(
@@ -961,6 +976,13 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				// the close is cascaded to the other elements connected to the cluster (pods/agents)
 				dest.CloseCascade(tunnel)
 			}
+			var finishT time.Time
+			if span != nil {
+				t := time.Now()
+				byteA, _ := t.MarshalJSON()
+				flow.WireSpanStartTime = string(byteA)
+				finishT = t
+			}
 			err := dest.Write(hdr, agentBuf)
 			if err != nil {
 				s.Debugf("Agent flow write fail: flow=%v, error=%v", flow, err)
@@ -968,7 +990,9 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				return
 			}
 			if span != nil {
-				(*span).Finish()
+				var finishTime opentracing.FinishOptions
+				finishTime.FinishTime = finishT
+				(*span).FinishWithOptions(finishTime)
 				span = nil
 			}
 			if byteCount != nil {
@@ -1021,6 +1045,9 @@ func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr
 	if (serr != nil) || (spanCtx == nil) {
 		return nil
 	}
+	// Create a dummy span while the packet is on the wire from dest.write() of the previous
+	// pod to tunnel.read() on this pod.
+	generateOnWireSpan(spanCtx, flow, s, tracer)
 	span := tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host,
 		opentracing.FollowsFrom(spanCtx))
 	setSpanTags(span, flow, MyInfo)
@@ -1101,14 +1128,24 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Agent access denied")
 					return
 				}
+				var finishT time.Time
+				if span != nil {
+					t := time.Now()
+					byteA, _ := t.MarshalJSON()
+					flow.WireSpanStartTime = string(byteA)
+					finishT = t
+				}
 				err := dest.Write(hdr, podBuf)
+
 				if err != nil {
 					s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
 					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Write to destination pod failed")
 					return
 				}
 				if span != nil {
-					(*span).Finish()
+					var finishTime opentracing.FinishOptions
+					finishTime.FinishTime = finishT
+					(*span).FinishWithOptions(finishTime)
 					span = nil
 				}
 				if byteCount != nil {
@@ -1151,7 +1188,11 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	}
 }
 
-func initJaegerTrace(service string, MyInfo *shared.Params, s *zap.SugaredLogger) io.Closer {
+func InitJaegerTrace(service string, MyInfo *shared.Params, s *zap.SugaredLogger, onWire bool) io.Closer {
+	var tracer opentracing.Tracer
+	var closer io.Closer
+	var err error
+
 	cfg := &jaegercfg.Configuration{
 		ServiceName: service,
 		Sampler: &jaegercfg.SamplerConfig{
@@ -1165,16 +1206,24 @@ func initJaegerTrace(service string, MyInfo *shared.Params, s *zap.SugaredLogger
 	jLogger := jaegerlog.StdLogger
 	debugLogger := jaegerlog.DebugLogAdapter(jLogger)
 	jMetricsFactory := jaegermetrics.New()
-	tracer, closer, err := cfg.NewTracer(
-		jaegercfg.Logger(debugLogger),
-		jaegercfg.Metrics(jMetricsFactory),
-	)
+	if onWire {
+		tracer, closer, err = cfg.NewTracer(jaegercfg.Logger(debugLogger))
+	} else {
+		tracer, closer, err = cfg.NewTracer(
+			jaegercfg.Logger(debugLogger),
+			jaegercfg.Metrics(jMetricsFactory),
+		)
+	}
 	if err != nil {
 		s.Errorf("JaegerTraceInit Failed - %v", err)
 		cfg.Disabled = true
 		tracer, closer, err = cfg.NewTracer()
 	}
-	opentracing.SetGlobalTracer(tracer)
+	if onWire {
+		wireTracer = tracer
+	} else {
+		opentracing.SetGlobalTracer(tracer)
+	}
 	return closer
 }
 
@@ -1188,7 +1237,7 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 	var closer io.Closer
 
 	if MyInfo.PodType == "apod" {
-		closer = initJaegerTrace(MyInfo.Namespace+"-trace", MyInfo, s)
+		closer = InitJaegerTrace(MyInfo.Namespace+"-trace", MyInfo, s, false)
 		if closer != nil {
 			defer closer.Close()
 		}
@@ -1231,7 +1280,7 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 	var closer io.Closer
 
 	if MyInfo.PodType != "apod" {
-		closer = initJaegerTrace(MyInfo.Namespace+"-trace", MyInfo, s)
+		closer = InitJaegerTrace(MyInfo.Namespace+"-trace", MyInfo, s, false)
 		if closer != nil {
 			defer closer.Close()
 		}

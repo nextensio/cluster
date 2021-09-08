@@ -19,7 +19,7 @@ require (
 	github.com/uber/jaeger-client-go v2.29.1+incompatible
 	github.com/uber/jaeger-lib v2.4.1+incompatible
 	gitlab.com/nextensio/common v0.0.0-20210823213928-d19c3ae409b9 // indirect
-	gitlab.com/nextensio/common/go v0.0.0-20210902182420-a728c5caaaf1
+	gitlab.com/nextensio/common/go v0.0.0-20210907221926-2e49b198400b
 	go.mongodb.org/mongo-driver v1.4.1
 	go.uber.org/zap v1.15.0
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
