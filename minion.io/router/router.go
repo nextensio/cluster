@@ -16,7 +16,6 @@ import (
 	"gitlab.com/nextensio/common/go/messages/nxthdr"
 	nhttp2 "gitlab.com/nextensio/common/go/transport/http2"
 	websock "gitlab.com/nextensio/common/go/transport/websocket"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.uber.org/zap"
 	"minion.io/consul"
 	"minion.io/policy"
@@ -699,24 +698,10 @@ func setSpanTags(span opentracing.Span, flow *nxthdr.NxtFlow, MyInfo *shared.Par
 	span.SetTag("nxt-trace-userid", flow.Userid)
 }
 
-func getExtAttr(onboard *nxthdr.NxtOnboard) primitive.M {
-	extAttr := make(map[string]interface{})
-	extAttr["_hostname"] = onboard.Hostname
-	extAttr["_model"] = onboard.Model
-	extAttr["_osType"] = onboard.OsType
-	extAttr["_osName"] = onboard.OsName
-	extAttr["_osPatch"] = onboard.OsPatch
-	extAttr["_osMajor"] = onboard.OsMajor
-	extAttr["_osMinor"] = onboard.OsMinor
-
-	return extAttr
-}
-
 func userGetAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard) string {
 
-	usrattr := policy.NxtGetUsrAttr(atype(onboard), onboard.Userid, getExtAttr(onboard))
+	usrattr := policy.NxtGetUsrAttr(atype(onboard), onboard.Userid, onboard.Attributes)
 	return usrattr
-
 }
 
 func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel common.Transport,
