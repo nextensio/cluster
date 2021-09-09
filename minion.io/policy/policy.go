@@ -235,15 +235,23 @@ func NxtUsrLeave(which string, userid string) {
 	}
 }
 
-// Get user attributes only on Apod. Passed to Cpod via flow header.
-func NxtGetUsrAttr(which string, userid string, extattr primitive.M) string {
-	if !initDone {
-		return nxtConvertToJSONString(extattr)
-	}
+// Get user attributes on Apod. Passed to Cpod via flow header.
+func NxtGetUsrAttr(which string, userid string, extattr string) string {
+	var uajson []byte
+	var uabson, extbson primitive.M
+	var err error
 	// Don't check mongoInitDone as we may have the data in local cache
 	// The call handles the case where mongo init not done and data not in local cache
-	var uajson []byte
-	var uabson primitive.M
+	if extattr != "" {
+		if err = json.Unmarshal([]byte(extattr), &extbson); err != nil {
+			nxtLogError("AgentAttributes",
+				fmt.Sprintf("JSON unmarshal error (%v) for "+extattr, err))
+			extattr = ""
+		}
+	}
+	if !initDone {
+		return extattr
+	}
 	if which == "agent" {
 		uajson, _ = nxtGetUserAttr(userid)
 	} else {
@@ -253,11 +261,11 @@ func NxtGetUsrAttr(which string, userid string, extattr primitive.M) string {
 	// the code is changed to return a byte array so we can unmarshal into our own map
 	// struct for modifications. Helps avoid the possibility of inadvertently modifying
 	// the underlying common map structure in a multiple threads/multiple users case.
-	if err := json.Unmarshal(uajson, &uabson); err != nil {
+	if err = json.Unmarshal(uajson, &uabson); err != nil {
 		nxtLogError("UserAttributes", fmt.Sprintf("JSON unmarshal error - %v", err))
-		return nxtConvertToJSONString(extattr)
+		return extattr
 	}
-	for k, v := range extattr {
+	for k, v := range extbson {
 		uabson[k] = v
 	}
 	return nxtConvertToJSONString(uabson)
