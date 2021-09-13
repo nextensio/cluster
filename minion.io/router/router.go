@@ -890,13 +890,6 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 
 		switch hdr.Hdr.(type) {
 		case *nxthdr.NxtHdr_Onboard:
-			// The handshake is that we get onboard info and we write it back. This is only
-			// if the transport is non reliable like dtls, so the other end knows we received
-			// the onboard info. We should not have to do this for reliable transport
-			err := tunnel.Write(hdr, agentBuf)
-			if err != nil {
-				s.Debugf("Handshake failed")
-			}
 			if onboard == nil {
 				onboard = hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
 				sessionAdd(Suuid, onboard)
@@ -912,6 +905,13 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "")
 					return
 				}
+			}
+			// The handshake is that we get onboard info and we send back an onboard info
+			// with data that agent might need
+			onboard.JaegerCollector = MyInfo.JaegerCollector
+			err := tunnel.Write(hdr, agentBuf)
+			if err != nil {
+				s.Debugf("Handshake failed")
 			}
 
 		case *nxthdr.NxtHdr_Flow:
