@@ -789,13 +789,15 @@ func onboardDiff(sl *zap.SugaredLogger, MyInfo *shared.Params, old *nxthdr.NxtOn
 
 // This will generate spans for the duration when the packet is on the wire
 // (From agent/pod/connector tunnel write() to tunnel read() of this pod
-func generateOnWireSpan(spanCtx opentracing.SpanContext, flow *nxthdr.NxtFlow, s *zap.SugaredLogger, tracer opentracing.Tracer) {
+func generateOnWireSpan(spanCtx opentracing.SpanContext, flow *nxthdr.NxtFlow, s *zap.SugaredLogger, tracer opentracing.Tracer) *opentracing.Span {
 	if flow.WireSpanStartTime != "" {
 		var startTime time.Time
 		startTime.UnmarshalJSON([]byte(flow.WireSpanStartTime))
 		span := wireTracer.StartSpan("On Wire", opentracing.StartTime(startTime), opentracing.FollowsFrom(spanCtx))
 		span.Finish()
+		return &span
 	}
+	return nil
 }
 
 func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) *opentracing.Span {
@@ -815,6 +817,7 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 		flow.TraceRequestId = tracereq
 		return &span
 	} else {
+		var span opentracing.Span
 		// cpod. Check if this is the return for a traced flow
 		if flow.TraceCtx == "" {
 			return nil
@@ -831,9 +834,13 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 		}
 		// Create a dummy span while the packet is on the wire from write() of the agent/connector
 		// to tunnel.read() of this pod
-		generateOnWireSpan(spanCtx, flow, s, tracer)
-		span := tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host,
-			opentracing.FollowsFrom(spanCtx))
+		wSpan := generateOnWireSpan(spanCtx, flow, s, tracer)
+		// Note: Call to wSpan.Context() is still valid after wSpan.Finish() according to docs.
+		if wSpan != nil {
+			span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.FollowsFrom((*wSpan).Context()))
+		} else {
+			span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.FollowsFrom(spanCtx))
+		}
 		span.Tracer().Inject(
 			span.Context(),
 			opentracing.HTTPHeaders,
@@ -1019,6 +1026,7 @@ func streamFromPodClose(s *zap.SugaredLogger, tunnel common.Transport, dest comm
 }
 
 func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr.NxtFlow) *opentracing.Span {
+	var span opentracing.Span
 	if flow.TraceCtx == "" {
 		return nil
 	}
@@ -1032,9 +1040,13 @@ func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr
 	}
 	// Create a dummy span while the packet is on the wire from dest.write() of the previous
 	// pod to tunnel.read() on this pod.
-	generateOnWireSpan(spanCtx, flow, s, tracer)
-	span := tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host,
-		opentracing.FollowsFrom(spanCtx))
+	wSpan := generateOnWireSpan(spanCtx, flow, s, tracer)
+	// Note: Call to wSpan.Context() below is still valid after wSpan.Finish() according to Jaeger trace docs.
+	if wSpan != nil {
+		span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.FollowsFrom((*wSpan).Context()))
+	} else {
+		span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.FollowsFrom(spanCtx))
+	}
 	setSpanTags(span, flow, MyInfo)
 	if !flow.ResponseData {
 		span.Tracer().Inject(
