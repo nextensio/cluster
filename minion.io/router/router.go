@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -916,9 +915,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			}
 			// The handshake is that we get onboard info and we send back an onboard info
 			// with data that agent might need
-			reNspc := regexp.MustCompile(`REPLACE_NAMESPACE`)
-			nspcRepl := reNspc.ReplaceAllString(MyInfo.JaegerCollector, MyInfo.Namespace)
-			onboard.JaegerCollector = nspcRepl
+			onboard.JaegerCollector = MyInfo.JaegerCollector
 			err := tunnel.Write(hdr, agentBuf)
 			if err != nil {
 				s.Debugf("Handshake failed")
