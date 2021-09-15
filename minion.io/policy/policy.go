@@ -1078,18 +1078,24 @@ func nxtEvalUserTracing(ucase string, uattr string) string {
 	// Create {"user": { <user attribute key-value pairs> }}
 
 	if ucase != QStateMap[ucase].QUCase {
-		return "0"
+		return "{\"no\": []}"
 	}
 	if QStateMap[ucase].QError {
 		nxtLogError(ucase, "Qstate error for trace query")
-		return "0"
+		return "{\"no\": []}"
 	}
 	rs, ok := nxtExecOpaQry(nxtEvalTracingInputJSON(uattr), ucase)
 	if ok {
-		return fmt.Sprintf("%v", rs[0].Expressions[0].Value)
+		jsonResp, merr := json.Marshal(rs[0].Expressions[0].Value)
+		if merr != nil {
+			nxtLogError("JSON-marshal", fmt.Sprintf("%v for %v", merr,
+				rs[0].Expressions[0].Value))
+			return "{\"no\": []}"
+		}
+		return string(jsonResp)
 	}
 	nxtLogError(ucase, "Trace query execution failure")
-	return "0"
+	return "{\"no\": []}"
 }
 
 func nxtEvalTracingInputJSON(uajson string) []byte {

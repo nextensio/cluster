@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -692,10 +693,22 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 }
 
 func setSpanTags(span opentracing.Span, flow *nxthdr.NxtFlow, MyInfo *shared.Params) {
-	span.SetTag("nxt-trace-requestid", flow.TraceRequestId)
+	spanuattrs := make(map[string]interface{})
+	tReq := strings.SplitN(flow.TraceRequestId, ":", 2)
+	span.SetTag("nxt-trace-requestid", tReq[0])
 	span.SetTag("nxt-trace-source", MyInfo.Id+"-"+MyInfo.Host)
 	span.SetTag("nxt-trace-destagent", flow.DestAgent)
 	span.SetTag("nxt-trace-userid", flow.Userid)
+	if (len(tReq) > 1) && (len(tReq[1]) > 1) { // there is a json string ?
+		err := json.Unmarshal([]byte(tReq[1]), &spanuattrs)
+		if err == nil {
+			for attr, val := range spanuattrs {
+				if attr != "" {
+					span.SetTag("nxt-trace-user-"+attr, val)
+				}
+			}
+		}
+	}
 }
 
 func userGetAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard) string {
@@ -800,12 +813,62 @@ func generateOnWireSpan(spanCtx opentracing.SpanContext, flow *nxthdr.NxtFlow, s
 	return nil
 }
 
+func traceAttrListJson(s *zap.SugaredLogger, userattrs string, traceattrs []string) string {
+	uattr := make(map[string]interface{})
+	truattr := make(map[string]interface{})
+	err := json.Unmarshal([]byte(userattrs), &uattr)
+	if err != nil {
+		s.Errorf("traceAttrListJson: user attributes unmarshal error - %v", err)
+		return ""
+	}
+	if (traceattrs[0] == "all") || (traceattrs[0] == "*") {
+		// get all user attributes
+		for k, val := range uattr {
+			truattr[k] = val
+		}
+	} else {
+		// get specified valid user attributes
+		for _, attr := range traceattrs {
+			val, ok := uattr[attr]
+			if ok {
+				truattr[attr] = val
+			}
+		}
+	}
+	jsonlist, merr := json.Marshal(truattr)
+	if merr != nil {
+		s.Errorf("traceAttrListJson: trace attributes list marshal error - %v", merr)
+	}
+	return string(jsonlist)
+}
+
 func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) *opentracing.Span {
 	if onboard.Agent {
+		var attrs []string
+		var tracereq string
+		treqinfo := make(map[string][]string)
 		// If apod, check if we need to trace this flow
-		tracereq := policy.NxtTraceLookup(atype(onboard), flow.Usrattr)
-		if (tracereq == "no") || (tracereq == "none") {
-			return nil
+		traceresult := policy.NxtTraceLookup(atype(onboard), flow.Usrattr)
+		s.Debugf("traceAgentFlow: traceresult = %v", traceresult)
+		// traceresult can be in one of two forms :
+		// 1) {<requestId>: [<optional list of user attributes as span tags]}
+		//    Note: if <requestid> is "no" or "none", user attribute list is
+		//          don't care (should be empty)
+		// 2) <requestid>  (this is for backward compatibility)
+		err := json.Unmarshal([]byte(traceresult), &treqinfo)
+		if err != nil {
+			s.Debugf("traceAgentFlow: trace result unmarshal error %v", err)
+			// Must be original format where policy returns just requestid
+			err = json.Unmarshal([]byte(traceresult), &tracereq)
+			treqinfo[tracereq] = []string{""}
+		}
+		for tracereq, attrs = range treqinfo {
+			if (tracereq == "no") || (tracereq == "none") {
+				s.Debugf("traceAgentFlow: %s trace request matched for this flow", tracereq)
+				return nil
+			}
+			flow.TraceRequestId = tracereq + ": " + traceAttrListJson(s, flow.Usrattr, attrs)
+			break
 		}
 		// some non-default trace request returned, so trace this flow
 		tracer := opentracing.GlobalTracer()
@@ -814,7 +877,6 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 		ext.HTTPUrl.Set(span, "http://"+flow.Dest)
 		ext.HTTPMethod.Set(span, "PUT")
 		// Info to be propagated downstream up to Connector
-		flow.TraceRequestId = tracereq
 		return &span
 	} else {
 		var span opentracing.Span
