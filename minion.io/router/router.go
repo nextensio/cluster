@@ -708,6 +708,13 @@ func setSpanTags(span opentracing.Span, flow *nxthdr.NxtFlow, MyInfo *shared.Par
 				}
 			}
 		}
+		// Spit out the user attribute tags only in the very first span.
+		// After that, reset TraceRequestId to have just the request id
+		// so that the cpod and connector do not see the json string with
+		// user attributes.
+		if !flow.ResponseData {
+			flow.TraceRequestId = tReq[0]
+		}
 	}
 }
 
