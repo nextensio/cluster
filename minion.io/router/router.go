@@ -943,9 +943,8 @@ func onboardDiff(sl *zap.SugaredLogger, MyInfo *shared.Params, old *nxthdr.NxtOn
 // This will generate spans for the duration when the packet is on the wire
 // (From agent/pod/connector tunnel write() to tunnel read() of this pod
 func generateOnWireSpan(spanCtx opentracing.SpanContext, flow *nxthdr.NxtFlow, s *zap.SugaredLogger, tracer opentracing.Tracer) *opentracing.Span {
-	if flow.WireSpanStartTime != "" {
-		var startTime time.Time
-		startTime.UnmarshalJSON([]byte(flow.WireSpanStartTime))
+	if flow.WireSpanStartTime != 0 {
+		var startTime = time.Unix(0, int64(flow.WireSpanStartTime))
 		span := wireTracer.StartSpan("On Wire", opentracing.StartTime(startTime), opentracing.FollowsFrom(spanCtx))
 		span.Finish()
 		return &span
@@ -1098,6 +1097,9 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		}
 
 		switch hdr.Hdr.(type) {
+		case *nxthdr.NxtHdr_Trace:
+			trace := hdr.Hdr.(*nxthdr.NxtHdr_Trace).Trace
+			s.Debugf("Got trace {}", trace)
 		case *nxthdr.NxtHdr_Onboard:
 			if onboard == nil {
 				onboard = hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
@@ -1171,12 +1173,10 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				// the close is cascaded to the other elements connected to the cluster (pods/agents)
 				dest.CloseCascade(tunnel)
 			}
-			var finishT time.Time
+			var finishT int64
 			if span != nil {
-				t := time.Now()
-				byteA, _ := t.MarshalJSON()
-				flow.WireSpanStartTime = string(byteA)
-				finishT = t
+				finishT = time.Now().UnixNano()
+				flow.WireSpanStartTime = uint64(finishT)
 			}
 			err := dest.Write(hdr, agentBuf)
 			if err != nil {
@@ -1186,7 +1186,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			}
 			if span != nil {
 				var finishTime opentracing.FinishOptions
-				finishTime.FinishTime = finishT
+				finishTime.FinishTime = time.Unix(0, finishT)
 				(*span).FinishWithOptions(finishTime)
 				span = nil
 			}
@@ -1328,12 +1328,10 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Agent access denied")
 					return
 				}
-				var finishT time.Time
+				var finishT int64
 				if span != nil {
-					t := time.Now()
-					byteA, _ := t.MarshalJSON()
-					flow.WireSpanStartTime = string(byteA)
-					finishT = t
+					finishT = time.Now().UnixNano()
+					flow.WireSpanStartTime = uint64(finishT)
 				}
 				err := dest.Write(hdr, podBuf)
 
@@ -1344,7 +1342,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				}
 				if span != nil {
 					var finishTime opentracing.FinishOptions
-					finishTime.FinishTime = finishT
+					finishTime.FinishTime = time.Unix(0, finishT)
 					(*span).FinishWithOptions(finishTime)
 					span = nil
 				}
