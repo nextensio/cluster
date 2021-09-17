@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -90,12 +91,18 @@ type userMetrics struct {
 	count      uint
 	userid     string
 	totalBytes *prometheus.CounterVec
+	attr       *prometheus.CounterVec
 }
 
 type deleteMetrics struct {
 	um    *userMetrics
 	flow  *nxthdr.NxtFlow
 	qedAt time.Time
+}
+
+type flowMetrics struct {
+	bytes *prometheus.Counter
+	attr  *prometheus.Counter
 }
 
 // Default prometheus scrape interval is one minute, we give additional 30 seconds
@@ -160,17 +167,86 @@ func pendingExpired() *deleteMetrics {
 	return dm
 }
 
-func garbageCollectFlows() {
+func garbageCollectFlows(s *zap.SugaredLogger) {
 	for {
 		for {
 			dm := pendingExpired()
 			if dm == nil {
 				break
 			}
-			metricFlowDel(dm.um, dm.flow)
+			metricFlowDel(s, dm.um, dm.flow)
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// Build the User Attribute Metrics labels name:value map used to instantiate,
+// identify and manage the prometheus metrics. These labels provide dimensions
+// for the metrics that are based on nextensio user attributes defined at the
+// controller and thus obtained at runtime.  Note that presently this is done
+// once - when the user stream is first created. Still TBD is supporting
+// updates to these attributes during the lifetime of the stream.
+func userAttrMetricsLabelInit(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) map[string]string {
+	var uaLabels map[string]interface{}
+	var uaLabelMap = make(map[string]string)
+
+	if flow.Usrattr == "" {
+		s.Debugf("UAM - No flow.Usrattr")
+		return nil
+	}
+
+	uab := []byte(flow.Usrattr)
+	err := json.Unmarshal(uab, &uaLabels)
+	if err != nil {
+		s.Debugf("Error decoding attributes", err)
+		return nil
+	}
+
+	for lname, lvalue := range uaLabels {
+		switch tlvalue := lvalue.(type) {
+		case string:
+			uaLabelMap[lname] = tlvalue
+		case bool:
+			uaLabelMap[lname] = strconv.FormatBool(tlvalue)
+		case float64:
+			uaLabelMap[lname] = strconv.FormatFloat(tlvalue, 'f', 2, 64)
+		case float32:
+			uaLabelMap[lname] = strconv.FormatFloat(float64(tlvalue), 'f', 2, 32)
+		case int64:
+			uaLabelMap[lname] = strconv.FormatInt(tlvalue, 10)
+		case int32:
+			uaLabelMap[lname] = strconv.FormatInt(int64(tlvalue), 10)
+		case []interface{}:
+			// We have an array of values of type "one of the above". Presently
+			// it isn't clear what the best way to handle these is. A
+			// couple options: 1) make a single string value
+			// by appending the N array elements together 2) take just one.
+			// For now implementing the former.
+			var sbLabelValue bytes.Buffer
+			for _, v := range tlvalue {
+				switch tv := v.(type) {
+				case string:
+					sbLabelValue.WriteString(tv + ",")
+				case bool:
+					sbLabelValue.WriteString(strconv.FormatBool(tv) + ",")
+				case float64:
+					sbLabelValue.WriteString(strconv.FormatFloat(tv, 'f', 2, 64) + ",")
+				case float32:
+					sbLabelValue.WriteString(strconv.FormatFloat(float64(tv), 'f', 2, 32) + ",")
+				case int64:
+					sbLabelValue.WriteString(strconv.FormatInt(tv, 10) + ",")
+				case int32:
+					sbLabelValue.WriteString(strconv.FormatInt(int64(tv), 10) + ",")
+				default:
+					s.Debugf("UAM-Only one level of User Attribute nesting supported")
+				}
+			}
+			uaLabelMap[lname] = sbLabelValue.String()
+		default:
+			s.Debugf("UAM-%v is an unexpected type that needs handling", tlvalue)
+		}
+	}
+	return uaLabelMap
 }
 
 // The metrics per-user are created when we see a new flow come in from that user
@@ -179,7 +255,7 @@ func garbageCollectFlows() {
 // So for every flow that ends up calling a metricUserGet(), there should be an equivalent
 // metricUserPut() when the flow is done or there is some failure, or else there will
 // be a memory leak of that structure.
-func metricUserNew(s *zap.SugaredLogger, userid string) *userMetrics {
+func metricUserNew(s *zap.SugaredLogger, userid string, uamLabels map[string]string) *userMetrics {
 	var labels = []string{"userid", "service", "destIP", "destPort", "direction"}
 
 	// Prometheus wont allow certain characters in the string as the counter
@@ -189,7 +265,7 @@ func metricUserNew(s *zap.SugaredLogger, userid string) *userMetrics {
 	totalBytes := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bytes_" + name,
-			Help: "Bytes from User to Cloud",
+			Help: "User Data Bytes",
 		}, labels)
 
 	err := prometheus.Register(totalBytes)
@@ -197,7 +273,35 @@ func metricUserNew(s *zap.SugaredLogger, userid string) *userMetrics {
 		s.Debugf("Prometheus registration failed", err, userid, name)
 		return nil
 	}
-	m := &userMetrics{count: 1, userid: userid, totalBytes: totalBytes}
+
+	// TODO: attributes for a user can change on the fly, so the registration
+	// here will need to be re-done when that happens
+	// (https://gitlab.com/nextensio/cluster/-/issues/41)
+	var uamLabelNames []string
+	// We only need the names for registration
+	for l := range uamLabels {
+		uamLabelNames = append(uamLabelNames, l)
+	}
+
+	var attr *prometheus.CounterVec
+	if uamLabelNames != nil {
+		// Now register the metric w/prometheus
+		attr = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name:        "attributes_" + name,
+				Help:        "User Attributes",
+				ConstLabels: prometheus.Labels{},
+			}, uamLabelNames)
+		err = prometheus.Register(attr)
+		if err != nil {
+			s.Debugf("Prometheus UAMetric registration failed(%v) ", err)
+			prometheus.Unregister(totalBytes)
+			return nil
+		}
+	}
+
+	m := &userMetrics{count: 1, userid: userid, totalBytes: totalBytes, attr: attr}
+
 	metrics[userid] = m
 	return m
 }
@@ -212,16 +316,21 @@ func metricUserPut(m *userMetrics) {
 	}
 	m.totalBytes.Reset()
 	prometheus.Unregister(m.totalBytes)
+	if m.attr != nil {
+		m.attr.Reset()
+		prometheus.Unregister(m.attr)
+	}
+
 	delete(metrics, m.userid)
 }
 
-func metricUserGet(s *zap.SugaredLogger, userid string) *userMetrics {
+func metricUserGet(s *zap.SugaredLogger, userid string, uamLabels map[string]string) *userMetrics {
 	mLock.Lock()
 	defer mLock.Unlock()
 
 	m := metrics[userid]
 	if m == nil {
-		return metricUserNew(s, userid)
+		return metricUserNew(s, userid, uamLabels)
 	}
 	m.count++
 
@@ -242,20 +351,35 @@ func getLabels(flow *nxthdr.NxtFlow) map[string]string {
 	return labels
 }
 
-func metricFlowDel(m *userMetrics, flow *nxthdr.NxtFlow) {
+func incrMetrics(fm *flowMetrics, length int) {
+
+	if fm.bytes != nil {
+		(*fm.bytes).Add(float64(length))
+	}
+	if fm.attr != nil {
+		(*fm.attr).Inc()
+	}
+}
+
+func metricFlowDel(s *zap.SugaredLogger, m *userMetrics, flow *nxthdr.NxtFlow) {
 	labels := getLabels(flow)
 	m.totalBytes.Delete(labels)
+	if m.attr != nil {
+		uamLabels := userAttrMetricsLabelInit(s, flow)
+		m.attr.Delete(uamLabels)
+	}
 	metricUserPut(m)
 }
 
-func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *prometheus.Counter) {
+func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *flowMetrics) {
 	// agentUuid is userid:uniqueid
 	user := strings.Split(flow.AgentUuid, ":")
 	if len(user) != 2 {
 		s.Debugf("Bad userid", flow.AgentUuid)
 		return nil, nil
 	}
-	m := metricUserGet(s, user[0])
+	uamLabels := userAttrMetricsLabelInit(s, flow)
+	m := metricUserGet(s, user[0], uamLabels)
 	if m == nil {
 		s.Debugf("Cant find prometheus counter vec", flow.AgentUuid)
 		return nil, nil
@@ -267,7 +391,16 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *p
 		s.Debugf("Cant get prometheus counter from labels", labels, flow.AgentUuid)
 		return nil, nil
 	}
-	return m, &c
+	var attr *prometheus.Counter
+	if m.attr != nil {
+		a, err := m.attr.GetMetricWith(uamLabels)
+		if err != nil {
+			s.Debugf("Error getting attr metric", err)
+		} else {
+			attr = &a
+		}
+	}
+	return m, &flowMetrics{bytes: &c, attr: attr}
 }
 
 func sessionAdd(Suuid uuid.UUID, onboard *nxthdr.NxtOnboard) {
@@ -782,7 +915,7 @@ func onboardDiff(sl *zap.SugaredLogger, MyInfo *shared.Params, old *nxthdr.NxtOn
 		}
 	}
 
-	sl.Debugf("Adding and Deleting:", add, del)
+	sl.Debugf("Adding-%s and Deleting-%s", add, del)
 
 	for _, s := range add {
 		localOneRouteAdd(sl, MyInfo, new, s)
@@ -940,9 +1073,9 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 	var bundle *nxthdr.NxtOnboard
 	var userAttr string
 	var span *opentracing.Span
-	var byteCount *prometheus.Counter
 	var um *userMetrics
 	var lastFlow *nxthdr.NxtFlow
+	var fm *flowMetrics
 
 	onboard := sessionGet(Suuid)
 	if onboard != nil {
@@ -1018,12 +1151,13 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			if userAttr == "" {
 				userAttr = userGetAttrs(s, onboard)
 			}
+
 			flow.Usrattr = userAttr
 			flow.Userid = onboard.Userid
 			// Route lookup just one time
 			if dest == nil {
 				span = traceAgentFlow(s, MyInfo, onboard, flow)
-				um, byteCount = metricFlowAdd(s, flow)
+				um, fm = metricFlowAdd(s, flow)
 				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow, span)
 				// L4 routing failures need to terminate the flow
 				if dest == nil {
@@ -1056,8 +1190,8 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				(*span).FinishWithOptions(finishTime)
 				span = nil
 			}
-			if byteCount != nil {
-				(*byteCount).Add(float64(length))
+			if fm != nil {
+				incrMetrics(fm, length)
 			}
 		}
 	}
@@ -1141,8 +1275,8 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 	var dest common.Transport
 	var onboard *nxthdr.NxtOnboard
 	var span *opentracing.Span
-	var byteCount *prometheus.Counter
 	var um *userMetrics
+	var fm *flowMetrics
 	var lastFlow *nxthdr.NxtFlow
 
 	s.Debugf("New interpod HTTP stream %v - %v", Suuid, httphdrs)
@@ -1172,7 +1306,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				// Route lookup just one time
 				if dest == nil {
 					span = traceInterpodFlow(s, MyInfo, flow)
-					um, byteCount = metricFlowAdd(s, flow)
+					um, fm = metricFlowAdd(s, flow)
 					onboard, dest = localRouteLookup(s, MyInfo, flow)
 					if dest == nil {
 						s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
@@ -1214,8 +1348,8 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 					(*span).FinishWithOptions(finishTime)
 					span = nil
 				}
-				if byteCount != nil {
-					(*byteCount).Add(float64(length))
+				if fm != nil {
+					incrMetrics(fm, length)
 				}
 			}
 		}
@@ -1233,11 +1367,12 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	unusedChan = make(chan common.NxtStream)
 	outsideMsg = make(chan bool)
 	insideMsg = make(chan bool)
+
 	go outsideListener(s, MyInfo, ctx, "websocket")
 	go insideListener(s, MyInfo, ctx, "http2")
 	go healthCheck(s, MyInfo, ctx)
 	go metricsHandler()
-	go garbageCollectFlows()
+	go garbageCollectFlows(s)
 	// For apods, inside/outside is always open. For cpod, outside is open only
 	// if there is no connector connected to it yet, and inside is open only if
 	// there is a connector connected as of now. In other words, a cpod will accept
@@ -1283,7 +1418,7 @@ func InitJaegerTrace(service string, MyInfo *shared.Params, s *zap.SugaredLogger
 	if err != nil {
 		s.Errorf("JaegerTraceInit Failed - %v", err)
 		cfg.Disabled = true
-		tracer, closer, err = cfg.NewTracer()
+		tracer, closer, _ = cfg.NewTracer()
 	}
 	if onWire {
 		wireTracer = tracer
