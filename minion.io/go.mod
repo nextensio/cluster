@@ -24,7 +24,7 @@ require (
 	github.com/uber/jaeger-client-go v2.29.1+incompatible
 	github.com/uber/jaeger-lib v2.4.1+incompatible
 	github.com/youmark/pkcs8 v0.0.0-20201027041543-1326539a0a0a // indirect
-	gitlab.com/nextensio/common/go v0.0.0-20210917194711-d718169bb019
+	gitlab.com/nextensio/common/go v0.0.0-20210918120439-aa5633a9976d
 	go.mongodb.org/mongo-driver v1.7.2
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.7.0 // indirect
