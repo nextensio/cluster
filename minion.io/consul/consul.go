@@ -15,6 +15,9 @@ import (
 	"minion.io/shared"
 )
 
+var conn *dns.Conn
+var myDnsClient *dns.Client
+
 /*
  * Create HTTP client with 10 second timeout
  */
@@ -62,6 +65,22 @@ func makeCheck(MyInfo *shared.Params, serviceID string) Check {
 		FailuresBeforeCritical:         5,
 		SuccessBeforePassing:           3,
 	}
+}
+
+/*
+ * Establish connection to the DNS at the startup for consul lookups.
+ */
+func DialDnsConn(MyInfo *shared.Params, sugar *zap.SugaredLogger) *dns.Conn {
+	var err error
+	if conn == nil {
+		myDnsClient = new(dns.Client)
+		dnsIp := MyInfo.Id + "-consul-dns.consul-system.svc.cluster.local"
+		conn, err = myDnsClient.Dial(dnsIp + ":53")
+		if err != nil {
+			sugar.Debugf("Consul: DNS Dial error - %s", err.Error())
+		}
+	}
+	return conn
 }
 
 /*
@@ -168,7 +187,6 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 	dnsIp := MyInfo.Id + "-consul-dns.consul-system.svc.cluster.local"
 	qType, _ := dns.StringToType["SRV"]
 	fqdn_name := name + ".query.consul."
-	client := new(dns.Client)
 	msg := &dns.Msg{}
 	msg.SetQuestion(fqdn_name, qType)
 	// This additional OPT record is required to get the TXT records
@@ -181,7 +199,11 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 	o.SetDo()
 	o.SetUDPSize(4096)
 	msg.Extra = append(msg.Extra, o)
-	resp, t, e := client.Exchange(msg, dnsIp+":53")
+
+	if conn == nil {
+		conn = DialDnsConn(MyInfo, sugar)
+	}
+	resp, t, e := myDnsClient.ExchangeWithConn(msg, conn)
 	if e != nil {
 		sugar.Errorf("Consul: dns lookup for %s at %s failed with %s error", name, dnsIp, e)
 		return fwd, e

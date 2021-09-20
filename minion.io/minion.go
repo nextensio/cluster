@@ -86,6 +86,9 @@ func main() {
 	if closer != nil {
 		defer closer.Close()
 	}
+	// Establish dns connection for the consul lookups.
+	dnsConn := consul.DialDnsConn(&MyInfo, sugar)
+	defer dnsConn.Close()
 	router.RouterInit(sugar, &MyInfo, ctx)
 	go policy.NxtOpaInit(MyInfo.Namespace, MyInfo.Pod, MyInfo.Id+consul.RemotePostPrefix, MyInfo.MongoUri, sugar)
 
