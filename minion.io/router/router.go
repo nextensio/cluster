@@ -1109,7 +1109,8 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		switch hdr.Hdr.(type) {
 		case *nxthdr.NxtHdr_Trace:
 			trace := hdr.Hdr.(*nxthdr.NxtHdr_Trace).Trace
-			s.Debugf("Got trace {}", trace)
+			// Drift is in nanoseconds
+			s.Debugf("Got trace", trace, tunnel.ClockDrift())
 		case *nxthdr.NxtHdr_Onboard:
 			if onboard == nil {
 				onboard = hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
@@ -1459,11 +1460,13 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 			if open {
 				if server == nil {
 					if MyInfo.PodType == "apod" {
-						// We dont want any keepalives from umpteen agents
-						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 0, 0)
+						// We dont want any keepalives from umpteen agents, we do clock sync with agents
+						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 0, 0, 500)
 					} else {
 						// as for a keepalive count of at least one data activity in 30 seconds
-						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1)
+						// we dont do clock sync with connectors today, but if connector tracing also
+						// is done via cluster as its done for agent, we can turn it on
+						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1, 0)
 					}
 					go server.Listen(tchan)
 				}
