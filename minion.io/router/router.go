@@ -378,7 +378,17 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *f
 		s.Debugf("Bad userid", flow.AgentUuid)
 		return nil, nil
 	}
-	uamLabels := userAttrMetricsLabelInit(s, flow)
+	// In forward direction, the attributes are that of the user, in
+	// response/reverse direction, attributes are of the connector,
+	// we "can" count attributes against connector, but really does it
+	// matter to customer the ability to see connector's attributes ?
+	// Also attribute metrics dont have much of a value being directional,
+	// customer wants to see what attributes are in use, the directional
+	// count is anyways provided by byte counter.
+	var uamLabels map[string]string = nil
+	if !flow.ResponseData {
+		uamLabels = userAttrMetricsLabelInit(s, flow)
+	}
 	m := metricUserGet(s, user[0], uamLabels)
 	if m == nil {
 		s.Debugf("Cant find prometheus counter vec", flow.AgentUuid)
@@ -392,7 +402,7 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *f
 		return nil, nil
 	}
 	var attr *prometheus.Counter
-	if m.attr != nil {
+	if m.attr != nil && !flow.ResponseData {
 		a, err := m.attr.GetMetricWith(uamLabels)
 		if err != nil {
 			s.Debugf("Error getting attr metric", err)
