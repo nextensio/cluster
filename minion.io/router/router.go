@@ -1110,7 +1110,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		case *nxthdr.NxtHdr_Trace:
 			trace := hdr.Hdr.(*nxthdr.NxtHdr_Trace).Trace
 			// Drift is in nanoseconds
-			s.Debugf("Got trace", trace, tunnel.ClockDrift())
+			s.Debugf("Got trace", trace, tunnel.Timing().Drift, tunnel.Timing().Rtt)
 		case *nxthdr.NxtHdr_Onboard:
 			if onboard == nil {
 				onboard = hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
