@@ -657,9 +657,7 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 // keep this semantics intact of session + stream and monitoring a session etc..
 func podTunnelMonitor(s *zap.SugaredLogger, key string, tunnel common.Transport, fwd shared.Fwd) {
 	hdr := &nxthdr.NxtHdr{}
-	flow := nxthdr.NxtFlow{}
-	hdr.Hdr = &nxthdr.NxtHdr_Flow{Flow: &flow}
-	hdr.Streamop = nxthdr.NxtHdr_KEEP_ALIVE
+	hdr.Hdr = &nxthdr.NxtHdr_Keepalive{}
 	agentBuf := net.Buffers{}
 
 	for {
@@ -1304,62 +1302,58 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 			length += len(b)
 		}
 
-		if hdr.Streamop == nxthdr.NxtHdr_KEEP_ALIVE {
-			// nothing to do
-		} else {
-			switch hdr.Hdr.(type) {
-			case *nxthdr.NxtHdr_Flow:
-				flow := hdr.Hdr.(*nxthdr.NxtHdr_Flow).Flow
-				lastFlow = flow
-				if flow.Type == nxthdr.NxtFlow_L3 {
-					panic("Not expecting anything other than L4 flows at this time")
-				}
-				// Route lookup just one time
+		switch hdr.Hdr.(type) {
+		case *nxthdr.NxtHdr_Flow:
+			flow := hdr.Hdr.(*nxthdr.NxtHdr_Flow).Flow
+			lastFlow = flow
+			if flow.Type == nxthdr.NxtFlow_L3 {
+				panic("Not expecting anything other than L4 flows at this time")
+			}
+			// Route lookup just one time
+			if dest == nil {
+				span = traceInterpodFlow(s, MyInfo, flow)
+				um, fm = metricFlowAdd(s, flow)
+				onboard, dest = localRouteLookup(s, MyInfo, flow)
 				if dest == nil {
-					span = traceInterpodFlow(s, MyInfo, flow)
-					um, fm = metricFlowAdd(s, flow)
-					onboard, dest = localRouteLookup(s, MyInfo, flow)
-					if dest == nil {
-						s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
-						streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Couldn't get destination to agent")
-						return
-					}
-					s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
-					dest = dest.NewStream(nil)
-					if dest == nil {
-						s.Debugf("Interpod: cant open stream on dest tunnel for ", flow.DestAgent)
-						streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Stream open to agent failed")
-						return
-					}
-					// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
-					// the close is cascaded to the other elements connected to the cluster (pods/agents)
-					dest.CloseCascade(tunnel)
-				}
-				if !bundleAccessAllowed(s, flow, onboard) {
-					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Agent access denied")
+					s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
+					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Couldn't get destination to agent")
 					return
 				}
-				var finishT int64
-				if span != nil {
-					finishT = time.Now().UnixNano()
-					flow.WireSpanStartTime = uint64(finishT)
+				s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
+				dest = dest.NewStream(nil)
+				if dest == nil {
+					s.Debugf("Interpod: cant open stream on dest tunnel for ", flow.DestAgent)
+					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Stream open to agent failed")
+					return
 				}
-				err := dest.Write(hdr, podBuf)
+				// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
+				// the close is cascaded to the other elements connected to the cluster (pods/agents)
+				dest.CloseCascade(tunnel)
+			}
+			if !bundleAccessAllowed(s, flow, onboard) {
+				streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Agent access denied")
+				return
+			}
+			var finishT int64
+			if span != nil {
+				finishT = time.Now().UnixNano()
+				flow.WireSpanStartTime = uint64(finishT)
+			}
+			err := dest.Write(hdr, podBuf)
 
-				if err != nil {
-					s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
-					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Write to destination pod failed")
-					return
-				}
-				if span != nil {
-					var finishTime opentracing.FinishOptions
-					finishTime.FinishTime = time.Unix(0, finishT)
-					(*span).FinishWithOptions(finishTime)
-					span = nil
-				}
-				if fm != nil {
-					incrMetrics(fm, length)
-				}
+			if err != nil {
+				s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
+				streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Write to destination pod failed")
+				return
+			}
+			if span != nil {
+				var finishTime opentracing.FinishOptions
+				finishTime.FinishTime = time.Unix(0, finishT)
+				(*span).FinishWithOptions(finishTime)
+				span = nil
+			}
+			if fm != nil {
+				incrMetrics(fm, length)
 			}
 		}
 	}
@@ -1464,9 +1458,7 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 0, 0, 500)
 					} else {
 						// as for a keepalive count of at least one data activity in 30 seconds
-						// we dont do clock sync with connectors today, but if connector tracing also
-						// is done via cluster as its done for agent, we can turn it on
-						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1, 0)
+						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1, 500)
 					}
 					go server.Listen(tchan)
 				}
