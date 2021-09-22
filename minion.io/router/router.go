@@ -955,6 +955,15 @@ func onboardDiff(sl *zap.SugaredLogger, MyInfo *shared.Params, old *nxthdr.NxtOn
 func generateOnWireSpan(spanCtx opentracing.SpanContext, flow *nxthdr.NxtFlow, s *zap.SugaredLogger, tracer opentracing.Tracer) *opentracing.Span {
 	if flow.WireSpanStartTime != 0 {
 		var startTime = time.Unix(0, int64(flow.WireSpanStartTime))
+
+		if flow.ProcessingTime != 0 {
+			var finishTime opentracing.FinishOptions
+			var newStartTime = time.Unix(0, int64(flow.ProcessingTime))
+			span := tracer.StartSpan("From Agent", opentracing.StartTime(newStartTime))
+			finishTime.FinishTime = startTime
+			span.FinishWithOptions(finishTime)
+			spanCtx = span.Context()
+		}
 		span := wireTracer.StartSpan("On Wire", opentracing.StartTime(startTime), opentracing.FollowsFrom(spanCtx))
 		span.Finish()
 		return &span
@@ -1021,7 +1030,10 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 		}
 		// some non-default trace request returned, so trace this flow
 		tracer := opentracing.GlobalTracer()
-		span := tracer.StartSpan(MyInfo.Id + "-" + MyInfo.Host)
+		wSpan := generateOnWireSpan(nil, flow, s, tracer)
+		// Reset the processing time
+		flow.ProcessingTime = 0
+		span := tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.FollowsFrom((*wSpan).Context()))
 		ext.SpanKindRPCClient.Set(span)
 		ext.HTTPUrl.Set(span, "http://"+flow.Dest)
 		ext.HTTPMethod.Set(span, "PUT")
@@ -1060,6 +1072,35 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 		flow.TraceCtx = httpHdr.Get("Uber-Trace-Id")
 		return &span
 	}
+}
+
+func generateAgentTrace(trace *nxthdr.NxtTrace, drift int64) {
+	tracer := opentracing.GlobalTracer()
+	hhdr := make(http.Header)
+	hhdr.Add("Uber-Trace-Id", trace.TraceCtx)
+	spanCtx, _ := tracer.Extract(opentracing.HTTPHeaders,
+		opentracing.HTTPHeadersCarrier(hhdr))
+
+	var tNow = uint64(time.Now().UnixNano())
+	var onWireDuration = tNow - trace.ProcessingTime
+
+	var span opentracing.Span
+	var finishTime opentracing.FinishOptions
+	var startTime = time.Unix(0, int64(trace.WireSpanStartTime)+drift)
+	var eTime = time.Unix(0, int64(trace.ProcessingTime)+drift)
+	var onWireStart = time.Unix(0, int64(trace.WireSpanStartTime-onWireDuration)+drift)
+
+	// Create the "On wire" span based on the times provided by Agent in the ctrl packet
+	span = wireTracer.StartSpan("On wire to Agent", opentracing.StartTime(onWireStart), opentracing.FollowsFrom(spanCtx))
+	finishTime.FinishTime = startTime
+	span.FinishWithOptions(finishTime)
+
+	spanCtx = span.Context()
+
+	// Create the Agent span for processing the packet from Cluster.
+	span = tracer.StartSpan("Agent", opentracing.StartTime(startTime), opentracing.FollowsFrom(spanCtx))
+	finishTime.FinishTime = eTime
+	span.FinishWithOptions(finishTime)
 }
 
 // Agent/Connector is trying to connect to minion. The first stream from the agent/connector
@@ -1108,9 +1149,12 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 
 		switch hdr.Hdr.(type) {
 		case *nxthdr.NxtHdr_Trace:
+			// Ctrl packet for agent tracing support
 			trace := hdr.Hdr.(*nxthdr.NxtHdr_Trace).Trace
 			// Drift is in nanoseconds
 			s.Debugf("Got trace", trace, tunnel.ClockDrift())
+			generateAgentTrace(trace, tunnel.ClockDrift())
+
 		case *nxthdr.NxtHdr_Onboard:
 			if onboard == nil {
 				onboard = hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
@@ -1262,14 +1306,12 @@ func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr
 		span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.FollowsFrom(spanCtx))
 	}
 	setSpanTags(span, flow, MyInfo)
-	if !flow.ResponseData {
-		span.Tracer().Inject(
-			span.Context(),
-			opentracing.HTTPHeaders,
-			opentracing.HTTPHeadersCarrier(hhdr),
-		)
-		flow.TraceCtx = hhdr.Get("Uber-Trace-Id")
-	}
+	span.Tracer().Inject(
+		span.Context(),
+		opentracing.HTTPHeaders,
+		opentracing.HTTPHeadersCarrier(hhdr),
+	)
+	flow.TraceCtx = hhdr.Get("Uber-Trace-Id")
 	s.Debugf("Trace: Found span context in stream from %s to %s", flow.Userid, flow.DestAgent)
 	return &span
 }
