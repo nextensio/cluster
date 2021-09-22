@@ -118,7 +118,11 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 			sugar.Debugf("Consul: registered via http PUT at %s", url)
 			sugar.Debugf("Consul: registered service json %s", js)
 		} else {
-			sugar.Errorf("Consul: failed to register via http PUT at %s, error %s", url, e, resp.StatusCode)
+			status := -1
+			if resp != nil {
+				status = resp.StatusCode
+			}
+			sugar.Errorf("Consul: failed to register via http PUT at %s, error %s, %d", url, e, status)
 			sugar.Errorf("Consul: failed to register service json %s", js)
 			return e
 		}
@@ -141,7 +145,11 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 		if e == nil && resp.StatusCode == 200 {
 			sugar.Debugf("Consul: registered check via http PUT at %s", url)
 		} else {
-			sugar.Errorf("Consul: failed to register via http PUT at %s, error %s", url, e, resp.StatusCode)
+			status := -1
+			if resp != nil {
+				status = resp.StatusCode
+			}
+			sugar.Errorf("Consul: failed to register via http PUT at %s, error %s, %d", url, e, status)
 			return e
 		}
 	}
@@ -166,12 +174,11 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.Sugare
 		}
 		resp, e := myClient.Do(r)
 		if e != nil || resp.StatusCode != 200 {
-			if e != nil {
-				err = e
-			} else {
-				err = fmt.Errorf("ErrStatus %d", resp.StatusCode)
+			status := -1
+			if resp != nil {
+				status = resp.StatusCode
 			}
-			sugar.Errorf("Consul: http PUT of nil at %s failed err %s, code %s", url, e, resp.StatusCode)
+			sugar.Errorf("Consul: http PUT of nil at %s failed err %s, code %s %d", url, e, status)
 			// Well, keep going and delete all the services even if this one failed.
 			// If the service is really going away from the pod, the health check will
 			// eventually fail and remove this service in approx 1.5 minutes
