@@ -91,7 +91,6 @@ type userMetrics struct {
 	count      uint
 	userid     string
 	totalBytes *prometheus.CounterVec
-	attr       *prometheus.CounterVec
 }
 
 type deleteMetrics struct {
@@ -102,7 +101,19 @@ type deleteMetrics struct {
 
 type flowMetrics struct {
 	bytes *prometheus.Counter
-	attr  *prometheus.Counter
+}
+
+type flowKey struct {
+	source      string
+	dest        string
+	sport       uint32
+	dport       uint32
+	proto       uint32
+	sourceAgent string
+}
+
+type flowInfo struct {
+	uamLabels map[string]string
 }
 
 // Default prometheus scrape interval is one minute, we give additional 30 seconds
@@ -123,6 +134,8 @@ var agents map[string]*agentTunnel
 var users map[string][]*agentTunnel
 var mLock sync.RWMutex
 var metrics map[string]*userMetrics
+var fLock sync.Mutex
+var flows map[flowKey]*flowInfo
 var pLock sync.RWMutex
 var pods map[string]*podInfo
 var unusedChan chan common.NxtStream
@@ -222,23 +235,28 @@ func userAttrMetricsLabelInit(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) map[st
 			// couple options: 1) make a single string value
 			// by appending the N array elements together 2) take just one.
 			// For now implementing the former.
+			count := len(tlvalue)
 			var sbLabelValue bytes.Buffer
 			for _, v := range tlvalue {
 				switch tv := v.(type) {
 				case string:
-					sbLabelValue.WriteString(tv + ",")
+					sbLabelValue.WriteString(tv)
 				case bool:
-					sbLabelValue.WriteString(strconv.FormatBool(tv) + ",")
+					sbLabelValue.WriteString(strconv.FormatBool(tv))
 				case float64:
-					sbLabelValue.WriteString(strconv.FormatFloat(tv, 'f', 2, 64) + ",")
+					sbLabelValue.WriteString(strconv.FormatFloat(tv, 'f', 2, 64))
 				case float32:
-					sbLabelValue.WriteString(strconv.FormatFloat(float64(tv), 'f', 2, 32) + ",")
+					sbLabelValue.WriteString(strconv.FormatFloat(float64(tv), 'f', 2, 32))
 				case int64:
-					sbLabelValue.WriteString(strconv.FormatInt(tv, 10) + ",")
+					sbLabelValue.WriteString(strconv.FormatInt(tv, 10))
 				case int32:
-					sbLabelValue.WriteString(strconv.FormatInt(int64(tv), 10) + ",")
+					sbLabelValue.WriteString(strconv.FormatInt(int64(tv), 10))
 				default:
 					s.Debugf("UAM-Only one level of User Attribute nesting supported")
+				}
+				count -= 1
+				if count != 0 {
+					sbLabelValue.WriteString("|")
 				}
 			}
 			uaLabelMap[lname] = sbLabelValue.String()
@@ -257,6 +275,10 @@ func userAttrMetricsLabelInit(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) map[st
 // be a memory leak of that structure.
 func metricUserNew(s *zap.SugaredLogger, userid string, uamLabels map[string]string) *userMetrics {
 	var labels = []string{"userid", "service", "destIP", "destPort", "direction"}
+	// We only need the keys for registration
+	for l := range uamLabels {
+		labels = append(labels, l)
+	}
 
 	// Prometheus wont allow certain characters in the string as the counter
 	name := strings.Replace(userid, "@", "_", -1)
@@ -274,33 +296,7 @@ func metricUserNew(s *zap.SugaredLogger, userid string, uamLabels map[string]str
 		return nil
 	}
 
-	// TODO: attributes for a user can change on the fly, so the registration
-	// here will need to be re-done when that happens
-	// (https://gitlab.com/nextensio/cluster/-/issues/41)
-	var uamLabelNames []string
-	// We only need the names for registration
-	for l := range uamLabels {
-		uamLabelNames = append(uamLabelNames, l)
-	}
-
-	var attr *prometheus.CounterVec
-	if uamLabelNames != nil {
-		// Now register the metric w/prometheus
-		attr = prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name:        "attributes_" + name,
-				Help:        "User Attributes",
-				ConstLabels: prometheus.Labels{},
-			}, uamLabelNames)
-		err = prometheus.Register(attr)
-		if err != nil {
-			s.Debugf("Prometheus UAMetric registration failed(%v) ", err)
-			prometheus.Unregister(totalBytes)
-			return nil
-		}
-	}
-
-	m := &userMetrics{count: 1, userid: userid, totalBytes: totalBytes, attr: attr}
+	m := &userMetrics{count: 1, userid: userid, totalBytes: totalBytes}
 
 	metrics[userid] = m
 	return m
@@ -308,20 +304,18 @@ func metricUserNew(s *zap.SugaredLogger, userid string, uamLabels map[string]str
 
 func metricUserPut(m *userMetrics) {
 	mLock.Lock()
-	defer mLock.Unlock()
 
 	m.count -= 1
 	if m.count != 0 {
+		mLock.Unlock()
 		return
 	}
+	delete(metrics, m.userid)
+	// Unlock now, we dont have to do prometheus unregister etc.. with this lock held
+	mLock.Unlock()
+
 	m.totalBytes.Reset()
 	prometheus.Unregister(m.totalBytes)
-	if m.attr != nil {
-		m.attr.Reset()
-		prometheus.Unregister(m.attr)
-	}
-
-	delete(metrics, m.userid)
 }
 
 func metricUserGet(s *zap.SugaredLogger, userid string, uamLabels map[string]string) *userMetrics {
@@ -352,23 +346,30 @@ func getLabels(flow *nxthdr.NxtFlow) map[string]string {
 }
 
 func incrMetrics(fm *flowMetrics, length int) {
-
 	if fm.bytes != nil {
 		(*fm.bytes).Add(float64(length))
-	}
-	if fm.attr != nil {
-		(*fm.attr).Inc()
 	}
 }
 
 func metricFlowDel(s *zap.SugaredLogger, m *userMetrics, flow *nxthdr.NxtFlow) {
 	labels := getLabels(flow)
 	m.totalBytes.Delete(labels)
-	if m.attr != nil {
-		uamLabels := userAttrMetricsLabelInit(s, flow)
-		m.attr.Delete(uamLabels)
-	}
 	metricUserPut(m)
+
+	fLock.Lock()
+	delete(flows, flowToKey(flow))
+	fLock.Unlock()
+}
+
+func flowToKey(flow *nxthdr.NxtFlow) flowKey {
+	return flowKey{
+		source:      flow.Source,
+		dest:        flow.Dest,
+		sport:       flow.Sport,
+		dport:       flow.Dport,
+		proto:       flow.Proto,
+		sourceAgent: flow.AgentUuid,
+	}
 }
 
 func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *flowMetrics) {
@@ -378,16 +379,22 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *f
 		s.Debugf("Bad userid", flow.AgentUuid)
 		return nil, nil
 	}
-	// In forward direction, the attributes are that of the user, in
-	// response/reverse direction, attributes are of the connector,
-	// we "can" count attributes against connector, but really does it
-	// matter to customer the ability to see connector's attributes ?
-	// Also attribute metrics dont have much of a value being directional,
-	// customer wants to see what attributes are in use, the directional
-	// count is anyways provided by byte counter.
-	var uamLabels map[string]string = nil
+	var uamLabels map[string]string
 	if !flow.ResponseData {
 		uamLabels = userAttrMetricsLabelInit(s, flow)
+		fLock.Lock()
+		flows[flowToKey(flow)] = &flowInfo{uamLabels: uamLabels}
+		fLock.Unlock()
+	} else {
+		// In response direction, the attributes are no longer the user's, they are instead
+		// the connectors. So we cant build the labels "on the fly"
+		fLock.Lock()
+		finfo := flows[flowToKey(flow)]
+		fLock.Unlock()
+		if finfo == nil {
+			return nil, nil
+		}
+		uamLabels = finfo.uamLabels
 	}
 	m := metricUserGet(s, user[0], uamLabels)
 	if m == nil {
@@ -395,22 +402,17 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *f
 		return nil, nil
 	}
 	labels := getLabels(flow)
+	for k, v := range uamLabels {
+		labels[k] = v
+	}
 	c, e := m.totalBytes.GetMetricWith(labels)
 	if e != nil {
 		metricUserPut(m)
 		s.Debugf("Cant get prometheus counter from labels", labels, flow.AgentUuid)
 		return nil, nil
 	}
-	var attr *prometheus.Counter
-	if m.attr != nil && !flow.ResponseData {
-		a, err := m.attr.GetMetricWith(uamLabels)
-		if err != nil {
-			s.Debugf("Error getting attr metric", err)
-		} else {
-			attr = &a
-		}
-	}
-	return m, &flowMetrics{bytes: &c, attr: attr}
+
+	return m, &flowMetrics{bytes: &c}
 }
 
 func sessionAdd(Suuid uuid.UUID, onboard *nxthdr.NxtOnboard) {
@@ -1407,6 +1409,7 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	users = make(map[string][]*agentTunnel)
 	pods = make(map[string]*podInfo)
 	metrics = make(map[string]*userMetrics)
+	flows = make(map[flowKey]*flowInfo)
 	pendingFree = make([]*deleteMetrics, 0)
 	localRoutes = make(map[string]*nxthdr.NxtOnboard)
 	unusedChan = make(chan common.NxtStream)
@@ -1630,4 +1633,8 @@ func DumpInfo(s *zap.SugaredLogger) {
 	pendingLock.Lock()
 	s.Debugf("Total pending free flows: ", len(pendingFree))
 	pendingLock.Unlock()
+
+	fLock.Lock()
+	s.Debugf("Total pending flows: ", len(flows))
+	fLock.Unlock()
 }
