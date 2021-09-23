@@ -3,12 +3,15 @@ package router
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -90,17 +93,20 @@ type agentTunnel struct {
 type userMetrics struct {
 	count      uint
 	userid     string
+	sha        string
 	totalBytes *prometheus.CounterVec
 }
 
 type deleteMetrics struct {
-	um    *userMetrics
+	fm    *flowMetrics
 	flow  *nxthdr.NxtFlow
 	qedAt time.Time
 }
 
 type flowMetrics struct {
-	bytes *prometheus.Counter
+	bytes     *prometheus.Counter
+	um        *userMetrics
+	allLabels map[string]string
 }
 
 type flowKey struct {
@@ -152,11 +158,11 @@ var wireTracer opentracing.Tracer
 // When the flow is terminated, we have to wait for some time to ensure the stats is
 // collected before we remove the labels/free the counters, we just use a simple
 // pending list for that which is garbage collected every couple of minutes
-func pendingAdd(um *userMetrics, flow *nxthdr.NxtFlow) {
+func pendingAdd(flow *nxthdr.NxtFlow, fm *flowMetrics) {
 	pendingLock.Lock()
 	defer pendingLock.Unlock()
 	d := deleteMetrics{
-		um:    um,
+		fm:    fm,
 		flow:  flow,
 		qedAt: time.Now(),
 	}
@@ -187,7 +193,7 @@ func garbageCollectFlows(s *zap.SugaredLogger) {
 			if dm == nil {
 				break
 			}
-			metricFlowDel(s, dm.um, dm.flow)
+			metricFlowDel(s, dm.flow, dm.fm)
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -273,20 +279,25 @@ func userAttrMetricsLabelInit(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) map[st
 // So for every flow that ends up calling a metricUserGet(), there should be an equivalent
 // metricUserPut() when the flow is done or there is some failure, or else there will
 // be a memory leak of that structure.
-func metricUserNew(s *zap.SugaredLogger, userid string, uamLabels map[string]string) *userMetrics {
+func metricUserNew(s *zap.SugaredLogger, userid string, attr []string, sha string) *userMetrics {
 	var labels = []string{"userid", "service", "destIP", "destPort", "direction"}
-	// We only need the keys for registration
-	for l := range uamLabels {
-		labels = append(labels, l)
-	}
+	labels = append(labels, attr...)
 
 	// Prometheus wont allow certain characters in the string as the counter
 	name := strings.Replace(userid, "@", "_", -1)
 	name = strings.Replace(name, ".", "_", -1)
 	name = strings.Replace(name, "-", "_", -1)
+	sha1 := strings.Replace(sha, "+", "_", -1)
+	sha1 = strings.Replace(sha1, "-", "_", -1)
+	sha1 = strings.Replace(sha1, "/", "_", -1)
+	sha1 = strings.Replace(sha1, "=", "_", -1)
+	// Unfortunately, once a counter is created with a Name, prometheus will NOT
+	// allow the same name to be reused with a different set of labels. So if we
+	// have a new set of labels, we need a new name - and hence doing this ugly thing
+	// of appending the label sha1 with the name. Hopefully promQL regexp can ignore it
 	totalBytes := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "bytes_" + name,
+			Name: "bytes_" + name + "_" + sha1,
 			Help: "User Data Bytes",
 		}, labels)
 
@@ -296,7 +307,7 @@ func metricUserNew(s *zap.SugaredLogger, userid string, uamLabels map[string]str
 		return nil
 	}
 
-	m := &userMetrics{count: 1, userid: userid, totalBytes: totalBytes}
+	m := &userMetrics{count: 1, userid: userid, sha: sha, totalBytes: totalBytes}
 
 	metrics[userid] = m
 	return m
@@ -304,30 +315,55 @@ func metricUserNew(s *zap.SugaredLogger, userid string, uamLabels map[string]str
 
 func metricUserPut(m *userMetrics) {
 	mLock.Lock()
+	defer mLock.Unlock()
+
+	// This metric has already been force cleaned
+	if m.count == 0 {
+		return
+	}
 
 	m.count -= 1
 	if m.count != 0 {
-		mLock.Unlock()
 		return
 	}
 	delete(metrics, m.userid)
-	// Unlock now, we dont have to do prometheus unregister etc.. with this lock held
-	mLock.Unlock()
-
 	m.totalBytes.Reset()
 	prometheus.Unregister(m.totalBytes)
 }
 
 func metricUserGet(s *zap.SugaredLogger, userid string, uamLabels map[string]string) *userMetrics {
+	var attr []string
+	for l := range uamLabels {
+		attr = append(attr, l)
+	}
+	sort.Strings(attr)
+	hasher := sha1.New()
+	for _, l := range attr {
+		hasher.Write([]byte(l))
+	}
+	sha := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
+
 	mLock.Lock()
 	defer mLock.Unlock()
-
 	m := metrics[userid]
+	// If no metrics exist, allocate one
 	if m == nil {
-		return metricUserNew(s, userid, uamLabels)
+		return metricUserNew(s, userid, attr, sha)
 	}
-	m.count++
 
+	// If metrics exist, but the attribute labels (keys) have changed, then free the old
+	// metric and allocate new ones
+	if strings.Compare(sha, m.sha) != 0 {
+		delete(metrics, m.userid)
+		m.totalBytes.Reset()
+		prometheus.Unregister(m.totalBytes)
+		// metric is force cleaned-up
+		m.count = 0
+		return metricUserNew(s, userid, attr, sha)
+	}
+
+	// The existing metric is good to go, increment ref count
+	m.count++
 	return m
 }
 
@@ -351,10 +387,9 @@ func incrMetrics(fm *flowMetrics, length int) {
 	}
 }
 
-func metricFlowDel(s *zap.SugaredLogger, m *userMetrics, flow *nxthdr.NxtFlow) {
-	labels := getLabels(flow)
-	m.totalBytes.Delete(labels)
-	metricUserPut(m)
+func metricFlowDel(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, fm *flowMetrics) {
+	fm.um.totalBytes.Delete(fm.allLabels)
+	metricUserPut(fm.um)
 
 	fLock.Lock()
 	delete(flows, flowToKey(flow))
@@ -372,12 +407,12 @@ func flowToKey(flow *nxthdr.NxtFlow) flowKey {
 	}
 }
 
-func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *flowMetrics) {
+func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) *flowMetrics {
 	// agentUuid is userid:uniqueid
 	user := strings.Split(flow.AgentUuid, ":")
 	if len(user) != 2 {
 		s.Debugf("Bad userid", flow.AgentUuid)
-		return nil, nil
+		return nil
 	}
 	var uamLabels map[string]string
 	if !flow.ResponseData {
@@ -392,14 +427,14 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *f
 		finfo := flows[flowToKey(flow)]
 		fLock.Unlock()
 		if finfo == nil {
-			return nil, nil
+			return nil
 		}
 		uamLabels = finfo.uamLabels
 	}
 	m := metricUserGet(s, user[0], uamLabels)
 	if m == nil {
 		s.Debugf("Cant find prometheus counter vec", flow.AgentUuid)
-		return nil, nil
+		return nil
 	}
 	labels := getLabels(flow)
 	for k, v := range uamLabels {
@@ -409,10 +444,10 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) (*userMetrics, *f
 	if e != nil {
 		metricUserPut(m)
 		s.Debugf("Cant get prometheus counter from labels", labels, flow.AgentUuid)
-		return nil, nil
+		return nil
 	}
 
-	return m, &flowMetrics{bytes: &c}
+	return &flowMetrics{bytes: &c, um: m, allLabels: labels}
 }
 
 func sessionAdd(Suuid uuid.UUID, onboard *nxthdr.NxtOnboard) {
@@ -868,7 +903,7 @@ func userGetAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard) string {
 }
 
 func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel common.Transport,
-	dest common.Transport, first bool, Suuid uuid.UUID, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, um *userMetrics, span *opentracing.Span, r string) {
+	dest common.Transport, first bool, Suuid uuid.UUID, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fm *flowMetrics, span *opentracing.Span, r string) {
 	tunnel.Close()
 	if dest != nil {
 		dest.Close()
@@ -890,8 +925,8 @@ func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel co
 	if span != nil {
 		(*span).Finish()
 	}
-	if flow != nil && um != nil {
-		pendingAdd(um, flow)
+	if flow != nil && fm != nil {
+		pendingAdd(flow, fm)
 	}
 }
 
@@ -1123,7 +1158,6 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 	var bundle *nxthdr.NxtOnboard
 	var userAttr string
 	var span *opentracing.Span
-	var um *userMetrics
 	var lastFlow *nxthdr.NxtFlow
 	var fm *flowMetrics
 
@@ -1138,7 +1172,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 	for {
 		hdr, agentBuf, err := tunnel.Read()
 		if err != nil {
-			streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "")
+			streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "")
 			s.Debugf("Agent read error - %v", err)
 			return
 		}
@@ -1161,14 +1195,14 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				sessionAdd(Suuid, onboard)
 				if e := agentAdd(s, MyInfo, onboard, Suuid, tunnel); e != nil {
 					s.Debugf("Agent add failed, closing tunnels - %v", e)
-					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "")
+					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "")
 					return
 				}
 			} else {
 				newOnb := hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
 				if e := onboardDiff(s, MyInfo, onboard, newOnb); e != nil {
 					s.Debugf("Onboard diff failed, closing tunnels - %v", e)
-					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "")
+					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "")
 					return
 				}
 			}
@@ -1185,17 +1219,17 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			lastFlow = flow
 			if flow.Type == nxthdr.NxtFlow_L3 {
 				s.Debugf("Not expecting anything other than L4 flows at this time")
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "Agent not onboarded")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "Agent not onboarded")
 				return
 			}
 			if first {
 				s.Debugf("We dont expect L4 flows on the first stream")
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "Agent not onboarded")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "Agent not onboarded")
 				return
 			}
 			if onboard == nil {
 				s.Debugf("Agent not onboarded yet")
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "Agent not onboarded")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "Agent not onboarded")
 				return
 			}
 			// Indicate to the destination connector which exact agent/connector is originating this flow,
@@ -1214,13 +1248,13 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			// Route lookup just one time
 			if dest == nil {
 				span = traceAgentFlow(s, MyInfo, onboard, flow)
-				um, fm = metricFlowAdd(s, flow)
+				fm = metricFlowAdd(s, flow)
 				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow, span)
 				// L4 routing failures need to terminate the flow
 				if dest == nil {
 					s.Debugf("Agent flow dest fail: %v", flow)
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard,
-						lastFlow, um, span, "Couldn't get destination pod or open stream to it")
+						lastFlow, fm, span, "Couldn't get destination pod or open stream to it")
 					return
 				}
 				s.Debugf("Agent L4 Lookup: flow=%v bundle=%v stream=%v", flow, bundle, dest)
@@ -1236,7 +1270,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			err := dest.Write(hdr, agentBuf)
 			if err != nil {
 				s.Debugf("Agent flow write fail: flow=%v, error=%v", flow, err)
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, um, span, "Write to Agent failed")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "Write to Agent failed")
 				return
 			}
 			if span != nil {
@@ -1270,7 +1304,7 @@ func bundleAccessAllowed(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, onboard *nx
 	return true
 }
 
-func streamFromPodClose(s *zap.SugaredLogger, tunnel common.Transport, dest common.Transport, MyInfo *shared.Params, flow *nxthdr.NxtFlow, um *userMetrics, span *opentracing.Span, r string) {
+func streamFromPodClose(s *zap.SugaredLogger, tunnel common.Transport, dest common.Transport, MyInfo *shared.Params, flow *nxthdr.NxtFlow, fm *flowMetrics, span *opentracing.Span, r string) {
 	tunnel.Close()
 	if dest != nil {
 		dest.Close()
@@ -1278,8 +1312,8 @@ func streamFromPodClose(s *zap.SugaredLogger, tunnel common.Transport, dest comm
 	if span != nil {
 		(*span).Finish()
 	}
-	if flow != nil && um != nil {
-		pendingAdd(um, flow)
+	if flow != nil && fm != nil {
+		pendingAdd(flow, fm)
 	}
 }
 
@@ -1328,7 +1362,6 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 	var dest common.Transport
 	var onboard *nxthdr.NxtOnboard
 	var span *opentracing.Span
-	var um *userMetrics
 	var fm *flowMetrics
 	var lastFlow *nxthdr.NxtFlow
 
@@ -1338,7 +1371,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 		hdr, podBuf, err := tunnel.Read()
 		if err != nil {
 			s.Debugf("InterPod Error", err)
-			streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "")
+			streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, span, "")
 			return
 		}
 		length := 0
@@ -1356,18 +1389,18 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 			// Route lookup just one time
 			if dest == nil {
 				span = traceInterpodFlow(s, MyInfo, flow)
-				um, fm = metricFlowAdd(s, flow)
+				fm = metricFlowAdd(s, flow)
 				onboard, dest = localRouteLookup(s, MyInfo, flow)
 				if dest == nil {
 					s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
-					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Couldn't get destination to agent")
+					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, span, "Couldn't get destination to agent")
 					return
 				}
 				s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
 				dest = dest.NewStream(nil)
 				if dest == nil {
 					s.Debugf("Interpod: cant open stream on dest tunnel for ", flow.DestAgent)
-					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Stream open to agent failed")
+					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, span, "Stream open to agent failed")
 					return
 				}
 				// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
@@ -1375,7 +1408,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				dest.CloseCascade(tunnel)
 			}
 			if !bundleAccessAllowed(s, flow, onboard) {
-				streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Agent access denied")
+				streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, span, "Agent access denied")
 				return
 			}
 			var finishT int64
@@ -1387,7 +1420,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 
 			if err != nil {
 				s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
-				streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, um, span, "Write to destination pod failed")
+				streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, span, "Write to destination pod failed")
 				return
 			}
 			if span != nil {
