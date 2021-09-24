@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -17,6 +18,8 @@ import (
 
 var conn *dns.Conn
 var myDnsClient *dns.Client
+var ipv4 net.IP
+var fail_cnt int
 
 /*
  * Create HTTP client with 10 second timeout
@@ -68,6 +71,19 @@ func makeCheck(MyInfo *shared.Params, serviceID string) Check {
 }
 
 /*
+ * Get the ipv4 address of a given domain name
+ */
+func getIp(dnsIp string) net.IP {
+	ips, _ := net.LookupIP(dnsIp)
+	for _, ip := range ips {
+		if ipv4 = ip.To4(); ipv4 != nil {
+			fmt.Println("IPv4: ", ipv4)
+		}
+	}
+	return ipv4
+}
+
+/*
  * Establish connection to the DNS at the startup for consul lookups.
  */
 func DialDnsConn(MyInfo *shared.Params, sugar *zap.SugaredLogger) *dns.Conn {
@@ -75,7 +91,9 @@ func DialDnsConn(MyInfo *shared.Params, sugar *zap.SugaredLogger) *dns.Conn {
 	if conn == nil {
 		myDnsClient = new(dns.Client)
 		dnsIp := MyInfo.Id + "-consul-dns.consul-system.svc.cluster.local"
-		conn, err = myDnsClient.Dial(dnsIp + ":53")
+		getIp(dnsIp)
+		sugar.Debugf("Consul: DNS(conn) - %s  [%v]", dnsIp, ipv4.String()+":53")
+		conn, err = myDnsClient.Dial(ipv4.String() + ":53")
 		if err != nil {
 			sugar.Debugf("Consul: DNS Dial error - %s", err.Error())
 		}
@@ -207,13 +225,26 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 	o.SetUDPSize(4096)
 	msg.Extra = append(msg.Extra, o)
 
-	if conn == nil {
+	/*if conn == nil {
 		conn = DialDnsConn(MyInfo, sugar)
 	}
 	resp, t, e := myDnsClient.ExchangeWithConn(msg, conn)
+	*/
+	resp, t, e := myDnsClient.Exchange(msg, ipv4.String()+":53")
+
 	if e != nil {
-		sugar.Errorf("Consul: dns lookup for %s at %s failed with %s error", name, dnsIp, e)
+		sugar.Errorf("Consul: dns lookup for %s at %s failed with %s error [fail_cnt:%d]", name, dnsIp, e, fail_cnt)
+		fail_cnt = fail_cnt + 1
+		// Connection to consul might be down or IP address might have changed. Restablish the
+		// connection to consul if it fails consecutively for 3 times.
+		if fail_cnt > 3 {
+			conn.Close()
+			conn = DialDnsConn(MyInfo, sugar)
+			fail_cnt = 0
+		}
 		return fwd, e
+	} else {
+		fail_cnt = 0
 	}
 
 	sugar.Debugf("Consul: DNS lookup for %s returned %v answers, with %s latency", name, len(resp.Answer), t)
