@@ -1185,8 +1185,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		case *nxthdr.NxtHdr_Trace:
 			// Ctrl packet for agent tracing support
 			trace := hdr.Hdr.(*nxthdr.NxtHdr_Trace).Trace
-			// Drift is in nanoseconds
-			s.Debugf("Got trace", trace, tunnel.Timing().Drift, tunnel.Timing().Rtt)
+			// Drift and RTT is in nanoseconds
 			generateAgentTrace(trace, 0 /*tunnel.Timing().Drift*/)
 
 		case *nxthdr.NxtHdr_Onboard:
@@ -1449,6 +1448,7 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	outsideMsg = make(chan bool)
 	insideMsg = make(chan bool)
 
+	go consul.ConsulMonitor(s, MyInfo)
 	go outsideListener(s, MyInfo, ctx, "websocket")
 	go insideListener(s, MyInfo, ctx, "http2")
 	go healthCheck(s, MyInfo, ctx)

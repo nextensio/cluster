@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -16,10 +17,10 @@ import (
 	"minion.io/shared"
 )
 
-var conn *dns.Conn
-var myDnsClient *dns.Client
-var ipv4 net.IP
-var fail_cnt int
+var dnsConn *dns.Conn
+var dnsClient *dns.Client
+var dnsIP net.IP
+var fail_cnt int32
 
 /*
  * Create HTTP client with 10 second timeout
@@ -70,35 +71,89 @@ func makeCheck(MyInfo *shared.Params, serviceID string) Check {
 	}
 }
 
-/*
- * Get the ipv4 address of a given domain name
- */
-func getIp(dnsIp string) net.IP {
-	ips, _ := net.LookupIP(dnsIp)
+// Eventually we will just rip out all the DNS SRV lookups and use consul
+// query HTTP API. Till then, at the least we can avoid doing a name resolution
+// over and over again - keep the consul dns server name resolved and cache
+// the IP. And once in a while check if the IP has changed in the monitor goroutine
+func getIP(MyInfo *shared.Params, sugar *zap.SugaredLogger) net.IP {
+	var ipv4 net.IP = net.IPv4zero
+	dnsName := MyInfo.Id + "-consul-dns.consul-system.svc.cluster.local"
+	ips, err := net.LookupIP(dnsName)
+	if err != nil {
+		sugar.Debugf("Consul: Resolve IPV4 resolve error - %s", err.Error())
+		return ipv4
+	}
 	for _, ip := range ips {
-		if ipv4 = ip.To4(); ipv4 != nil {
-			fmt.Println("IPv4: ", ipv4)
+		if v4 := ip.To4(); v4 != nil {
+			ipv4 = v4
+			break
 		}
+	}
+	if ipv4.Equal(net.IPv4zero) {
+		sugar.Debugf("Consul: Resolve IPV4 resolve error - no IP")
 	}
 	return ipv4
 }
 
-/*
- * Establish connection to the DNS at the startup for consul lookups.
- */
-func DialDnsConn(MyInfo *shared.Params, sugar *zap.SugaredLogger) *dns.Conn {
-	var err error
-	if conn == nil {
-		myDnsClient = new(dns.Client)
-		dnsIp := MyInfo.Id + "-consul-dns.consul-system.svc.cluster.local"
-		getIp(dnsIp)
-		sugar.Debugf("Consul: DNS(conn) - %s  [%v]", dnsIp, ipv4.String()+":53")
-		conn, err = myDnsClient.Dial(ipv4.String() + ":53")
-		if err != nil {
-			sugar.Debugf("Consul: DNS Dial error - %s", err.Error())
-		}
+// There is really nothing that happens when we "dial" UDP other than
+// creating an OS UDP socket. So this just saves that time and caches
+// the OS socket - that time is not insignificant either
+func dialDnsUDP(MyInfo *shared.Params, sugar *zap.SugaredLogger, ipv4 net.IP) {
+	if dnsConn != nil {
+		dnsConn.Close()
+		dnsConn = nil
+		// Dont nullify dnsClient anywhere here, that will crash the goroutines
+		// doing ConsulDnsLookup because they will be using dnsClient. We can only
+		// replace one non-nil dnsClient with another non-nil one - its ok if the
+		// dnsClient is non-nil but invalid, the lookup will fail and we will deal
+		// with that
 	}
-	return conn
+	client := new(dns.Client)
+	conn, err := client.Dial(ipv4.String() + ":53")
+	if err == nil {
+		dnsConn = conn
+		dnsClient = client
+		sugar.Debugf("Consul: Resolve Dial success  %s", ipv4.String())
+	} else {
+		sugar.Debugf("Consul: Resolve Dial error - %s, %s", err.Error(), ipv4.String())
+	}
+}
+
+func ConsulMonitor(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
+	// Do a first time dial so that traffic can start passing
+	for {
+		dnsIP = getIP(MyInfo, sugar)
+		if !dnsIP.Equal(net.IPv4zero) {
+			dialDnsUDP(MyInfo, sugar, dnsIP)
+			break
+		}
+		time.Sleep(time.Second)
+	}
+
+	// Now monitor for failures, and check if IP has changed if failure increases
+	prev_fail := fail_cnt
+	for {
+		if prev_fail != fail_cnt {
+			newIP := getIP(MyInfo, sugar)
+			if newIP.Equal(net.IPv4zero) {
+				time.Sleep(time.Second)
+				continue
+			}
+			if !newIP.Equal(dnsIP) {
+				sugar.Debugf("Consul: Resolve IP changed from %s to %s", dnsIP.String(), newIP.String())
+				dnsIP = newIP
+				dialDnsUDP(MyInfo, sugar, dnsIP)
+			} else {
+				// If IP address has not changed, but the dns lookups are still failing, either
+				// consul is screwed up OR maybe we have some issue with the cached UDP socket
+				// (cached dnsClient) ? We can try cleaning up the dnsClient and creating a new
+				// one, but not adding any unnecessary code till we know its really needed
+				sugar.Debugf("Consul: Resolve IP unchanged, failure count %d -> %d", prev_fail, fail_cnt)
+			}
+			prev_fail = fail_cnt
+		}
+		time.Sleep(10 * time.Second)
+	}
 }
 
 /*
@@ -209,8 +264,7 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.Sugare
 func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogger) (fwd shared.Fwd, e error) {
 	sugar.Infof("consul dns lookup for %s", name)
 
-	dnsIp := MyInfo.Id + "-consul-dns.consul-system.svc.cluster.local"
-	qType, _ := dns.StringToType["SRV"]
+	qType := dns.StringToType["SRV"]
 	fqdn_name := name + ".query.consul."
 	msg := &dns.Msg{}
 	msg.SetQuestion(fqdn_name, qType)
@@ -225,26 +279,15 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 	o.SetUDPSize(4096)
 	msg.Extra = append(msg.Extra, o)
 
-	/*if conn == nil {
-		conn = DialDnsConn(MyInfo, sugar)
+	if dnsClient == nil {
+		sugar.Errorf("Consul: dns lookup for %s failed, no dns client [fail_cnt:%d]", name, fail_cnt)
+		return fwd, errors.New("no client")
 	}
-	resp, t, e := myDnsClient.ExchangeWithConn(msg, conn)
-	*/
-	resp, t, e := myDnsClient.Exchange(msg, ipv4.String()+":53")
-
+	resp, t, e := dnsClient.Exchange(msg, dnsIP.String()+":53")
 	if e != nil {
-		sugar.Errorf("Consul: dns lookup for %s at %s failed with %s error [fail_cnt:%d]", name, dnsIp, e, fail_cnt)
-		fail_cnt = fail_cnt + 1
-		// Connection to consul might be down or IP address might have changed. Restablish the
-		// connection to consul if it fails consecutively for 3 times.
-		if fail_cnt > 3 {
-			conn.Close()
-			conn = DialDnsConn(MyInfo, sugar)
-			fail_cnt = 0
-		}
+		atomic.AddInt32(&fail_cnt, 1)
+		sugar.Errorf("Consul: dns lookup for %s failed with %s error [fail_cnt:%d]", name, e, fail_cnt)
 		return fwd, e
-	} else {
-		fail_cnt = 0
 	}
 
 	sugar.Debugf("Consul: DNS lookup for %s returned %v answers, with %s latency", name, len(resp.Answer), t)
@@ -264,7 +307,7 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 		}
 	}
 	if podName == "" {
-		return fwd, errors.New("Pod not found")
+		return fwd, errors.New("pod not found")
 	}
 
 	// Just always pick the first answer. It will be load balanced (round robin) in case
