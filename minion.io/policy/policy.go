@@ -310,6 +310,16 @@ func nxtOpaProcess(ctx context.Context) int {
 	var cs *mongo.ChangeStream
 	var err error
 
+	// Set up watch for updates to minver field of any document
+	// in any of the tenantDB collections
+	pipeline := mongo.Pipeline{bson.D{{"$match", bson.D{{"$and",
+		bson.A{
+			bson.D{{"updateDescription.updatedFields.minver", bson.D{
+				{"$gt", 0},
+			}}},
+			bson.D{{"operationType", "update"}}}}},
+	}}}
+
 	// First, wait until the code exits nxtOpaInit()
 	select {
 	case <-initExit:
@@ -336,15 +346,9 @@ func nxtOpaProcess(ctx context.Context) int {
 			continue
 		}
 
-		for i, ucase := range opaUseCases {
-			if initUseCase[i] > 0 {
-				nxtSetupUseCase(ctx, i, ucase)
-			}
-		}
-
 		// Watch the tenantDB. Retry for 5 times before bailing out of watch
 		for retries := 1; retries <= 5; retries++ {
-			cs, err = tenantDB.Watch(context.TODO(), mongo.Pipeline{}, options.ChangeStream().SetFullDocument(options.UpdateLookup))
+			cs, err = tenantDB.Watch(context.TODO(), pipeline)
 			if err != nil {
 				nxtLogError(nxtMongoDBName, fmt.Sprintf("Not able to register for change notification [err:%s]. Retrying...%d", err, retries))
 				time.Sleep(1 * time.Second)
@@ -358,22 +362,33 @@ func nxtOpaProcess(ctx context.Context) int {
 			nxtLogError(nxtMongoDBName, fmt.Sprintf("DB watch register error - %v", err))
 			continue
 		}
-		// Update the local cache from existing DB info first before processing change notification
+
+		// Check all collections once after setting up watch before waiting for
+		// change notifications. Better to process a change twice rather than miss
+		// a change.
+		for i, ucase := range opaUseCases {
+			if initUseCase[i] > 0 {
+				nxtSetupUseCase(ctx, i, ucase)
+			}
+		}
 		nxtProcessUserAttrChanges(ctx)
 		nxtProcessAppAttrChanges(ctx)
-		if usrAttrWrVer ||
+		if usrAttrWrVer || appAttrWrVer ||
 			QStateMap[opaUseCases[2]].WrVer ||
 			QStateMap[opaUseCases[3]].WrVer {
 			nxtWriteAttrVersions()
 		}
 
 		// Wait for change notification from tenant DB for processing
+		// Note that we are only looking for changes to minver field in the header
+		// of collections relevant here.
 		for cs.Next(context.TODO()) {
 			var changeEvent bson.M
 
 			err = cs.Decode(&changeEvent)
 			if err != nil {
-				// We don't expect the decode to fail. Since, we missed to decode this event, lets close watch and rewatch again.
+				// We don't expect the decode to fail. Since, we missed to decode this event,
+				// lets close watch and rewatch again.
 				cs.Close(context.TODO())
 				break
 			}
@@ -381,15 +396,15 @@ func nxtOpaProcess(ctx context.Context) int {
 			// Get the collection info for this event first
 			ns := changeEvent["ns"].(primitive.M)
 			coll := ns["coll"].(string)
-			if coll == "NxtOnboardLog" { //No processing needed for collection NxtOnboardLog
-				continue
-			}
 			nxtLogDebug(nxtMongoDBName, fmt.Sprintf(" DB ChangeEvent: Coll:%s Event:%s\n", coll, changeEvent["operationType"]))
-			// Since we are using only operationTypes Insert, Update, Delete and Replace while updating the DB and the processing
-			// is same for all 4 types, we are not checking for operationTypes here.
+
 			for i, ucase := range opaUseCases {
 				if initUseCase[i] > 0 {
-					nxtSetupUseCase(ctx, i, ucase)
+					// If use case is active, check if Policy collection or use case
+					// reference data collection has changed
+					if (coll == "NxtPolicies") || (QStateMap[ucase].DColl == coll) {
+						nxtSetupUseCase(ctx, i, ucase)
+					}
 				}
 			}
 			if coll == "NxtUserAttr" {
@@ -399,7 +414,8 @@ func nxtOpaProcess(ctx context.Context) int {
 			if coll == "NxtAppAttr" {
 				nxtProcessAppAttrChanges(ctx)
 			}
-			if usrAttrWrVer ||
+
+			if usrAttrWrVer || appAttrWrVer ||
 				QStateMap[opaUseCases[2]].WrVer ||
 				QStateMap[opaUseCases[3]].WrVer {
 				nxtWriteAttrVersions()
@@ -887,13 +903,14 @@ func nxtUpdateUserAttrCache() {
 var appAttr map[string]usrCache
 var appAttrLock sync.Mutex
 var appAttrHdr DataHdr
+var appAttrWrVer bool
 
 // If new version of app attribues collection is available, read the
 // attributes docs and update the cache for active apps
 func nxtProcessAppAttrChanges(ctx context.Context) {
 	tmphdr := nxtReadAppAttrHdr(ctx)
 	appAttrHdr = tmphdr
-	QStateMap[opaUseCases[2]].WrVer = true // for testing infra
+	appAttrWrVer = true // for testing infra
 	nxtUpdateAppAttrCache()
 }
 
@@ -1196,7 +1213,7 @@ func nxtCreateOpaQry(query string, ldir string) *rego.Rego {
 	r := rego.New(
 		rego.Query(query),
 		rego.Load([]string{ldir}, nil))
-	nxtLogDebug(ldir, "Created OPA query with load directory")
+	nxtLogDebug(ldir, "Created OPA query with load directory"+ldir)
 	return r
 }
 
@@ -1286,6 +1303,7 @@ func nxtWriteAttrVersions() {
 		qsm2.PStruct.Majver, qsm2.PStruct.Minver, qsm3.RefHdr.Majver, qsm3.RefHdr.Minver)
 	ioutil.WriteFile("/tmp/opa_attr_versions", []byte(versions), 0644)
 	usrAttrWrVer = false
+	appAttrWrVer = false
 	QStateMap[opaUseCases[2]].WrVer = false
 	QStateMap[opaUseCases[3]].WrVer = false
 }
