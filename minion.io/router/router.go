@@ -1346,9 +1346,11 @@ func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr
 // is hosting the agent/connector of its choice, so as far as this API is concerned, its destination stream
 // is always local.
 // NOTE: The "Suuid" is supposed to be the "session uuid", ie there can be one session uniquely identified
-// by it and many streams under that session. But not all transport types offer the ability to identify a
-// session uniquely, for example http2 does not (see comments in httpHandler in common repo http2.go). So
-// before using Suuid see if the underlying transport supports it
+// by it and many streams under that session. But it need not necessarily translate to the underlying transport's
+// notion of a session - like it need not traslate to like a tcp session. All it means is that the client
+// initiating the connection thinks of this as a logical "session" with many "streams" in it. For example
+// in the case of http2, even though the initiator thinks of initiating a "session" with "streams" underneath,
+// the http2 library might use many tcp sessions to achieve the same
 func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context, Suuid uuid.UUID, tunnel common.Transport, httphdrs *http.Header) {
 	var dest common.Transport
 	var onboard *nxthdr.NxtOnboard
