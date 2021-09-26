@@ -450,6 +450,112 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) *flowMetrics {
 	return &flowMetrics{bytes: &c, um: m, allLabels: labels}
 }
 
+// This API returns a json list of user attribute key-value pairs to use
+// as labels for stats. The attribute names are provided by an OPA policy
+// per tenant. The attribute values are obtained based on the flow.
+// The API returns a null string in case of any error.
+// The OPA policy can provide either a list of attributes to include
+// or a list of attributes to exclude. The set of attributes is comprised
+// of those defined by a tenant and those provided by the agents (which
+// are nextensio defined).
+//
+func getAgentFlowStatAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) string {
+
+	if onboard.Agent {
+		var attrs []string
+		statsinfo := make(map[string][]string)
+		// If apod, get user attribute list from policy
+		statsresult := policy.NxtStatsAttributes(atype(onboard))
+		s.Debugf("AgentFlowStats: statsresult = %v", statsresult)
+		// statsresult will be in this form :
+		// {"include": [<list of user attributes as stats label]}
+		// or
+		// {"exclude": [<list of user attributes]}
+		err := json.Unmarshal([]byte(statsresult), &statsinfo)
+		if err != nil {
+			s.Debugf("AgentFlowStats: stats result unmarshal error %v", err)
+			return ""
+		}
+		var key string
+		for key, attrs = range statsinfo {
+			if (key != "include") && (key != "exclude") {
+				s.Debugf("AgentFlowStats: unknown request %s for stats user attributes", key)
+				return ""
+			}
+			return statsAttrList(s, flow.Usrattr, key, attrs)
+		}
+	}
+	return ""
+}
+
+func statsAttrList(s *zap.SugaredLogger, userattrs string, inout string, statsattrs []string) string {
+	var allattrs, exclude bool
+	uattr := make(map[string]interface{})
+	statuattr := make(map[string]interface{})
+
+	if inout == "exclude" {
+		exclude = true
+	}
+	if !exclude && (len(statsattrs) == 0) {
+		// {"include": []}
+		return ""
+	}
+	if (statsattrs[0] == "all") || (statsattrs[0] == "*") {
+		// {"include": ["all" | "*"]}
+		// {"exclude": ["all" | "*"]}
+		allattrs = true
+	}
+	if exclude && allattrs {
+		// {"exclude": ["all" | "*"]}
+		return ""
+	}
+	err := json.Unmarshal([]byte(userattrs), &uattr)
+	if err != nil {
+		s.Errorf("statsAttrList: user attributes unmarshal error - %v", err)
+		return ""
+	}
+	if allattrs {
+		// get all user attributes
+		for k, val := range uattr {
+			statuattr[k] = val
+		}
+	} else {
+		// get specified valid user attributes
+		if !exclude {
+			// include only the specified attributes
+			for _, attr := range statsattrs {
+				val, ok := uattr[attr]
+				if ok {
+					statuattr[attr] = val
+				}
+			}
+		} else {
+			// exclude the specified attributes
+			for key, val := range uattr {
+				found := false
+				for i := 0; i < len(statsattrs); i++ {
+					if statsattrs[i] == key {
+						found = true
+						break
+					}
+				}
+				if !found {
+					statuattr[key] = val
+				}
+			}
+		}
+	}
+	if len(statuattr) == 0 {
+		return ""
+	}
+	jsonlist, merr := json.Marshal(statuattr)
+	if merr != nil {
+		s.Errorf("statsAttrList: stats attributes list marshal error - %v", merr)
+		return ""
+	}
+	return string(jsonlist)
+}
+
 func sessionAdd(Suuid uuid.UUID, onboard *nxthdr.NxtOnboard) {
 	aLock.Lock()
 	defer aLock.Unlock()

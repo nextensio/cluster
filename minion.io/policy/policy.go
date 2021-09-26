@@ -43,9 +43,9 @@ import (
 //
 //--------------------------------Data Structures, Variables, etc ----------------------------------
 
-const maxOpaUseCases = 5 // we currently have 4
-const maxMongoColls = 10 // assume max 10 MongoDB tenant collections, currently 6+1
-const maxUsers = 10000   // max per tenant
+const maxOpaUseCases = 10 // we currently have 5; stats makes it 6
+const maxMongoColls = 10  // assume max 10 MongoDB tenant collections, currently 6+1
+const maxUsers = 10000    // max per tenant
 
 /*****************************
 // MongoDB database and collections
@@ -60,20 +60,7 @@ const userAttrCollection = "NxtUserAttr"
 const policyCollection = "NxtPolicies"
 const hostAttrCollection = "NxtHostAttr"
 const traceReqCollection = "NxtTraceRequests"
-
-const AAuthzQry = "data.app.access.allow"
-const CAuthzQry = "data.app.access.allow"
-const AccessQry = "data.app.access.allow"
-const RouteQry = "data.user.routing.route_tag"
-const TraceQry = "data.user.tracing.request"
-
-// These need to be created via the Dockerfiles for the policy and refdata files
-// required at run-time by OPA
-const agentldir = "authz/agent-authz"
-const connldir = "authz/conn-authz"
-const accessldir = "authz/app-access"
-const routeldir = "authz/routing"
-const traceldir = "authz/tracing"
+const statsReqCollection = "" // We don't need a reference data collection
 
 const HDRKEY = "Header"
 
@@ -152,6 +139,7 @@ var opaUseCases = []string{
 	"AppAccess",
 	"RoutePol",
 	"TracePol",
+	"StatsPol",
 }
 var initUseCase = []int{ // 0 = disable; 1 = enable
 	0, // Agent authorization
@@ -159,6 +147,7 @@ var initUseCase = []int{ // 0 = disable; 1 = enable
 	1, // App-bundle access authorization
 	1, // Host routing
 	1, // Tracing
+	1, // Stats
 }
 
 // policyType - Policy doc Keys
@@ -168,20 +157,26 @@ var policyType = []string{
 	"AccessPolicy",
 	"RoutePolicy",
 	"TracePolicy",
+	"StatsPolicy",
 }
-var opaQuery = []string{
-	AAuthzQry,
-	CAuthzQry,
-	AccessQry,
-	RouteQry,
-	TraceQry,
+var opaQuery = []string{ // Result document from policy
+	"data.app.access.allow",
+	"data.app.access.allow",
+	"data.app.access.allow",
+	"data.user.routing.route_tag",
+	"data.user.tracing.request",
+	"data.user.stats.attributes",
 }
+
+// These need to be created via the Dockerfiles for the policy and refdata files
+// required at run-time by OPA
 var loadDir = []string{
-	agentldir,
-	connldir,
-	accessldir,
-	routeldir,
-	traceldir,
+	"authz/agent-authz",
+	"authz/conn-authz",
+	"authz/app-access",
+	"authz/routing",
+	"authz/tracing",
+	"authz/stats",
 }
 var DColls = []string{
 	userInfoCollection,
@@ -189,6 +184,7 @@ var DColls = []string{
 	appAttrCollection,
 	hostAttrCollection,
 	traceReqCollection,
+	statsReqCollection,
 }
 
 var initExit = make(chan bool, 1)
@@ -301,6 +297,24 @@ func NxtTraceLookup(which string, uattr string) string {
 		return "no"
 	}
 	return nxtEvalUserTracing(opaUseCases[4], uattr)
+}
+
+// Stats policy is run only on Apod. It returns a list (format TBD) of user attributes
+// selected by tenant as stats dimensions
+func NxtStatsAttributes(which string) string {
+	deflist := "{\"exclude\": [\"uid\", \"maj_ver\", \"min_ver\", \"_hostname\", \"_model\", \"_osMinor\", \"_osPatch\", \"_osName\"]}"
+
+	if !initDone || !mongoInitDone {
+		return deflist
+	}
+	if which != "agent" {
+		return deflist
+	}
+	sattrs := nxtEvalUserStats(opaUseCases[5])
+	if sattrs == "" {
+		return deflist
+	}
+	return sattrs
 }
 
 // For now, this function tests access for a number of users with each app bundle.
@@ -719,6 +733,12 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 	var hdr DataHdr
 	qs := QStateMap[ucase]
 	coll := qs.DColl
+	if coll == "" {
+		// No reference data collection. Fake it
+		qs.RefHdr.Majver = qs.PStruct.Majver
+		qs.RefHdr.Minver = qs.PStruct.Minver
+		return false
+	}
 	err := CollMap[coll].FindOne(ctx, bson.M{"_id": qs.HdrKey}).Decode(&hdr)
 	if err != nil {
 		nxtLogError(ucase, fmt.Sprintf("Failed to find %s header doc - %v", qs.HdrKey, err))
@@ -1052,7 +1072,7 @@ func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr s
 
 		// Convert map structure to json
 		// Concatenate json strings for attributes of each app bundle
-		tsm.Keys[i] = fmt.Sprintf("%s", docs[i]["_id"])
+		tsm.Keys[i] = docs[i]["_id"].(string)
 		tsm.Count = tsm.Count + 1
 		docs[i] = nxtFixupAttrID(docs[i], keyid)
 		docs[i] = nxtAddVerToDoc(docs[i], qsm.RefHdr)
@@ -1177,6 +1197,43 @@ func nxtEvalTracingInputJSON(uajson string) []byte {
 	return []byte(jsonResp)
 }
 
+//
+//--------------------------------- Stats Policy ----------------------------------
+//
+// Stats Policy
+// Evaluate the policy to return a set of user attributes to be used for stats.
+// Minion code in an apod evaluates this policy once at the beginning (or periodically
+// in case policy changes ?)
+func nxtEvalUserStats(ucase string) string {
+	// Create {"user": {"attributes": "stats"}}
+
+	if ucase != QStateMap[ucase].QUCase {
+		return ""
+	}
+	if QStateMap[ucase].QError {
+		nxtLogError(ucase, "Qstate error for stats query")
+		return ""
+	}
+	rs, ok := nxtExecOpaQry(nxtEvalStatsInputJSON("{\"attributes\": \"stats\"}"), ucase)
+	if ok {
+		jsonResp, merr := json.Marshal(rs[0].Expressions[0].Value)
+		if merr != nil {
+			nxtLogError("JSON-marshal", fmt.Sprintf("%v for %v", merr,
+				rs[0].Expressions[0].Value))
+			return ""
+		}
+		return string(jsonResp)
+	}
+	nxtLogError(ucase, "Stats query execution failure")
+	return ""
+}
+
+func nxtEvalStatsInputJSON(uajson string) []byte {
+	str1 := "{\"" + kuserattrs + "\": "
+	jsonResp := str1 + uajson + " }"
+	return []byte(jsonResp)
+}
+
 //---------------------------------Rego interface functions-----------------------------
 // Prime the load directory with the policy file and the reference data file
 func nxtPrimeLoadDir(ucase string) {
@@ -1213,7 +1270,7 @@ func nxtCreateOpaQry(query string, ldir string) *rego.Rego {
 	r := rego.New(
 		rego.Query(query),
 		rego.Load([]string{ldir}, nil))
-	nxtLogDebug(ldir, "Created OPA query with load directory"+ldir)
+	nxtLogDebug(ldir, "Created OPA query with load directory "+ldir)
 	return r
 }
 
