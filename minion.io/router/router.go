@@ -403,6 +403,17 @@ func flowToKey(flow *nxthdr.NxtFlow) flowKey {
 	}
 }
 
+func traceToKey(trace *nxthdr.NxtTrace, onboard *nxthdr.NxtOnboard) flowKey {
+	return flowKey{
+		source:      trace.Source,
+		dest:        trace.Dest,
+		sport:       trace.Sport,
+		dport:       trace.Dport,
+		proto:       trace.Proto,
+		sourceAgent: onboard.Uuid,
+	}
+}
+
 func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) *flowMetrics {
 	// agentUuid is userid:uniqueid
 	user := strings.Split(flow.AgentUuid, ":")
@@ -1286,8 +1297,10 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		case *nxthdr.NxtHdr_Trace:
 			// Ctrl packet for agent tracing support
 			trace := hdr.Hdr.(*nxthdr.NxtHdr_Trace).Trace
-			// Drift and RTT is in nanoseconds
-			s.Debugf("Got trace", trace, tunnel.Timing().Rtt)
+
+			//  RTT is in nanoseconds
+			key := traceToKey(trace, onboard)
+			s.Debugf("Got trace", trace, key, tunnel.Timing().Rtt)
 			if trace.TraceCtx != "" {
 				rtt := time.Duration(tunnel.Timing().Rtt * uint64(time.Nanosecond))
 				tracer := opentracing.GlobalTracer()
