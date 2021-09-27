@@ -1286,7 +1286,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			// Ctrl packet for agent tracing support
 			trace := hdr.Hdr.(*nxthdr.NxtHdr_Trace).Trace
 			// Drift and RTT is in nanoseconds
-			s.Debugf("Got trace", trace, tunnel.Timing().Drift, tunnel.Timing().Rtt)
+			s.Debugf("Got trace", trace, tunnel.Timing().Rtt)
 			if trace.TraceCtx != "" {
 				rtt := time.Duration(tunnel.Timing().Rtt * uint64(time.Nanosecond))
 				tracer := opentracing.GlobalTracer()
