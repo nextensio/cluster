@@ -80,11 +80,6 @@ func (z *zap2log) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-type podInfo struct {
-	pending bool
-	tunnel  common.Transport
-}
-
 type agentTunnel struct {
 	tunnel common.Transport
 	suuid  uuid.UUID
@@ -143,7 +138,7 @@ var metrics map[string]*userMetrics
 var fLock sync.Mutex
 var flows map[flowKey]*flowInfo
 var pLock sync.RWMutex
-var pods map[string]*podInfo
+var pods map[string]common.Transport
 var unusedChan chan common.NxtStream
 var outsideMsg chan bool
 var insideMsg chan bool
@@ -757,33 +752,24 @@ func localRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr.
 // sure, we will open a session to each "backend" (ie pod)
 func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd) common.Transport {
-	var tunnel common.Transport
-	var pending bool = false
 
 	key := fwd.Id + ":" + fwd.Pod
 
 	// Try read lock first since the most common case should be that tunnels are
 	// already setup
 	pLock.RLock()
-	p := pods[key]
-	if p != nil {
-		tunnel = p.tunnel
-		pending = p.pending
-	}
+	tunnel := pods[key]
 	pLock.RUnlock()
 
 	// The uncommon/infrequent case. Multiple goroutines will try to connect to the
 	// same pod, so we should not end up creating multiple tunnels to the same pod,
 	// hence the pending flag to ensure only one tunnel is created
-	if tunnel == nil && !pending {
+	if tunnel == nil {
 		pLock.Lock()
-		p = pods[key]
-		if p == nil {
-			pods[key] = &podInfo{pending: true, tunnel: nil}
+		tunnel = pods[key]
+		if tunnel == nil {
 			podDial(s, ctx, MyInfo, onboard, flow, fwd, key)
-			tunnel = pods[key].tunnel
-		} else {
-			tunnel = p.tunnel
+			tunnel = pods[key]
 		}
 		pLock.Unlock()
 	}
@@ -810,7 +796,7 @@ func podTunnelMonitor(s *zap.SugaredLogger, key string, tunnel common.Transport,
 			tunnel.Close()
 			s.Debugf("Monitor tunnel closed", err, key)
 			pLock.Lock()
-			pods[key] = nil
+			delete(pods, key)
 			pLock.Unlock()
 			return
 		}
@@ -832,7 +818,7 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	hdrs.Add("x-nextensio-for", fwd.Pod)
 
 	lg := log.New(&zap2log{s: s}, "http2", 0)
-	client := nhttp2.NewClient(ctx, lg, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs, &totGoroutines)
+	client := nhttp2.NewClient(ctx, lg, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs, &totGoroutines, 500)
 	// For pod to pod connectivity, a pod will always dial-out another one,
 	// we dont expect a stream to come in from the other end on a dial-out session,
 	// and hence the reason we use the unusedChan on which no one is listening.
@@ -845,8 +831,7 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	}
 	s.Debugf("Dialed pod for %s at %s", flow.DestAgent, fwd.Dest)
 
-	pods[key].pending = false
-	pods[key].tunnel = client
+	pods[key] = client
 	go podTunnelMonitor(s, key, client, fwd)
 }
 
@@ -1093,7 +1078,7 @@ func onboardDiff(sl *zap.SugaredLogger, MyInfo *shared.Params, old *nxthdr.NxtOn
 }
 
 // This will generate From Agent processing spans
-func generateFromAgentSpan(spanCtx opentracing.SpanContext, processingDuration uint32, s *zap.SugaredLogger, tracer opentracing.Tracer, rtt time.Duration) *opentracing.Span {
+func generateFromAgentSpan(spanCtx opentracing.SpanContext, processingDuration uint64, s *zap.SugaredLogger, tracer opentracing.Tracer, rtt time.Duration) *opentracing.Span {
 	var finishTime opentracing.FinishOptions
 
 	tNow := time.Now()
@@ -1104,12 +1089,11 @@ func generateFromAgentSpan(spanCtx opentracing.SpanContext, processingDuration u
 	span := tracer.StartSpan("From Agent", opentracing.StartTime(pStart), opentracing.FollowsFrom(spanCtx))
 	finishTime.FinishTime = wStart
 	span.FinishWithOptions(finishTime)
-	spanCtx = span.Context()
 	return &span
 }
 
 // This will generate To Agent/Connector onwire spans and agent/connector processing spans
-func generateAgentConnectorSpan(spanCtx opentracing.SpanContext, procD uint32, s *zap.SugaredLogger, tracer opentracing.Tracer, rtt time.Duration, spanName string) *opentracing.Span {
+func generateAgentConnectorSpan(spanCtx opentracing.SpanContext, procD uint64, s *zap.SugaredLogger, tracer opentracing.Tracer, rtt time.Duration, spanName string) *opentracing.Span {
 	var wireSpanName string
 	var finishTime opentracing.FinishOptions
 
@@ -1303,13 +1287,15 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			trace := hdr.Hdr.(*nxthdr.NxtHdr_Trace).Trace
 			// Drift and RTT is in nanoseconds
 			s.Debugf("Got trace", trace, tunnel.Timing().Drift, tunnel.Timing().Rtt)
-			rtt := time.Duration(tunnel.Timing().Rtt * uint64(time.Nanosecond))
-			tracer := opentracing.GlobalTracer()
-			hhdr := make(http.Header)
-			hhdr.Add("Uber-Trace-Id", trace.TraceCtx)
-			spanCtx, _ := tracer.Extract(opentracing.HTTPHeaders,
-				opentracing.HTTPHeadersCarrier(hhdr))
-			generateAgentConnectorSpan(spanCtx, trace.ProcessingDuration, s, tracer, rtt, "Agent")
+			if trace.TraceCtx != "" {
+				rtt := time.Duration(tunnel.Timing().Rtt * uint64(time.Nanosecond))
+				tracer := opentracing.GlobalTracer()
+				hhdr := make(http.Header)
+				hhdr.Add("Uber-Trace-Id", trace.TraceCtx)
+				spanCtx, _ := tracer.Extract(opentracing.HTTPHeaders,
+					opentracing.HTTPHeadersCarrier(hhdr))
+				generateAgentConnectorSpan(spanCtx, trace.ProcessingDuration, s, tracer, rtt, "Agent")
+			}
 		case *nxthdr.NxtHdr_Onboard:
 			if onboard == nil {
 				onboard = hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
@@ -1328,8 +1314,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				}
 			}
 			// The handshake is that we get onboard info and we send back an onboard info
-			// with data that agent might need
-			onboard.JaegerCollector = MyInfo.JaegerCollector
+			// modified with data that agent might need.
 			err := tunnel.Write(hdr, agentBuf)
 			if err != nil {
 				s.Debugf("Handshake failed")
@@ -1565,7 +1550,7 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	sessions = make(map[uuid.UUID]nxthdr.NxtOnboard)
 	agents = make(map[string]*agentTunnel)
 	users = make(map[string][]*agentTunnel)
-	pods = make(map[string]*podInfo)
+	pods = make(map[string]common.Transport)
 	metrics = make(map[string]*userMetrics)
 	flows = make(map[flowKey]*flowInfo)
 	pendingFree = make([]*deleteMetrics, 0)
