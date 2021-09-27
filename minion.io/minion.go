@@ -79,12 +79,16 @@ func main() {
 	sugar := logger.Sugar()
 	ArgHandler(sugar, &MyInfo)
 	EnvHandler(sugar, &MyInfo)
-	// Create a Jaegertracer instance for gap spans (spans for the period the pkt is on the wire). Jaeger UI needs
-	// different Jaegertrace instance service name to display the spans in different color. So, we create this
-	// instance just for gap spans to be displayed in different colors.
-	closer := router.InitJaegerTrace(MyInfo.Namespace+"-onwire-trace", &MyInfo, sugar, true)
-	if closer != nil {
-		defer closer.Close()
+	// Create a Jaegertracer instance for onWire and connector spans (spans for the period the pkt is on the
+	// wire). Jaeger UI needs different Jaegertrace instance service name to display the spans in different
+	// color. So, we create these instances just for onWire and connector spans to be displayed in different colors.
+	wcloser := router.InitJaegerTrace(MyInfo.Namespace+"-onwire-trace", &MyInfo, sugar, "onWire")
+	if wcloser != nil {
+		defer wcloser.Close()
+	}
+	cCloser := router.InitJaegerTrace(MyInfo.Namespace+"-connector-trace", &MyInfo, sugar, "connector")
+	if cCloser != nil {
+		defer cCloser.Close()
 	}
 	router.RouterInit(sugar, &MyInfo, ctx)
 	go policy.NxtOpaInit(MyInfo.Namespace, MyInfo.Pod, MyInfo.Id+consul.RemotePostPrefix, MyInfo.MongoUri, sugar)
