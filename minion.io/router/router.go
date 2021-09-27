@@ -1128,6 +1128,7 @@ func generateOnWireSpan(spanCtx opentracing.SpanContext, s *zap.SugaredLogger, r
 
 	tNow := time.Now()
 	wireStart := tNow.Add(-rtt / 2) // On wire starttime
+	s.Debugf("====> generateOnWireSpan  RTT: %v[%v] ", rtt, rtt/2)
 	// Create the "On wire" span
 	span := wireTracer.StartSpan("OnWire", opentracing.StartTime(wireStart), opentracing.FollowsFrom(spanCtx))
 	finishTime.FinishTime = tNow
