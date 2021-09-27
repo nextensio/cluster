@@ -20,5 +20,4 @@ RUN mkdir -p authz/routing
 RUN mkdir -p authz/tracing
 RUN mkdir -p authz/stats
 EXPOSE 80/tcp 443/tcp 8080/tcp
-#CMD ["/go/bin/minion.io"]
-CMD ["/go/run.sh"]
+CMD ["/go/bin/minion.io"]
