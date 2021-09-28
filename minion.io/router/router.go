@@ -745,7 +745,7 @@ func localRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr.
 // The next flow will find an existing session and just create a new stream over it, which is
 // a very fast operation compared to the tcp/tls negotiation for creating a session.
 //
-// NOTE NOTE NOTE: The way istio/envoy handles http2 sessions/streams can be confusing. Lets
+// NOTE1: The way istio/envoy handles http2 sessions/streams can be confusing. Lets
 // say we have two remote pods cpod1 and cpod2. Now from apod1 we first want to send traffic
 // to cpod1. So we open an http2 session to remote-gateway, add x-nextensio-for: cpod1 and that
 // stream reaches cpod1. Now if we want to send to cpod2, one might logically assume that we
@@ -755,12 +755,22 @@ func localRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr.
 // From remote gateway istio/envoy ingress perpsective, once a "session" is established to a
 // pod (cpod1 in our example), we can open thousands of streams on that session with all kinds of
 // different http headers, but all those streams will only go to cpod1. And hence the reason
-// why wwe key here using the destination + pod combo.
+// why we key here using the destination + pod combo.
 // See https://istio.io/latest/blog/2021/zero-config-istio/ for more details. There they say that
 // a session to "one backend" can then loadbalance streams to multiple replicas in that backend.
 // Theoretically a session to an ingress gateway should be able to load balance to multiple
 // backends too, but its not clear from that article whether they do that. Till we know that for
 // sure, we will open a session to each "backend" (ie pod)
+//
+// NOTE2: Now even if we open a session to say cpod1, cpod1 might have like a hundred replicas,
+// so the session really is to one of the replicas in cpod1 as decided by envoy loadbalancing.
+// But "hopefully" this session being kept open means that we establish a "shared" session through
+// all the envoys in the path till the final cpod1 stateful/replica set.
+// thisPod-A-[envoy sidecar]-B-[egress Gw envoy]-C-[ingresss Gw envoy]-D-[cpod1 envoys]
+// That is, in the above picture, hopefully sessions A, B, C are all shared when going to multiple
+// replicas in [cpod1 envoys], but session D of course will be new.
+// At any rate, from our perspective a destination pod is one logical entity, we dont know
+// and we dont want to know how many "real" entities/replicas are behind it
 func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd) common.Transport {
 
@@ -774,7 +784,7 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 
 	// The uncommon/infrequent case. Multiple goroutines will try to connect to the
 	// same pod, so we should not end up creating multiple tunnels to the same pod,
-	// hence the pending flag to ensure only one tunnel is created
+	// hence checking for the tunnel nil again AFTER the lock
 	if tunnel == nil {
 		pLock.Lock()
 		tunnel = pods[key]
@@ -788,14 +798,8 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	return tunnel
 }
 
-// The concept is that there is one "session" to the destination over which there are
-// "streams", and if the "session" is closed for some reason then we have to create a
-// new one. For http2 in specific, we dont really need this tunnel monitor, because
-// in golang http2 lib, everything is a "stream" - what we call here as the main "session"
-// is just a stream. And a NewStream() over it just ends up doing an http2 request which
-// the lib will smartly figure out whether the existing session is closed, a new session
-// is needed etc.. But if not for http2, if we are using some other transport, we need to
-// keep this semantics intact of session + stream and monitoring a session etc..
+// See NOTE2 against podLookup() - the only thing we are really achieving here is keeping
+// the sessions A, B, C "warm" so its not torn down. We have no control over session D
 func podTunnelMonitor(s *zap.SugaredLogger, key string, tunnel common.Transport, fwd shared.Fwd) {
 	hdr := &nxthdr.NxtHdr{}
 	hdr.Hdr = &nxthdr.NxtHdr_Keepalive{}
@@ -815,7 +819,7 @@ func podTunnelMonitor(s *zap.SugaredLogger, key string, tunnel common.Transport,
 	}
 }
 
-// Create the initial session to a destination pod/remote cluser
+// See notes against podLookup()
 func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fwd shared.Fwd, key string) {
 	var pubKey []byte
