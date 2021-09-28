@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -798,18 +797,14 @@ func podLookup(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	return tunnel
 }
 
-// See NOTE2 against podLookup() - the only thing we are really achieving here is keeping
-// the sessions A, B, C "warm" so its not torn down. We have no control over session D
+// For http2, this doesnt really achieve anything since we can do a NewStream() just fine
+// on a closed tunnel too, because http handles the "sessions" inside the golang library.
+// But later if we have other transports where we handle the "session", we dont want to be
+// NewStream-ing off a stale session
 func podTunnelMonitor(s *zap.SugaredLogger, key string, tunnel common.Transport, fwd shared.Fwd) {
-	hdr := &nxthdr.NxtHdr{}
-	hdr.Hdr = &nxthdr.NxtHdr_Keepalive{}
-	agentBuf := net.Buffers{}
-
 	for {
-		err := tunnel.Write(hdr, agentBuf)
-		if err != nil {
-			tunnel.Close()
-			s.Debugf("Monitor tunnel closed", err, key)
+		if tunnel.IsClosed() {
+			s.Debugf("Monitor tunnel closed", key)
 			pLock.Lock()
 			delete(pods, key)
 			pLock.Unlock()
@@ -833,7 +828,8 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 	hdrs.Add("x-nextensio-for", fwd.Pod)
 
 	lg := log.New(&zap2log{s: s}, "http2", 0)
-	client := nhttp2.NewClient(ctx, lg, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs, &totGoroutines, 500)
+	// keepalive 10 secs, clock sync 100msecs.
+	client := nhttp2.NewClient(ctx, lg, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs, &totGoroutines, 10000, 100)
 	// For pod to pod connectivity, a pod will always dial-out another one,
 	// we dont expect a stream to come in from the other end on a dial-out session,
 	// and hence the reason we use the unusedChan on which no one is listening.
