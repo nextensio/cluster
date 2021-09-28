@@ -90,6 +90,10 @@ func main() {
 	if cCloser != nil {
 		defer cCloser.Close()
 	}
+	aCloser := router.InitJaegerTrace(MyInfo.Namespace+"-trace", &MyInfo, sugar, "agent")
+	if aCloser != nil {
+		defer aCloser.Close()
+	}
 	router.RouterInit(sugar, &MyInfo, ctx)
 	go policy.NxtOpaInit(MyInfo.Namespace, MyInfo.Pod, MyInfo.Id+consul.RemotePostPrefix, MyInfo.MongoUri, sugar)
 
