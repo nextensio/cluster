@@ -1172,6 +1172,9 @@ func traceAttrListJson(s *zap.SugaredLogger, userattrs string, traceattrs []stri
 		s.Errorf("traceAttrListJson: user attributes unmarshal error - %v", err)
 		return ""
 	}
+	if len(traceattrs) == 0 {
+		traceattrs = []string{""}
+	}
 	if (traceattrs[0] == "all") || (traceattrs[0] == "*") {
 		// get all user attributes
 		for k, val := range uattr {
@@ -1217,6 +1220,9 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 			if (tracereq == "no") || (tracereq == "none") {
 				s.Debugf("traceAgentFlow: %s trace request matched for this flow", tracereq)
 				return nil
+			}
+			if (attrs == nil) || (len(attrs) == 0) {
+				attrs = []string{""}
 			}
 			flow.TraceRequestId = tracereq + ": " + traceAttrListJson(s, flow.Usrattr, attrs)
 			break
