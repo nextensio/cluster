@@ -14,7 +14,7 @@ require (
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/google/uuid v1.3.0
 	github.com/miekg/dns v1.1.43
-	github.com/open-policy-agent/opa v0.32.0
+	github.com/open-policy-agent/opa v0.32.1
 	github.com/opentracing/opentracing-go v1.2.0
 	github.com/pion/dtls/v2 v2.0.9 // indirect
 	github.com/prometheus/client_golang v1.11.0

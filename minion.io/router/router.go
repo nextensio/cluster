@@ -415,6 +415,14 @@ func traceToKey(trace *nxthdr.NxtTrace, onboard *nxthdr.NxtOnboard) flowKey {
 	}
 }
 
+func getFlowInfo(key flowKey) *flowInfo {
+	fLock.Lock()
+	finfo := flows[key]
+	fLock.Unlock()
+
+	return finfo
+}
+
 func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) *flowMetrics {
 	// agentUuid is userid:uniqueid
 	user := strings.Split(flow.AgentUuid, ":")
@@ -1106,6 +1114,7 @@ func generateFromAgentSpan(spanCtx opentracing.SpanContext, processingDuration u
 }
 
 // This will generate To Agent/Connector onwire spans and agent/connector processing spans
+// NOTE: The finfo here "can" be nil, so check before accessing
 func generateAgentConnectorSpan(spanCtx opentracing.SpanContext, finfo *flowInfo, procD uint64, s *zap.SugaredLogger, tracer opentracing.Tracer, rtt time.Duration, spanName string) *opentracing.Span {
 	var wireSpanName string
 	var finishTime opentracing.FinishOptions
@@ -1238,9 +1247,10 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 			return nil
 		}
 		// Get the time the packet is sent to connector from flowInfo for span creation
-		fLock.Lock()
-		finfo := flows[flowToKey(flow)]
-		fLock.Unlock()
+		finfo := getFlowInfo(flowToKey(flow))
+		if finfo == nil {
+			return nil
+		}
 
 		// Create a dummy "uber-trace-id" http header.
 		// Then use it to create a spanCtx
@@ -1329,10 +1339,8 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				hhdr.Add("Uber-Trace-Id", trace.TraceCtx)
 				spanCtx, _ := tracer.Extract(opentracing.HTTPHeaders,
 					opentracing.HTTPHeadersCarrier(hhdr))
-				fLock.Lock()
-				finfo := flows[key]
-				fLock.Unlock()
-				s.Debugf("Got trace %v %v %v %p", trace, key, tunnel.Timing().Rtt, &finfo)
+				finfo := getFlowInfo(key)
+				s.Debugf("Got trace %v %v %v", trace, key, tunnel.Timing().Rtt)
 				generateAgentConnectorSpan(spanCtx, finfo, trace.ProcessingDuration, s, tracer, rtt, "Agent")
 			}
 		case *nxthdr.NxtHdr_Onboard:
@@ -1408,9 +1416,9 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				// the close is cascaded to the other elements connected to the cluster (pods/agents)
 				dest.CloseCascade(tunnel)
 			}
-			var finishT int64
+			var finishT time.Time
 			if span != nil {
-				finishT = time.Now().UnixNano()
+				finishT = time.Now()
 			}
 			err := dest.Write(hdr, agentBuf)
 			if err != nil {
@@ -1420,7 +1428,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			}
 			if span != nil {
 				var finishTime opentracing.FinishOptions
-				finishTime.FinishTime = time.Unix(0, finishT)
+				finishTime.FinishTime = finishT
 				(*span).FinishWithOptions(finishTime)
 				span = nil
 			}
@@ -1511,7 +1519,6 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 	var span *opentracing.Span
 	var fm *flowMetrics
 	var lastFlow *nxthdr.NxtFlow
-	var key flowKey
 
 	s.Debugf("New interpod HTTP stream %v - %v", Suuid, httphdrs)
 
@@ -1538,7 +1545,6 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				rtt := time.Duration(tunnel.Timing().Rtt * uint64(time.Nanosecond))
 				span = traceInterpodFlow(s, MyInfo, flow, rtt)
 				fm = metricFlowAdd(s, flow)
-				key = flowToKey(flow)
 				onboard, dest = localRouteLookup(s, MyInfo, flow)
 				if dest == nil {
 					s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
@@ -1565,11 +1571,10 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				finishT = time.Now().UnixNano()
 				// Store the time the packet is sent to Agent in flowInfo, so that we can use it for
 				// generating "To Agent" and Onwire spans. We don't use this info for connector.
-				fLock.Lock()
-				if flows[key] != nil {
-					flows[key].reqTime = time.Now()
+				finfo := getFlowInfo(flowToKey(flow))
+				if finfo != nil {
+					finfo.reqTime = time.Now()
 				}
-				fLock.Unlock()
 				// ProcessingDuration is not required when we send it to Agent/Connector
 				flow.ProcessingDuration = 0
 			}
@@ -1640,7 +1645,8 @@ func InitJaegerTrace(service string, MyInfo *shared.Params, s *zap.SugaredLogger
 			Param: 1,
 		},
 		Reporter: &jaegercfg.ReporterConfig{
-			LogSpans: true,
+			QueueSize: 100,
+			LogSpans:  false,
 		},
 	}
 	jLogger := jaegerlog.StdLogger
