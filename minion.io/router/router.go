@@ -206,13 +206,12 @@ func userAttrMetricsLabelInit(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) map[st
 	var uaLabels map[string]interface{}
 	var uaLabelMap = make(map[string]string)
 
-	if flow.Usrattr == "" {
-		s.Debugf("UAM - No flow.Usrattr")
+	uab := getAgentFlowStatAttrs(s, flow)
+	if uab == "" {
+		s.Debug("UAM: - No attribute labels for flow")
 		return nil
 	}
-
-	uab := []byte(flow.Usrattr)
-	err := json.Unmarshal(uab, &uaLabels)
+	err := json.Unmarshal([]byte(uab), &uaLabels)
 	if err != nil {
 		s.Debugf("Error decoding attributes", err)
 		return nil
@@ -475,13 +474,13 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) *flowMetrics {
 // of those defined by a tenant and those provided by the agents (which
 // are nextensio defined).
 //
-func getAgentFlowStatAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow) string {
+func getAgentFlowStatAttrs(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) string {
 
-	if onboard.Agent {
+	if !flow.ResponseData {
 		var attrs []string
 		statsinfo := make(map[string][]string)
-		// If apod, get user attribute list from policy
-		statsresult := policy.NxtStatsAttributes(atype(onboard))
+		// If apod, get user attribute list from policy. Should be "agent".
+		statsresult := policy.NxtStatsAttributes("agent")
 		s.Debugf("AgentFlowStats: statsresult = %v", statsresult)
 		// statsresult will be in this form :
 		// {"include": [<list of user attributes as stats label]}
