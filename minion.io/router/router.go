@@ -1524,6 +1524,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 	var span *opentracing.Span
 	var fm *flowMetrics
 	var lastFlow *nxthdr.NxtFlow
+	var key flowKey
 
 	s.Debugf("New interpod HTTP stream %v - %v", Suuid, httphdrs)
 
@@ -1550,6 +1551,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				rtt := time.Duration(tunnel.Timing().Rtt * uint64(time.Nanosecond))
 				span = traceInterpodFlow(s, MyInfo, flow, rtt)
 				fm = metricFlowAdd(s, flow)
+				key = flowToKey(flow)
 				onboard, dest = localRouteLookup(s, MyInfo, flow)
 				if dest == nil {
 					s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
@@ -1576,7 +1578,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				finishT = time.Now().UnixNano()
 				// Store the time the packet is sent to Agent in flowInfo, so that we can use it for
 				// generating "To Agent" and Onwire spans. We don't use this info for connector.
-				finfo := getFlowInfo(flowToKey(flow))
+				finfo := getFlowInfo(key)
 				if finfo != nil {
 					finfo.reqTime = time.Now()
 				}
