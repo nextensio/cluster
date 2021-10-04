@@ -61,13 +61,13 @@ func EnvHandler(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
 	MyInfo.Host = os.Getenv("HOSTNAME")
 	MyInfo.JaegerCollector = os.Getenv("MY_JAEGER_COLLECTOR")
 
-	sugar.Infow("env", "Node", MyInfo.Node)
-	sugar.Infow("env", "Pod", MyInfo.Pod)
-	sugar.Infow("env", "PodType", MyInfo.PodType)
-	sugar.Infow("env", "Namespace", MyInfo.Namespace)
-	sugar.Infow("env", "PodIp", MyInfo.PodIp)
-	sugar.Infow("env", "Id", MyInfo.Id)
-	sugar.Infow("env", "MongoUri", MyInfo.MongoUri)
+	sugar.Infof("Env: Node = %s", MyInfo.Node)
+	sugar.Infof("Env: Pod = %s", MyInfo.Pod)
+	sugar.Infof("Env: PodType = %s", MyInfo.PodType)
+	sugar.Infof("Env: Namespace = %s", MyInfo.Namespace)
+	sugar.Infof("Env: PodIp = %s", MyInfo.PodIp)
+	sugar.Infof("Env: Id = %s", MyInfo.Id)
+	sugar.Infof("Env: MongoUri = %s", MyInfo.MongoUri)
 }
 
 func main() {
@@ -95,7 +95,7 @@ func main() {
 		defer aCloser.Close()
 	}
 	router.RouterInit(sugar, &MyInfo, ctx)
-	go policy.NxtOpaInit(MyInfo.Namespace, MyInfo.Pod, MyInfo.Id+consul.RemotePostPrefix, MyInfo.MongoUri, sugar)
+	go policy.NxtOpaInit(MyInfo.Namespace, MyInfo.Pod, MyInfo.Id+consul.RemotePostPrefix, MyInfo.MongoUri, logger)
 
 	// Do kill -USR1 <pid of minion> to get all stack traces in app_debug.log
 	sigc := make(chan os.Signal, 1)

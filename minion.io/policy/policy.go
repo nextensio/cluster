@@ -53,11 +53,11 @@ const maxUsers = 10000    // max per tenant
 var tenantDB *mongo.Database
 
 const nxtMongoDB = "NxtDB" // default DB name prior to per-tenant DBs
+const policyCollection = "NxtPolicies"
 const userInfoCollection = "NxtUsers"
+const userAttrCollection = "NxtUserAttr"
 const connInfoCollection = "NxtApps"
 const appAttrCollection = "NxtAppAttr"
-const userAttrCollection = "NxtUserAttr"
-const policyCollection = "NxtPolicies"
 const hostAttrCollection = "NxtHostAttr"
 const traceReqCollection = "NxtTraceRequests"
 const statsReqCollection = "" // We don't need a reference data collection
@@ -82,6 +82,8 @@ const ktracereq = "tracerequests" // Anchor for all trace requests
 // provide a filename that is then used to read the policy from a local file.
 type Policy struct {
 	PolicyId string `json:"pid" bson:"_id"`
+	ChangeBy string `json:"changeby" bson:"changeby"`
+	ChangeAt string `json:"changeat" bson:"changeat"`
 	Majver   int    `json:"majver" bson:"majver"` // major version
 	Minver   int    `json:"minver" bson:"minver"` // minor version
 	Fname    string `json:"fname" bson:"fname"`   // rego policy filename
@@ -93,9 +95,11 @@ type Policy struct {
 // info for the collection from a single document.
 // Ensure this always matches with the definition in the controller repo.
 type DataHdr struct {
-	ID     string `bson:"_id" json:"ID"`
-	Majver int    `bson:"majver" json:"majver"`
-	Minver int    `bson:"minver" json:"minver"`
+	ID       string `bson:"_id" json:"ID"`
+	Majver   int    `bson:"majver" json:"majver"`
+	Minver   int    `bson:"minver" json:"minver"`
+	ChangeBy string `bson:"changeby" json:"changeby"`
+	ChangeAt string `bson:"changeat" json:"changeat"`
 }
 
 // Data object to track every use case
@@ -197,14 +201,14 @@ var mongoDBAddr string
 var tenant string
 var nxtPod string
 var nxtGw string
-var slog *zap.SugaredLogger
-var st, sg, sm zap.Field // for tenant, gateway, module
+var slog *zap.Logger
+var st, sp string // for tenant, gateway:pod
 
 var CollMap map[string]*mongo.Collection
 var mongoClient *mongo.Client
 var nxtMongoDBName string // set to nxtMongoDB (legacy) or a unique name per tenant going forward
 
-func NxtOpaInit(namespace string, pod string, gateway string, mongouri string, sl *zap.SugaredLogger) error {
+func NxtOpaInit(namespace string, pod string, gateway string, mongouri string, sl *zap.Logger) error {
 	return nxtOpaInit(namespace, pod, gateway, mongouri, sl)
 }
 
@@ -347,7 +351,7 @@ func nxtOpaProcess(ctx context.Context) int {
 	// 1. checking if mongoDB connection is still alive if any mongoDB access failed
 	// 2. to reinitialize mongoDB connection if it has failed
 	// 3. checking for and processing any DB collection version changes
-	nxtLogDebug("OpaProcess", fmt.Sprintf("2. initDone=%v, mongoInitDone=%v, mongoCheck=%v",
+	nxtLogDebug("OpaProcess", fmt.Sprintf("initDone=%v, mongoInitDone=%v, mongoCheck=%v",
 		initDone, mongoInitDone, mongoCheck))
 	for {
 		// sleep(1 sec)
@@ -442,7 +446,7 @@ func nxtOpaProcess(ctx context.Context) int {
 
 func nxtOpaProcessInitCheck(ctx context.Context) {
 	var err error
-	nxtLogDebug("OpaProcess", fmt.Sprintf("1. initDone=%v, mongoInitDone=%v, mongoCheck=%v",
+	nxtLogDebug("OpaProcessInitCheck", fmt.Sprintf("initDone=%v, mongoInitDone=%v, mongoCheck=%v",
 		initDone, mongoInitDone, mongoCheck))
 	for {
 		if initDone {
@@ -507,7 +511,7 @@ func nxtOpaProcessMongoCheck(ctx context.Context) {
 }
 
 // API to init nxt OPA interface
-func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.SugaredLogger) error {
+func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.Logger) error {
 	defer func() {
 		initExit <- true
 	}()
@@ -523,9 +527,8 @@ func nxtOpaInit(ns string, pod string, gateway string, mongouri string, sl *zap.
 	tenant = common.NamespaceToTenant(ns)
 	nxtPod = pod
 	nxtGw = gateway
-	st = zap.String("Tenant", tenant)
-	sg = zap.String("GW", nxtGw)
-	sm = zap.String("Module", "NxtOPA")
+	st = "Tenant: " + tenant
+	sp = "Pod: " + nxtGw + ":" + nxtPod
 
 	nxtMongoDBName = nxtGetTenantDBName(tenant)
 	mongoDBAddr = mongouri
@@ -579,7 +582,7 @@ func nxtMongoDBInit(ctx context.Context, ns string, mURI string) (*mongo.Client,
 
 	CollMap = make(map[string]*mongo.Collection, maxMongoColls)
 	tenantDB = cl.Database(nxtMongoDBName)
-	nxtLogDebug(nxtMongoDBName, fmt.Sprintf("The DB being used for tenant %s", ns))
+	nxtLogDebug(nxtMongoDBName, "The DB being used")
 
 	// Required on both apod and cpod
 	CollMap[policyCollection] = tenantDB.Collection(policyCollection)
@@ -651,7 +654,8 @@ func nxtCreateOpaUseCase(i int, ucase string) {
 	NewState.QError = true
 	QStateMap[ucase] = &NewState
 	TStateMap[ucase] = &NewTS
-	nxtLogDebug(ucase, fmt.Sprintf("Use case created for policy %s, refdata %s", policyType[i], DColls[i]))
+	msg := "Use case created for " + policyType[i] + " with Refdata as " + DColls[i]
+	nxtLogDebug(ucase, msg)
 }
 
 // Initialize and set up each use case for using OPA
@@ -708,6 +712,9 @@ func nxtReadPolicyDocument(ctx context.Context, usecase string, ptype string) {
 		} else {
 			qs.RegoPol = []byte(string(qs.PStruct.Rego))
 		}
+		msg := fmt.Sprintf("Loaded version %d of ", policy.Minver)
+		msg += ptype + " changed by " + policy.ChangeBy + " at " + policy.ChangeAt
+		nxtLogDebug(usecase, msg)
 	}
 }
 
@@ -739,9 +746,9 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 		qs.RefHdr.Minver = qs.PStruct.Minver
 		return false
 	}
-	err := CollMap[coll].FindOne(ctx, bson.M{"_id": qs.HdrKey}).Decode(&hdr)
+	err := CollMap[coll].FindOne(ctx, bson.M{"_id": HDRKEY}).Decode(&hdr)
 	if err != nil {
-		nxtLogError(ucase, fmt.Sprintf("Failed to find %s header doc - %v", qs.HdrKey, err))
+		nxtLogError(ucase, fmt.Sprintf("Failed to find %s %s doc - %v", coll, qs.HdrKey, err))
 		nxtMongoError()
 		return false
 	}
@@ -757,6 +764,9 @@ func nxtReadRefDataHdr(ctx context.Context, ucase string) bool {
 		qs.NewVer = true
 		qs.NewData = true
 		qs.WrVer = true
+		msg := fmt.Sprintf("Found version %d of ", hdr.Minver)
+		msg += coll + " changed by " + hdr.ChangeBy + " at " + hdr.ChangeAt
+		nxtLogDebug(ucase, msg)
 		return true
 	}
 	return false
@@ -1043,6 +1053,7 @@ func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr s
 
 	var attrstr string
 	var docs []bson.M
+	var changeby, changeat, vers string
 
 	qsm := QStateMap[ucase]
 	tsm := TStateMap[ucase]
@@ -1064,9 +1075,12 @@ func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr s
 	addComma := false
 	for i := 0; i < ndocs; i++ {
 
-		if docs[i]["_id"] == qsm.HdrKey { // Version doc
-			tsm.Keys[i] = qsm.HdrKey
+		if docs[i]["_id"].(string) == HDRKEY { // Version doc
+			tsm.Keys[i] = HDRKEY
 			tsm.Count = tsm.Count + 1
+			vers = fmt.Sprintf("%v", docs[i]["minver"])
+			changeby = docs[i]["changeby"].(string)
+			changeat = docs[i]["changeat"].(string)
 			continue
 		}
 
@@ -1083,6 +1097,9 @@ func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr s
 		addComma = true
 	}
 	attrstr = attrstr + "\n]\n}"
+	msg := "Loaded version " + vers + " of "
+	msg += coll + " changed by " + changeby + " at " + changeat
+	nxtLogDebug(ucase, msg)
 	return []byte(attrstr)
 }
 
@@ -1345,11 +1362,11 @@ func nxtConvertToJSONString(inp bson.M) string {
 }
 
 func nxtLogError(ref string, msg string) {
-	slog.Error(" ", st, sg, sm, zap.String("Ref", ref), zap.String("Msg", msg))
+	slog.Error(ref + " - " + msg + ", " + st + ", " + sp)
 }
 
 func nxtLogDebug(ref string, msg string) {
-	slog.Debug(" ", st, sg, sm, zap.String("Ref", ref), zap.String("Msg", msg))
+	slog.Debug(ref + " - " + msg + ", " + st + ", " + sp)
 }
 
 func nxtWriteAttrVersions() {
