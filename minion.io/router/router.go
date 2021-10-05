@@ -1822,19 +1822,19 @@ func DumpInfo(s *zap.SugaredLogger) {
 	s.Debugf("Total Sessions: ", len(sessions))
 	s.Debugf("Total Users: ", len(users))
 	s.Debugf("Total agents: ", len(agents))
-	aLock.Unlock()
+	aLock.RUnlock()
 
 	routeLock.RLock()
 	s.Debugf("Total local routes: ", len(localRoutes))
-	routeLock.Unlock()
+	routeLock.RUnlock()
 
 	pLock.RLock()
 	s.Debugf("Total pods: ", len(pods))
-	pLock.Unlock()
+	pLock.RUnlock()
 
 	mLock.RLock()
 	s.Debugf("Total prometheus counters: ", len(metrics))
-	mLock.Unlock()
+	mLock.RUnlock()
 
 	pendingLock.Lock()
 	s.Debugf("Total pending free flows: ", len(pendingFree))
