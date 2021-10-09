@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,15 +83,12 @@ func main() {
 	// Create a Jaegertracer instance for onWire and connector spans (spans for the period the pkt is on the
 	// wire). Jaeger UI needs different Jaegertrace instance service name to display the spans in different
 	// color. So, we create these instances just for onWire and connector spans to be displayed in different colors.
-	wcloser := router.InitJaegerTrace(MyInfo.Namespace+"-onwire-trace", &MyInfo, sugar, "onWire")
-	if wcloser != nil {
-		defer wcloser.Close()
-	}
-	cCloser := router.InitJaegerTrace(MyInfo.Namespace+"-connector-trace", &MyInfo, sugar, "connector")
+	ns := strings.Split(MyInfo.Namespace, "-")
+	cCloser := router.InitJaegerTrace(ns[1]+"-app-service", &MyInfo, sugar, "connector")
 	if cCloser != nil {
 		defer cCloser.Close()
 	}
-	aCloser := router.InitJaegerTrace(MyInfo.Namespace+"-trace", &MyInfo, sugar, "agent")
+	aCloser := router.InitJaegerTrace(ns[1]+"-agent", &MyInfo, sugar, "agent")
 	if aCloser != nil {
 		defer aCloser.Close()
 	}

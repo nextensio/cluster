@@ -33,7 +33,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	jaegercfg "github.com/uber/jaeger-client-go/config"
 	jaegerlog "github.com/uber/jaeger-client-go/log"
-	jaegermetrics "github.com/uber/jaeger-lib/metrics/prometheus"
 )
 
 // NOTE1: About all the multitude of UUIDs.
@@ -1108,16 +1107,14 @@ func generateFromAgentSpan(spanCtx opentracing.SpanContext, processingDuration u
 	// First packet from Agent, create Agent processing and onWire to apod spans
 	span := tracer.StartSpan("From Agent", opentracing.StartTime(pStart), opentracing.FollowsFrom(spanCtx))
 	finishTime.FinishTime = wStart
-	span.FinishWithOptions(finishTime)
 	return &span
 }
 
-// This will generate To Agent/Connector onwire spans and agent/connector processing spans
+// This will generate To Agent spans
 // NOTE: The finfo here "can" be nil, so check before accessing
-func generateAgentConnectorSpan(spanCtx opentracing.SpanContext, finfo *flowInfo, procD uint64, s *zap.SugaredLogger, tracer opentracing.Tracer, rtt time.Duration, spanName string) *opentracing.Span {
-	var wireSpanName string
+func generateToAgentSpan(spanCtx opentracing.SpanContext, finfo *flowInfo, procD uint64, s *zap.SugaredLogger, tracer opentracing.Tracer, rtt time.Duration) *opentracing.Span {
 	var finishTime opentracing.FinishOptions
-	var onWireStart, pStart, pEnd time.Time
+	var onWireStart, pStart time.Time
 
 	tD := time.Duration(uint64(procD) * uint64(time.Nanosecond))
 
@@ -1127,47 +1124,10 @@ func generateAgentConnectorSpan(spanCtx opentracing.SpanContext, finfo *flowInfo
 		tNow := time.Now()
 		onWireStart = tNow.Add(-(tD + (rtt / 2)))
 	}
-	pStart = onWireStart.Add(rtt / 2) // Agent processing starttime
-	pEnd = pStart.Add(tD)
+	s.Debugf("====> generatetoAgentSpan  RTT: %v[%v] [pD:%d] finfo[%p] onWireStart:%d pStart:%d", rtt, rtt/2, procD, finfo, onWireStart, pStart)
 
-	s.Debugf("====> generate%sSpan  RTT: %v[%v] [pD:%d] finfo[%p] onWireStart:%d pStart:%d", spanName, rtt, rtt/2, procD, finfo, onWireStart, pStart)
-
-	if spanName == "Agent" {
-		wireSpanName = "Onwire to Agent"
-		tracer = agentTracer
-	} else {
-		wireSpanName = "Onwire to Connector"
-		tracer = connectorTracer
-	}
-	span := wireTracer.StartSpan(wireSpanName, opentracing.StartTime(onWireStart), opentracing.FollowsFrom(spanCtx))
-	finishTime.FinishTime = pStart
-	span.FinishWithOptions(finishTime)
-	spanCtx = span.Context()
-
-	span = tracer.StartSpan(spanName, opentracing.StartTime(pStart), opentracing.FollowsFrom(spanCtx))
-	finishTime.FinishTime = pEnd
-	span.FinishWithOptions(finishTime)
-
-	if spanName == "Connector" {
-		//Generate OnWire span for the pkts comming back from connector
-		spanCtx = span.Context()
-		span = wireTracer.StartSpan("OnWire", opentracing.StartTime(pEnd), opentracing.FollowsFrom(spanCtx))
-		finishTime.FinishTime = pEnd.Add(rtt / 2)
-		span.FinishWithOptions(finishTime)
-	}
-	return &span
-}
-
-// This will generate spans for the duration when the packet is on the wire
-func generateOnWireSpan(spanCtx opentracing.SpanContext, s *zap.SugaredLogger, rtt time.Duration) *opentracing.Span {
-	var finishTime opentracing.FinishOptions
-
-	tNow := time.Now()
-	wireStart := tNow.Add(-rtt / 2) // On wire starttime
-	s.Debugf("====> generateOnWireSpan  RTT: %v[%v] ", rtt, rtt/2)
-	// Create the "On wire" span
-	span := wireTracer.StartSpan("OnWire", opentracing.StartTime(wireStart), opentracing.FollowsFrom(spanCtx))
-	finishTime.FinishTime = tNow
+	span := agentTracer.StartSpan("To Agent", opentracing.StartTime(onWireStart), opentracing.FollowsFrom(spanCtx))
+	finishTime.FinishTime = onWireStart.Add(tD + (rtt / 2))
 	span.FinishWithOptions(finishTime)
 	return &span
 }
@@ -1205,6 +1165,7 @@ func traceAttrListJson(s *zap.SugaredLogger, userattrs string, traceattrs []stri
 }
 
 func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, rtt time.Duration) *opentracing.Span {
+
 	if onboard.Agent {
 		var attrs []string
 		var tracereq string
@@ -1236,15 +1197,11 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 			break
 		}
 		// some non-default trace request returned, so trace this flow
-		tracer := opentracing.GlobalTracer()
-		wSpan := generateFromAgentSpan(nil, flow.ProcessingDuration, s, agentTracer, rtt)
-		wSpan = generateOnWireSpan((*wSpan).Context(), s, rtt)
-		span := tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.FollowsFrom((*wSpan).Context()))
-		ext.SpanKindRPCClient.Set(span)
-		ext.HTTPUrl.Set(span, "http://"+flow.Dest)
-		ext.HTTPMethod.Set(span, "PUT")
-		// Info to be propagated downstream up to Connector
-		return &span
+		span := generateFromAgentSpan(nil, flow.ProcessingDuration, s, agentTracer, rtt)
+		ext.SpanKindRPCClient.Set(*span)
+		ext.HTTPUrl.Set(*span, "http://"+flow.Dest)
+		ext.HTTPMethod.Set(*span, "PUT")
+		return span
 	} else {
 		var span opentracing.Span
 		// cpod. Check if this is the return for a traced flow
@@ -1267,16 +1224,8 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 		if (serr != nil) || (spanCtx == nil) {
 			return nil
 		}
-		// Create a dummy span while the packet is on the wire from write() of the agent/connector
-		// to tunnel.read() of this pod
-		wSpan := generateAgentConnectorSpan(spanCtx, finfo, flow.ProcessingDuration, s, tracer, rtt, "Connector")
-		// Note: Call to wSpan.Context() is still valid after wSpan.Finish() according to docs.
-		sTime := finfo.reqTime.Add(rtt + time.Duration(flow.ProcessingDuration))
-		if wSpan != nil {
-			span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.StartTime(sTime), opentracing.FollowsFrom((*wSpan).Context()))
-		} else {
-			span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.FollowsFrom(spanCtx))
-		}
+		//Generate span for app service
+		span = connectorTracer.StartSpan("Service Response Time", opentracing.StartTime(finfo.reqTime), opentracing.FollowsFrom(spanCtx))
 		span.Tracer().Inject(
 			span.Context(),
 			opentracing.HTTPHeaders,
@@ -1346,7 +1295,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 					opentracing.HTTPHeadersCarrier(hhdr))
 				finfo := getFlowInfo(key)
 				s.Debugf("Got trace %v %v %v", trace, key, tunnel.Timing().Rtt)
-				generateAgentConnectorSpan(spanCtx, finfo, trace.ProcessingDuration, s, tracer, rtt, "Agent")
+				generateToAgentSpan(spanCtx, finfo, trace.ProcessingDuration, s, tracer, rtt)
 			}
 		case *nxthdr.NxtHdr_Onboard:
 			if onboard == nil {
@@ -1424,6 +1373,10 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			var finishT time.Time
 			if span != nil {
 				finishT = time.Now()
+				tnow := time.Now().UnixNano()
+				// We use the ProcessingDuration field to set the time the packet is sent to next pod
+				// so that, that pod can generate the span.
+				flow.ProcessingDuration = uint64(tnow)
 			}
 			err := dest.Write(hdr, agentBuf)
 			if err != nil {
@@ -1475,7 +1428,7 @@ func streamFromPodClose(s *zap.SugaredLogger, tunnel common.Transport, dest comm
 	}
 }
 
-func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr.NxtFlow, rtt time.Duration) *opentracing.Span {
+func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr.NxtFlow, rtt time.Duration, srcCluster string) *opentracing.Span {
 	var span opentracing.Span
 	if flow.TraceCtx == "" {
 		return nil
@@ -1488,15 +1441,9 @@ func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr
 	if (serr != nil) || (spanCtx == nil) {
 		return nil
 	}
-	// Create a dummy span while the packet is on the wire from dest.write() of the previous
-	// pod to tunnel.read() on this pod.
-	wSpan := generateOnWireSpan(spanCtx, s, rtt)
-	// Note: Call to wSpan.Context() below is still valid after wSpan.Finish() according to Jaeger trace docs.
-	if wSpan != nil {
-		span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.FollowsFrom((*wSpan).Context()))
-	} else {
-		span = tracer.StartSpan(MyInfo.Id+"-"+MyInfo.Host, opentracing.FollowsFrom(spanCtx))
-	}
+	tstart := time.Unix(0, (int64)(flow.ProcessingDuration))
+	span = tracer.StartSpan(srcCluster, opentracing.StartTime(tstart), opentracing.FollowsFrom(spanCtx))
+
 	setSpanTags(span, flow, MyInfo)
 	span.Tracer().Inject(
 		span.Context(),
@@ -1504,7 +1451,7 @@ func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr
 		opentracing.HTTPHeadersCarrier(hhdr),
 	)
 	flow.TraceCtx = hhdr.Get("Uber-Trace-Id")
-	s.Debugf("Trace: Found span context in stream from %s to %s", flow.Userid, flow.DestAgent)
+	s.Debugf("Trace: Found span context in stream from %s to %s ", flow.Userid, flow.DestAgent)
 	return &span
 }
 
@@ -1527,7 +1474,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 	var key flowKey
 
 	s.Debugf("New interpod HTTP stream %v - %v", Suuid, httphdrs)
-
+	sourceCluster := httphdrs.Get("x-nextensio-sourcecluster")
 	for {
 		hdr, podBuf, err := tunnel.Read()
 		if err != nil {
@@ -1549,7 +1496,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 			// Route lookup just one time
 			if dest == nil {
 				rtt := time.Duration(tunnel.Timing().Rtt * uint64(time.Nanosecond))
-				span = traceInterpodFlow(s, MyInfo, flow, rtt)
+				span = traceInterpodFlow(s, MyInfo, flow, rtt, sourceCluster)
 				fm = metricFlowAdd(s, flow)
 				key = flowToKey(flow)
 				onboard, dest = localRouteLookup(s, MyInfo, flow)
@@ -1653,18 +1600,16 @@ func InitJaegerTrace(service string, MyInfo *shared.Params, s *zap.SugaredLogger
 		},
 		Reporter: &jaegercfg.ReporterConfig{
 			QueueSize: 100,
-			LogSpans:  false,
+			LogSpans:  true,
 		},
 	}
 	jLogger := jaegerlog.StdLogger
 	debugLogger := jaegerlog.DebugLogAdapter(jLogger)
-	jMetricsFactory := jaegermetrics.New()
 	if trace != "" {
 		tracer, closer, err = cfg.NewTracer(jaegercfg.Logger(debugLogger))
 	} else {
 		tracer, closer, err = cfg.NewTracer(
 			jaegercfg.Logger(debugLogger),
-			jaegercfg.Metrics(jMetricsFactory),
 		)
 	}
 	if err != nil {
@@ -1672,9 +1617,7 @@ func InitJaegerTrace(service string, MyInfo *shared.Params, s *zap.SugaredLogger
 		cfg.Disabled = true
 		tracer, closer, _ = cfg.NewTracer()
 	}
-	if trace == "onWire" {
-		wireTracer = tracer
-	} else if trace == "connector" {
+	if trace == "connector" {
 		connectorTracer = tracer
 	} else if trace == "agent" {
 		agentTracer = tracer
@@ -1693,7 +1636,7 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 	tchan := make(chan common.NxtStream)
 
 	if MyInfo.PodType == "apod" {
-		closer := InitJaegerTrace(MyInfo.Namespace+"-"+MyInfo.Id+"-trace", MyInfo, s, "")
+		closer := InitJaegerTrace("gateway", MyInfo, s, "")
 		if closer != nil {
 			defer closer.Close()
 		}
@@ -1735,7 +1678,7 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 	tchan := make(chan common.NxtStream)
 
 	if MyInfo.PodType != "apod" {
-		closer := InitJaegerTrace(MyInfo.Namespace+"-"+MyInfo.Id+"-trace", MyInfo, s, "")
+		closer := InitJaegerTrace("gateway", MyInfo, s, "")
 		if closer != nil {
 			defer closer.Close()
 		}
