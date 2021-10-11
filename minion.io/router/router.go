@@ -1648,13 +1648,7 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 		case open := <-outsideMsg:
 			if open {
 				if server == nil {
-					if MyInfo.PodType == "apod" {
-						// We dont want any keepalives from umpteen agents, we do clock sync with agents
-						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 0, 0, 500)
-					} else {
-						// as for a keepalive count of at least one data activity in 30 seconds
-						server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1, 500)
-					}
+					server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1, 500)
 					go server.Listen(tchan)
 				}
 			} else {
