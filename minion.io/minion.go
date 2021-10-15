@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	common "gitlab.com/nextensio/common/go"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -72,7 +71,6 @@ func EnvHandler(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
 }
 
 func main() {
-	common.MAXBUF = (64 * 1024)
 	ctx := context.Background()
 	//logger, _ := zap.NewProduction(zap.Hooks(lumberjackZapHook))
 	logger, _ := zap.NewDevelopment(zap.Hooks(lumberjackZapHook))

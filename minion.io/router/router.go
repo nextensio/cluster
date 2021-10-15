@@ -116,8 +116,8 @@ type flowInfo struct {
 	reqTime   time.Time
 }
 
-// Default prometheus scrape interval is one minute, we give additional 30 seconds
-const PROM_SCRAPE_TIMER = 90
+// Nextensio prometheus scrape interval is 30 seconds, we give additional 15 seconds
+const PROM_SCRAPE_TIMER = 45
 
 // TODO: The aLock is a big fat lock here and is liberally taken during the entire duration
 // of an agent add/del operation - including the time spent registering/deregistering with
@@ -150,6 +150,7 @@ var pendingFree []*deleteMetrics
 var wireTracer opentracing.Tracer
 var connectorTracer opentracing.Tracer
 var agentTracer opentracing.Tracer
+var pool common.NxtPool
 
 // When the flow is terminated, we have to wait for some time to ensure the stats is
 // collected before we remove the labels/free the counters, we just use a simple
@@ -837,7 +838,7 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 
 	lg := log.New(&zap2log{s: s}, "http2", 0)
 	// keepalive 10 secs, clock sync 100msecs.
-	client := nhttp2.NewClient(ctx, lg, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs, &totGoroutines, 10000, 100)
+	client := nhttp2.NewClient(ctx, lg, pool, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs, &totGoroutines, 10000, 100)
 	// For pod to pod connectivity, a pod will always dial-out another one,
 	// we dont expect a stream to come in from the other end on a dial-out session,
 	// and hence the reason we use the unusedChan on which no one is listening.
@@ -1275,7 +1276,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			return
 		}
 		length := 0
-		for _, b := range agentBuf {
+		for _, b := range agentBuf.Slices {
 			length += len(b)
 		}
 
@@ -1483,7 +1484,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 			return
 		}
 		length := 0
-		for _, b := range podBuf {
+		for _, b := range podBuf.Slices {
 			length += len(b)
 		}
 		switch hdr.Hdr.(type) {
@@ -1553,6 +1554,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 }
 
 func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context) {
+	pool = common.NewPool(64 * 1024)
 	sessions = make(map[uuid.UUID]nxthdr.NxtOnboard)
 	agents = make(map[string]*agentTunnel)
 	users = make(map[string][]*agentTunnel)
@@ -1648,7 +1650,7 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 		case open := <-outsideMsg:
 			if open {
 				if server == nil {
-					server = websock.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1, 500)
+					server = websock.NewListener(ctx, lg, pool, pvtKey, pubKey, MyInfo.Oport, 30*1000, 1, 500)
 					go server.Listen(tchan)
 				}
 			} else {
@@ -1684,7 +1686,7 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 		case open := <-insideMsg:
 			if open {
 				if server == nil {
-					server = nhttp2.NewListener(ctx, lg, pvtKey, pubKey, MyInfo.Iport, &totGoroutines)
+					server = nhttp2.NewListener(ctx, lg, pool, pvtKey, pubKey, MyInfo.Iport, &totGoroutines)
 					go server.Listen(tchan)
 					insideOpen = true
 				}
