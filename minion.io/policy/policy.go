@@ -311,9 +311,6 @@ func NxtStatsAttributes(which string) string {
 	if !initDone || !mongoInitDone {
 		return deflist
 	}
-	if which != "agent" {
-		return deflist
-	}
 	sattrs := nxtEvalUserStats(opaUseCases[5])
 	if sattrs == "" {
 		return deflist
