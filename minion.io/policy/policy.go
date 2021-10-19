@@ -45,7 +45,7 @@ import (
 
 const maxOpaUseCases = 10 // we currently have 5; stats makes it 6
 const maxMongoColls = 10  // assume max 10 MongoDB tenant collections, currently 6+1
-const maxUsers = 10000    // max per tenant
+const maxUsers = 1000     // max per tenant
 
 /*****************************
 // MongoDB database and collections
@@ -104,22 +104,22 @@ type DataHdr struct {
 
 // Data object to track every use case
 type QState struct {
-	NewVer  bool                   // new version of policy or refdata
-	NewPol  bool                   // new version of rego poloicy
-	NewData bool                   // new version of reference data
-	WrVer   bool                   // write versions to file (for testing infra)
-	QError  bool                   // error in query state
-	Qry     string                 // the OPA Rego query
-	QUCase  string                 // query use case
-	PrepQry rego.PreparedEvalQuery // compiled query
-	PolType string                 // key for policy
-	PStruct Policy                 // Policy struct
-	RegoPol []byte                 // rego policy
-	LDir    string                 // load directory for OPA
-	DColl   string                 // name of reference data collection
-	HdrKey  string                 // Header doc keys for reference data collections
-	RefHdr  DataHdr                // reference data header doc
-	RefData []byte                 // reference data
+	NewVer  bool                    // new version of policy or refdata
+	NewPol  bool                    // new version of rego poloicy
+	NewData bool                    // new version of reference data
+	WrVer   bool                    // write versions to file (for testing infra)
+	QError  bool                    // error in query state
+	Qry     string                  // the OPA Rego query
+	QUCase  string                  // query use case
+	PrepQry *rego.PreparedEvalQuery // compiled query
+	PolType string                  // key for policy
+	PStruct Policy                  // Policy struct
+	RegoPol *[]byte                 // rego policy
+	LDir    string                  // load directory for OPA
+	DColl   string                  // name of reference data collection
+	HdrKey  string                  // Header doc keys for reference data collections
+	RefHdr  DataHdr                 // reference data header doc
+	RefData *[]byte                 // reference data
 }
 
 // Info for test cases
@@ -309,9 +309,6 @@ func NxtStatsAttributes(which string) string {
 	deflist := "{\"exclude\": [\"uid\", \"maj_ver\", \"min_ver\", \"_hostname\", \"_model\", \"_osMinor\", \"_osPatch\", \"_osName\"]}"
 
 	if !initDone || !mongoInitDone {
-		return deflist
-	}
-	if which != "agent" {
 		return deflist
 	}
 	sattrs := nxtEvalUserStats(opaUseCases[5])
@@ -710,7 +707,8 @@ func nxtReadPolicyDocument(ctx context.Context, usecase string, ptype string) {
 			// Read policy from local file, not mongoDB
 			qs.RegoPol = nxtReadPolicyLocalFile(usecase)
 		} else {
-			qs.RegoPol = []byte(string(qs.PStruct.Rego))
+			pol := []byte(string(qs.PStruct.Rego))
+			qs.RegoPol = &pol
 		}
 		msg := fmt.Sprintf("Loaded version %d of ", policy.Minver)
 		msg += ptype + " changed by " + policy.ChangeBy + " at " + policy.ChangeAt
@@ -719,7 +717,7 @@ func nxtReadPolicyDocument(ctx context.Context, usecase string, ptype string) {
 }
 
 // Read Policy file from local file and return bytes read
-func nxtReadPolicyLocalFile(ucase string) []byte {
+func nxtReadPolicyLocalFile(ucase string) *[]byte {
 	// Read policy file and return the data read
 	ps := QStateMap[ucase].PStruct
 	bs, err := ioutil.ReadFile(ps.Fname)
@@ -727,7 +725,7 @@ func nxtReadPolicyLocalFile(ucase string) []byte {
 		tstr := fmt.Sprintf("Local policy file %s read failure - %v", ps.Fname, err)
 		nxtLogError(ucase, tstr)
 	}
-	return bs
+	return &bs
 }
 
 //--------------------------------Reference Data funtions-------------------------------------
@@ -1049,7 +1047,7 @@ func nxtUpdateAppAttrCache() {
 // Read all records (documents) from collection in DB
 // Add header document fields (versions, tenant, ...) to each attribute doc
 // Convert to json and return a consolidated attributes file (collection)
-func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr string) []byte {
+func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr string) *[]byte {
 
 	var attrstr string
 	var docs []bson.M
@@ -1062,11 +1060,11 @@ func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr s
 	if err != nil {
 		nxtLogError(ucase, fmt.Sprintf("Failed to find any attribute docs - %v", err))
 		nxtMongoError()
-		return []byte("")
+		return nil
 	}
 	if err = cursor.All(ctx, &docs); err != nil {
 		nxtLogError(ucase, fmt.Sprintf("Read failure for attributes - %v", err))
-		return []byte("")
+		return nil
 	}
 
 	attrstr = istr
@@ -1100,7 +1098,8 @@ func nxtCreateRefDataDoc(ctx context.Context, ucase string, keyid string, istr s
 	msg := "Loaded version " + vers + " of "
 	msg += coll + " changed by " + changeby + " at " + changeat
 	nxtLogDebug(ucase, msg)
-	return []byte(attrstr)
+	attr := []byte(attrstr)
+	return &attr
 }
 
 //--------------------------------Authz functions-----------------------------------------
@@ -1258,7 +1257,7 @@ func nxtPrimeLoadDir(ucase string) {
 	dirname := QStateMap[ucase].LDir
 	if QStateMap[ucase].NewPol {
 		QStateMap[ucase].NewPol = false
-		err := ioutil.WriteFile(dirname+"/policyfile.rego", QStateMap[ucase].RegoPol, 0644)
+		err := ioutil.WriteFile(dirname+"/policyfile.rego", *QStateMap[ucase].RegoPol, 0644)
 		if err != nil {
 			nxtLogError(ucase, fmt.Sprintf("Policy loading in dir %s failed - %v", dirname, err))
 			// TODO: Can we avoid this ?
@@ -1267,18 +1266,23 @@ func nxtPrimeLoadDir(ucase string) {
 	}
 
 	if QStateMap[ucase].NewData {
+		var err error
 		QStateMap[ucase].NewData = false
 		// Write reference data to load directory
-		err := ioutil.WriteFile(dirname+"/refdata.json", QStateMap[ucase].RefData, 0644)
+		refdata := QStateMap[ucase].RefData
+		if refdata == nil {
+			err = ioutil.WriteFile(dirname+"/refdata.json", []byte{}, 0644)
+		} else {
+			err = ioutil.WriteFile(dirname+"/refdata.json", *refdata, 0644)
+		}
 		if err != nil {
 			nxtLogError(ucase, fmt.Sprintf("Refdata loading in dir %s failed - %v", dirname, err))
 			log.Fatal(err)
 		}
 	}
 	// Free up memory held in RefData and RegoPol once written to disk.
-	var nullb []byte
-	QStateMap[ucase].RegoPol = nullb
-	QStateMap[ucase].RefData = nullb
+	QStateMap[ucase].RegoPol = nil
+	QStateMap[ucase].RefData = nil
 }
 
 // Create rego object for the query
@@ -1292,14 +1296,14 @@ func nxtCreateOpaQry(query string, ldir string) *rego.Rego {
 }
 
 // Create a prepared query that can be evaluated.
-func nxtPrepOpaQry(ctx context.Context, ucase string, r *rego.Rego) (rego.PreparedEvalQuery, bool) {
+func nxtPrepOpaQry(ctx context.Context, ucase string, r *rego.Rego) (*rego.PreparedEvalQuery, bool) {
 
 	rs, err := r.PrepareForEval(ctx)
 	if err != nil {
 		nxtLogError(ucase, fmt.Sprintf("OPA query prep failure with error - %v", err))
-		return rs, true
+		return nil, true
 	}
-	return rs, false
+	return &rs, false
 }
 
 // Execute prepared query
