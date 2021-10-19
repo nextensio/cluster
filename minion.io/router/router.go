@@ -92,7 +92,7 @@ type userMetrics struct {
 
 type deleteMetrics struct {
 	fm    *flowMetrics
-	flow  *nxthdr.NxtFlow
+	flow  *flowKey
 	qedAt time.Time
 }
 
@@ -158,9 +158,11 @@ var pool common.NxtPool
 func pendingAdd(flow *nxthdr.NxtFlow, fm *flowMetrics) {
 	pendingLock.Lock()
 	defer pendingLock.Unlock()
+	// Don't need to hold on to the entire flow header, need just the flow key fields.
+	key := flowToKey(flow)
 	d := deleteMetrics{
 		fm:    fm,
-		flow:  flow,
+		flow:  &key,
 		qedAt: time.Now(),
 	}
 	pendingFree = append(pendingFree, &d)
@@ -191,6 +193,8 @@ func garbageCollectFlows(s *zap.SugaredLogger) {
 				break
 			}
 			metricFlowDel(s, dm.flow, dm.fm)
+			dm.fm = nil
+			dm.flow = nil
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -383,12 +387,12 @@ func incrMetrics(fm *flowMetrics, length int) {
 	}
 }
 
-func metricFlowDel(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, fm *flowMetrics) {
+func metricFlowDel(s *zap.SugaredLogger, flow *flowKey, fm *flowMetrics) {
 	fm.um.totalBytes.Delete(fm.allLabels)
 	metricUserPut(fm.um)
 
 	fLock.Lock()
-	delete(flows, flowToKey(flow))
+	delete(flows, *flow)
 	fLock.Unlock()
 }
 
