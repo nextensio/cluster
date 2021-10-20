@@ -86,7 +86,7 @@ func main() {
 	if cCloser != nil {
 		defer cCloser.Close()
 	}
-	aCloser := router.InitJaegerTrace(ns[1]+"-agent", &MyInfo, sugar, "agent")
+	aCloser := router.InitJaegerTrace(ns[1]+"-client", &MyInfo, sugar, "agent")
 	if aCloser != nil {
 		defer aCloser.Close()
 	}
