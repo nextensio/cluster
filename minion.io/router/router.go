@@ -1110,7 +1110,7 @@ func generateFromAgentSpan(spanCtx opentracing.SpanContext, processingDuration u
 	pStart := wStart.Add(-time.Duration(processingDuration))
 
 	// First packet from Agent, create Agent processing and onWire to apod spans
-	span := tracer.StartSpan("From Agent", opentracing.StartTime(pStart), opentracing.FollowsFrom(spanCtx))
+	span := tracer.StartSpan("From Client", opentracing.StartTime(pStart), opentracing.FollowsFrom(spanCtx))
 	finishTime.FinishTime = wStart
 	return &span
 }
@@ -1131,7 +1131,7 @@ func generateToAgentSpan(spanCtx opentracing.SpanContext, finfo *flowInfo, procD
 	}
 	s.Debugf("====> generatetoAgentSpan  RTT: %v[%v] [pD:%d] finfo[%p] onWireStart:%d pStart:%d", rtt, rtt/2, procD, finfo, onWireStart, pStart)
 
-	span := agentTracer.StartSpan("To Agent", opentracing.StartTime(onWireStart), opentracing.FollowsFrom(spanCtx))
+	span := agentTracer.StartSpan("To Client", opentracing.StartTime(onWireStart), opentracing.FollowsFrom(spanCtx))
 	finishTime.FinishTime = onWireStart.Add(tD + (rtt / 2))
 	span.FinishWithOptions(finishTime)
 	return &span
@@ -1642,7 +1642,8 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 	tchan := make(chan common.NxtStream)
 
 	if MyInfo.PodType == "apod" {
-		closer := InitJaegerTrace("gateway", MyInfo, s, "")
+		ns := strings.Split(MyInfo.Namespace, "-")
+		closer := InitJaegerTrace(ns[1]+"-gateway", MyInfo, s, "")
 		if closer != nil {
 			defer closer.Close()
 		}
@@ -1678,7 +1679,8 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 	tchan := make(chan common.NxtStream)
 
 	if MyInfo.PodType != "apod" {
-		closer := InitJaegerTrace("gateway", MyInfo, s, "")
+		ns := strings.Split(MyInfo.Namespace, "-")
+		closer := InitJaegerTrace(ns[1]+"-gateway", MyInfo, s, "")
 		if closer != nil {
 			defer closer.Close()
 		}
