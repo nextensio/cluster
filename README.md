@@ -551,4 +551,36 @@ domain name for each replica of the stateful set. And on each replicas dns name,
 port 8080 as a consul health check port. So if the pods are removed, then the health check will
 eventually fail and consul will remove the entries from its catalog
 
+### Compiling consul
+
+Consul that we use is slightly modified to return additional data in the dns response,
+the additional data is the pod/gateway where the service is hosted. The modified code
+is in https://github.com/nextensio/consul/ nextensio-alpha branch. 
+To make further changes to consul, git clone the repository, checkout nextensio-alpha branch,
+make changes, then do "make dev" in the root of the repo, and you  get a binary in <repo root>/bin/consul
+
+Then to test the image in our testbed, first do "docker run -it gopakumarce/consul:1.9.6 /bin/sh"
+So that starts the existing consul image in a container, whose container id can be obtained
+by saying "docker ps", say the id is 62fb6ef2e0d4
+
+Then say "docker cp <repo root>/bin/consul 62fb6ef2e0d4:/bin/consul", do an md5sum of the source
+binary and the binary in /bin/consul in the container to ensure the copy was succesful
+
+Then say "docker commit 62fb6ef2e0d4 gopakumarce/consul:1.9.6" - that will basically replace
+the consul image we use in our testbed with the new one that was just created. And to test
+consul, we dont have to re-create the entire testbed again. Just go to clustermgr pod /tmp,
+make a copy of consul.yaml and find the place where the consul server stateful set is launched,
+and remove just that piece of yaml (dont remove the services yaml etc..) and re-add it - 
+of course assuming that you have done a "kind load docker-image" of the image you just commited
+to the cluster you are replacing the consul in. Just to be double sure you can do an md5sum
+in the final cluster consul server pod to ensure it matches your binary. 
+
+And then when testing is all done, two things need to be done
+
+1. Push the changes back to github nextensio repo - but you might have to get your github account added as
+a member of nextensio - so contact whoever maintains the nextensio github repo for that
+
+2. Push the gopakumarce/consul:1.9.6 to dockerhub - for that contact gopakumarce - TODO: we need
+to replace that consul image to come from the nextensio dockerhub account that we have created
+
 
