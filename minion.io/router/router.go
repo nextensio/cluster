@@ -920,11 +920,11 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 			return nil, nil
 		}
 
-		host := strings.ReplaceAll(flow.DestAgent, ".", "-")
+		host := flow.DestAgent
 		if tag == "" {
-			consul_key = strings.Join([]string{host, MyInfo.Namespace}, "-")
+			consul_key = strings.Join([]string{host, MyInfo.Namespace}, ".")
 		} else {
-			consul_key = strings.Join([]string{tag, host, MyInfo.Namespace}, "-")
+			consul_key = strings.Join([]string{tag, host, MyInfo.Namespace}, ".")
 			flow.DestAgent = tag + "." + flow.DestSvc
 		}
 
