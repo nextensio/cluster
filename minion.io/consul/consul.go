@@ -165,6 +165,7 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 	dns.Meta.NextensioCluster = MyInfo.Id
 
 	for _, val := range service {
+		val = strings.Replace(val, ":", ".", 1)
 		dns.Meta.NextensioPod = MyInfo.Pod
 		dns.Name = val + "." + MyInfo.Namespace
 		// ID needs to be unique per cpod replica .. every replica is registering the
@@ -236,6 +237,7 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredLogger) (e error) {
 	var err error
 	for _, val := range service {
+		val = strings.Replace(val, ":", ".", 1)
 		snm := val + "." + MyInfo.Namespace
 		sid := snm + "-" + MyInfo.Host
 		url := "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + sid

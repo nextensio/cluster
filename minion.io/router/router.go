@@ -921,17 +921,31 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 		}
 
 		host := flow.DestAgent
+		port := fmt.Sprintf("%d", flow.Dport)
+		hostport := host + "." + port
 		if tag == "" {
-			consul_key = strings.Join([]string{host, MyInfo.Namespace}, ".")
+			consul_key = strings.Join([]string{hostport, MyInfo.Namespace}, ".")
 		} else {
-			consul_key = strings.Join([]string{tag, host, MyInfo.Namespace}, ".")
+			consul_key = strings.Join([]string{tag, hostport, MyInfo.Namespace}, ".")
 			flow.DestAgent = tag + "." + flow.DestSvc
 		}
-
+		// First look up with destination port as it's a more specific target
 		fwd, err = consul.ConsulDnsLookup(MyInfo, consul_key, s)
 		if err != nil {
+			// Look up with destination port failed. Exclude port and try again.
 			s.Debugf("Consul lookup failed for dest %s with key %s", flow.DestAgent, consul_key)
-			return nil, nil
+			if tag == "" {
+				consul_key = strings.Join([]string{host, MyInfo.Namespace}, ".")
+			} else {
+				consul_key = strings.Join([]string{tag, host, MyInfo.Namespace}, ".")
+			}
+			fwd, err = consul.ConsulDnsLookup(MyInfo, consul_key, s)
+			if err != nil {
+				s.Errorf("Consul lookup failed for dest %s with key %s", flow.DestAgent, consul_key)
+				return nil, nil
+			}
+		} else {
+			flow.DestAgent = flow.DestAgent + ":" + port
 		}
 	} else {
 		if flow.UserCluster == MyInfo.Id {
