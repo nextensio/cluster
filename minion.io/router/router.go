@@ -920,18 +920,32 @@ func globalRouteLookup(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.
 			return nil, nil
 		}
 
-		host := strings.ReplaceAll(flow.DestAgent, ".", "-")
+		host := flow.DestAgent
 		if tag == "" {
-			consul_key = strings.Join([]string{host, MyInfo.Namespace}, "-")
+			consul_key = strings.Join([]string{host, MyInfo.Namespace}, ".")
 		} else {
-			consul_key = strings.Join([]string{tag, host, MyInfo.Namespace}, "-")
+			consul_key = strings.Join([]string{tag, host, MyInfo.Namespace}, ".")
 			flow.DestAgent = tag + "." + flow.DestSvc
 		}
-
+		// First look up without destination port as it's the more common case
 		fwd, err = consul.ConsulDnsLookup(MyInfo, consul_key, s)
 		if err != nil {
-			s.Debugf("Consul lookup failed for dest %s with key %s", flow.DestAgent, consul_key)
-			return nil, nil
+			// Look up without destination port failed. Try with port.
+			s.Debugf("Consul lookup plain failed for dest %s with key %s", flow.DestAgent, consul_key)
+			port := fmt.Sprintf("%d", flow.Dport)
+			hostport := host + "." + port
+			if tag == "" {
+				consul_key = strings.Join([]string{hostport, MyInfo.Namespace}, ".")
+			} else {
+				consul_key = strings.Join([]string{tag, hostport, MyInfo.Namespace}, ".")
+				flow.DestAgent = tag + "." + flow.DestSvc
+			}
+			fwd, err = consul.ConsulDnsLookup(MyInfo, consul_key, s)
+			if err != nil {
+				s.Errorf("Consul lookup port failed for dest %s with key %s", flow.DestAgent, consul_key)
+				return nil, nil
+			}
+			flow.DestAgent = flow.DestAgent + ":" + port
 		}
 	} else {
 		if flow.UserCluster == MyInfo.Id {
@@ -1110,7 +1124,7 @@ func generateFromAgentSpan(spanCtx opentracing.SpanContext, processingDuration u
 	pStart := wStart.Add(-time.Duration(processingDuration))
 
 	// First packet from Agent, create Agent processing and onWire to apod spans
-	span := tracer.StartSpan("From Agent", opentracing.StartTime(pStart), opentracing.FollowsFrom(spanCtx))
+	span := tracer.StartSpan("From Client", opentracing.StartTime(pStart), opentracing.FollowsFrom(spanCtx))
 	finishTime.FinishTime = wStart
 	return &span
 }
@@ -1131,7 +1145,7 @@ func generateToAgentSpan(spanCtx opentracing.SpanContext, finfo *flowInfo, procD
 	}
 	s.Debugf("====> generatetoAgentSpan  RTT: %v[%v] [pD:%d] finfo[%p] onWireStart:%d pStart:%d", rtt, rtt/2, procD, finfo, onWireStart, pStart)
 
-	span := agentTracer.StartSpan("To Agent", opentracing.StartTime(onWireStart), opentracing.FollowsFrom(spanCtx))
+	span := agentTracer.StartSpan("To Client", opentracing.StartTime(onWireStart), opentracing.FollowsFrom(spanCtx))
 	finishTime.FinishTime = onWireStart.Add(tD + (rtt / 2))
 	span.FinishWithOptions(finishTime)
 	return &span
@@ -1642,7 +1656,8 @@ func outsideListenerWebsocket(s *zap.SugaredLogger, MyInfo *shared.Params, ctx c
 	tchan := make(chan common.NxtStream)
 
 	if MyInfo.PodType == "apod" {
-		closer := InitJaegerTrace("gateway", MyInfo, s, "")
+		ns := strings.Split(MyInfo.Namespace, "-")
+		closer := InitJaegerTrace(ns[1]+"-gateway", MyInfo, s, "")
 		if closer != nil {
 			defer closer.Close()
 		}
@@ -1678,7 +1693,8 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 	tchan := make(chan common.NxtStream)
 
 	if MyInfo.PodType != "apod" {
-		closer := InitJaegerTrace("gateway", MyInfo, s, "")
+		ns := strings.Split(MyInfo.Namespace, "-")
+		closer := InitJaegerTrace(ns[1]+"-gateway", MyInfo, s, "")
 		if closer != nil {
 			defer closer.Close()
 		}

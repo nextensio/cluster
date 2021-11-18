@@ -165,9 +165,9 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 	dns.Meta.NextensioCluster = MyInfo.Id
 
 	for _, val := range service {
-		h := strings.Replace(val, ".", "-", -1)
+		val = strings.Replace(val, ":", ".", 1)
 		dns.Meta.NextensioPod = MyInfo.Pod
-		dns.Name = h + "-" + MyInfo.Namespace
+		dns.Name = val + "." + MyInfo.Namespace
 		// ID needs to be unique per cpod replica .. every replica is registering the
 		// same service but with different ID. This ensures that even if one replica
 		// unregisters the service, the consul catalog will still have the service from
@@ -237,8 +237,9 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredLogger) (e error) {
 	var err error
 	for _, val := range service {
-		h := strings.Replace(val, ".", "-", -1)
-		sid := h + "-" + MyInfo.Namespace + "-" + MyInfo.Host
+		val = strings.Replace(val, ":", ".", 1)
+		snm := val + "." + MyInfo.Namespace
+		sid := snm + "-" + MyInfo.Host
 		url := "http://" + MyInfo.Node + ".node.consul:8500/v1/agent/service/deregister/" + sid
 		r, e := http.NewRequest("PUT", url, nil)
 		if e != nil {
