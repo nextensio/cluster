@@ -83,6 +83,18 @@ type agentTunnel struct {
 	suuid  uuid.UUID
 }
 
+type latencyMetrics struct {
+	count    uint
+	category string
+	latency  *prometheus.GaugeVec
+}
+
+type flowLatencyMetrics struct {
+	latency   *prometheus.Gauge
+	lm        *latencyMetrics
+	allLabels map[string]string
+}
+
 type userMetrics struct {
 	count      uint
 	userid     string
@@ -90,8 +102,16 @@ type userMetrics struct {
 	totalBytes *prometheus.CounterVec
 }
 
+type latInfo struct {
+	userlm   *flowLatencyMetrics // User Device to GW latency
+	gwproclm *flowLatencyMetrics // GW processing time
+	gwlm     *flowLatencyMetrics // GW-GW latency
+	connlm   *flowLatencyMetrics // GW-Connector latency
+}
+
 type deleteMetrics struct {
 	fm    *flowMetrics
+	lm    *latInfo
 	flow  *flowKey
 	qedAt time.Time
 }
@@ -134,6 +154,8 @@ var agents map[string]*agentTunnel
 var users map[string][]*agentTunnel
 var mLock sync.RWMutex
 var metrics map[string]*userMetrics
+var lLock sync.RWMutex
+var lMetrics map[string]*latencyMetrics
 var fLock sync.Mutex
 var flows map[flowKey]*flowInfo
 var pLock sync.RWMutex
@@ -147,7 +169,6 @@ var totGoroutines int32
 var insideOpen bool
 var pendingLock sync.Mutex
 var pendingFree []*deleteMetrics
-var wireTracer opentracing.Tracer
 var connectorTracer opentracing.Tracer
 var agentTracer opentracing.Tracer
 var pool common.NxtPool
@@ -155,13 +176,14 @@ var pool common.NxtPool
 // When the flow is terminated, we have to wait for some time to ensure the stats is
 // collected before we remove the labels/free the counters, we just use a simple
 // pending list for that which is garbage collected every couple of minutes
-func pendingAdd(flow *nxthdr.NxtFlow, fm *flowMetrics) {
+func pendingAdd(flow *nxthdr.NxtFlow, fm *flowMetrics, latM *latInfo) {
 	pendingLock.Lock()
 	defer pendingLock.Unlock()
 	// Don't need to hold on to the entire flow header, need just the flow key fields.
 	key := flowToKey(flow)
 	d := deleteMetrics{
 		fm:    fm,
+		lm:    latM,
 		flow:  &key,
 		qedAt: time.Now(),
 	}
@@ -193,6 +215,18 @@ func garbageCollectFlows(s *zap.SugaredLogger) {
 				break
 			}
 			metricFlowDel(s, dm.flow, dm.fm)
+			if dm.lm.userlm != nil {
+				latencyMetricFlowDel(s, dm.flow, dm.lm.userlm)
+			}
+			if dm.lm.gwlm != nil {
+				latencyMetricFlowDel(s, dm.flow, dm.lm.gwlm)
+			}
+			if dm.lm.gwproclm != nil {
+				latencyMetricFlowDel(s, dm.flow, dm.lm.gwproclm)
+			}
+			if dm.lm.connlm != nil {
+				latencyMetricFlowDel(s, dm.flow, dm.lm.connlm)
+			}
 			dm.fm = nil
 			dm.flow = nil
 		}
@@ -467,6 +501,225 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) *flowMetrics {
 	}
 
 	return &flowMetrics{bytes: &c, um: m, allLabels: labels}
+}
+
+func latencyMetricUserPut(m *latencyMetrics) {
+	mLock.Lock()
+	defer mLock.Unlock()
+
+	// This metric has already been force cleaned
+	if m.count == 0 {
+		return
+	}
+
+	m.count -= 1
+	if m.count != 0 {
+		return
+	}
+	delete(lMetrics, m.category)
+	m.latency.Reset()
+	prometheus.Unregister(m.latency)
+}
+
+func setLatencyMetrics(flm *flowLatencyMetrics, latency float64) {
+	if flm.latency != nil {
+		(*flm.latency).Set(latency)
+	}
+}
+
+func updateLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, tunnel common.Transport, latM *latInfo, gwProcTime int64, frompod bool, lastCollected *time.Time, destRTT uint64) {
+
+	// Update the latency only if the elapsed time since lastCollection is greater than 1 sec
+	// Note: If the lastCollection time is NULL, then update the latency as its the first call for that flow
+	if !lastCollected.IsZero() && time.Since(*lastCollected).Seconds() < 1 {
+		return
+	}
+	*lastCollected = time.Now()
+
+	if latM.userlm != nil {
+		// Update the user latency with destRTT only if the packet is frompod and its a repsonseData (Basically, the packet will be
+		// sent to the user from this pod so use destRTT) otherwise, update the User latency with the tunnel.Timing.
+		if frompod && flow.ResponseData {
+			setLatencyMetrics(latM.userlm, float64(destRTT/2)/1000000.0)
+		} else {
+			setLatencyMetrics(latM.userlm, float64(flow.ProcessingDuration+(tunnel.Timing().Rtt/2))/1000000.0)
+		}
+	}
+
+	if latM.connlm != nil {
+		// Update the connector latency metric with destRTT only if its from
+		// 1. FROMPOD and the packet is going to cloud (flow.ResponseData is false)
+		// 2. Or if its not from FROMPOD.
+		if frompod && !flow.ResponseData {
+			setLatencyMetrics(latM.connlm, float64(destRTT/2)/1000000.0)
+		} else {
+			setLatencyMetrics(latM.connlm, float64(tunnel.Timing().Rtt/2)/1000000.0)
+		}
+	}
+
+	if latM.gwproclm != nil {
+		setLatencyMetrics(latM.gwproclm, float64(gwProcTime)/1000000.0)
+	}
+	if latM.gwlm != nil {
+		tstart := time.Unix(0, (int64)(flow.ProcessingDuration))
+		elapsed := time.Since(tstart).Nanoseconds()
+		setLatencyMetrics(latM.gwlm, float64(elapsed+int64((tunnel.Timing().Rtt/2)))/1000000.0)
+	}
+}
+
+func latencyMetricFlowDel(s *zap.SugaredLogger, flow *flowKey, flm *flowLatencyMetrics) {
+	flm.lm.latency.Delete(flm.allLabels)
+	latencyMetricUserPut(flm.lm)
+}
+
+func latencyMetricUserNew(s *zap.SugaredLogger, category string, comment string) *latencyMetrics {
+	var labels = []string{"userid", "service", "destIP", "destPort", "_osType", "podType", "direction"}
+
+	// Prometheus wont allow certain characters in the string as the counter
+	name := strings.Replace(category, "@", "_", -1)
+	name = strings.Replace(name, ".", "_", -1)
+	name = strings.Replace(name, "-", "_", -1)
+
+	latency := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "latency_" + name,
+			Help: comment,
+		}, labels)
+
+	err := prometheus.Register(latency)
+	if err != nil {
+		s.Debugf("Prometheus registration failed", err, category, name)
+		return nil
+	}
+
+	m := &latencyMetrics{count: 1, category: category, latency: latency}
+
+	lMetrics[category] = m
+	return m
+}
+
+func latencyMetricUserGet(s *zap.SugaredLogger, category string, comment string) *latencyMetrics {
+
+	lLock.Lock()
+	defer lLock.Unlock()
+	m := lMetrics[category]
+	// If no metrics exist, allocate one
+	if m == nil {
+		return latencyMetricUserNew(s, category, comment)
+	}
+
+	// The existing metric is good to go, increment ref count
+	m.count++
+	return m
+}
+
+func latencyMetricAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, category string, ostype string, comment string, podType string) *flowLatencyMetrics {
+
+	m := latencyMetricUserGet(s, category, comment)
+	if m == nil {
+		s.Debugf("Cant find prometheus latency vec", flow.AgentUuid)
+		return nil
+	}
+
+	user := strings.Split(flow.AgentUuid, ":")
+	if len(user) != 2 {
+		s.Debugf("Bad userid", flow.AgentUuid)
+		return nil
+	}
+	labels := make(map[string]string)
+	labels["userid"] = user[0]
+	labels["service"] = flow.DestSvc
+	labels["destIP"] = flow.Dest
+	labels["destPort"] = strconv.FormatUint(uint64(flow.Dport), 10)
+	labels["_osType"] = ostype
+	labels["podType"] = podType
+	if !flow.ResponseData {
+		labels["direction"] = "TO_CLOUD"
+	} else {
+		labels["direction"] = "FROM_CLOUD"
+	}
+
+	c, e := m.latency.GetMetricWith(labels)
+	if e != nil {
+		latencyMetricUserPut(m)
+		s.Debugf("Cant get prometheus latency metrics from labels:%v agentUUID:%v Error:%s ", labels, flow.AgentUuid, e.Error())
+		return nil
+	}
+
+	return &flowLatencyMetrics{latency: &c, lm: m, allLabels: labels}
+}
+
+func createGWProcLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, clusterName string, podType string) *flowLatencyMetrics {
+	var gwproclm *flowLatencyMetrics // GW processing latency
+
+	finfo := getFlowInfo(flowToKey(flow))
+	if finfo != nil {
+		gwproclm = latencyMetricAdd(s, flow, clusterName+"_processing_time", finfo.uamLabels["_osType"], "GW processing time", podType)
+	} else {
+		gwproclm = latencyMetricAdd(s, flow, clusterName+"_processing_time", "unknown", "GW processing time", podType)
+	}
+	return gwproclm
+}
+
+func createConnectorLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, podType string) *flowLatencyMetrics {
+	var connlm *flowLatencyMetrics // Connector to GW latency
+	// Latency metric for connector to GW
+	finfo := getFlowInfo(flowToKey(flow))
+	if finfo != nil {
+		connlm = latencyMetricAdd(s, flow, "from_to_connector", finfo.uamLabels["_osType"], "Latency from/to connector", podType)
+	} else {
+		connlm = latencyMetricAdd(s, flow, "from_to_connector", "unknown", "Latency of user agent device", podType)
+	}
+	return connlm
+}
+
+func createDeviceLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, podType string) *flowLatencyMetrics {
+	var userlm *flowLatencyMetrics // UserDevice to GW latency
+	// Latency metric for userDevice to GW
+	finfo := getFlowInfo(flowToKey(flow))
+	if finfo != nil {
+		userlm = latencyMetricAdd(s, flow, "from_to_client_device", finfo.uamLabels["_osType"], "Latency from/to user client device", podType)
+	} else {
+		userlm = latencyMetricAdd(s, flow, "from_to_client_device", "unknown", "Latency of user agent device", podType)
+	}
+	return userlm
+}
+
+func createGWToGWLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, sourceCluster string, podType string) *flowLatencyMetrics {
+	var gwlm *flowLatencyMetrics // GW-GW latency
+
+	finfo := getFlowInfo(flowToKey(flow))
+	if finfo != nil {
+		gwlm = latencyMetricAdd(s, flow, sourceCluster+"_to_"+flow.UserCluster, finfo.uamLabels["_osType"], "Latency from/to client GW to connector GW", podType)
+	} else {
+		gwlm = latencyMetricAdd(s, flow, sourceCluster+"_to_"+flow.UserCluster, "unknown", "Latency of Gateway", podType)
+	}
+	return gwlm
+}
+
+func createLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, frompod bool, sourceCluster string, clusterName string, podType string) *latInfo {
+	var latM latInfo
+
+	latM.gwproclm = createGWProcLatencyMetrics(s, flow, clusterName, podType)
+	if frompod {
+		// Called from streamFromPod so create GW-GW latency metric.
+		// If ResponseData, create User latency otherwise, create connectror latency
+		latM.gwlm = createGWToGWLatencyMetrics(s, flow, sourceCluster, podType)
+		if flow.ResponseData {
+			latM.userlm = createDeviceLatencyMetrics(s, flow, podType)
+		} else {
+			latM.connlm = createConnectorLatencyMetrics(s, flow, podType)
+		}
+	} else {
+		// Called from streamFromAgent.
+		// If ResponseData, create connector latency otherwise, create user latency
+		if flow.ResponseData {
+			latM.connlm = createConnectorLatencyMetrics(s, flow, podType)
+		} else {
+			latM.userlm = createDeviceLatencyMetrics(s, flow, podType)
+		}
+	}
+	return &latM
 }
 
 // This API returns a json list of user attribute key-value pairs to use
@@ -1033,7 +1286,8 @@ func userGetAttrs(s *zap.SugaredLogger, onboard *nxthdr.NxtOnboard) string {
 }
 
 func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel common.Transport,
-	dest common.Transport, first bool, Suuid uuid.UUID, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fm *flowMetrics, span *opentracing.Span, r string) {
+	dest common.Transport, first bool, Suuid uuid.UUID, onboard *nxthdr.NxtOnboard, flow *nxthdr.NxtFlow, fm *flowMetrics,
+	latM *latInfo, span *opentracing.Span, r string) {
 	tunnel.Close()
 	if dest != nil {
 		dest.Close()
@@ -1056,7 +1310,7 @@ func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel co
 		(*span).Finish()
 	}
 	if flow != nil && fm != nil {
-		pendingAdd(flow, fm)
+		pendingAdd(flow, fm, latM)
 	}
 }
 
@@ -1230,6 +1484,7 @@ func traceAgentFlow(s *zap.SugaredLogger, MyInfo *shared.Params, onboard *nxthdr
 		// Get the time the packet is sent to connector from flowInfo for span creation
 		finfo := getFlowInfo(flowToKey(flow))
 		if finfo == nil {
+			s.Debugf("Flow info key not found")
 			return nil
 		}
 
@@ -1277,6 +1532,8 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 	var span *opentracing.Span
 	var lastFlow *nxthdr.NxtFlow
 	var fm *flowMetrics
+	var latM *latInfo
+	var lastCollected time.Time
 
 	onboard := sessionGet(Suuid)
 	if onboard != nil {
@@ -1289,7 +1546,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 	for {
 		hdr, agentBuf, err := tunnel.Read()
 		if err != nil {
-			streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "")
+			streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, latM, span, "")
 			s.Debugf("Agent read error - %v", err)
 			return
 		}
@@ -1297,6 +1554,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 		for _, b := range agentBuf.Slices {
 			length += len(b)
 		}
+		recTime := time.Now()
 
 		switch hdr.Hdr.(type) {
 		case *nxthdr.NxtHdr_Trace:
@@ -1322,14 +1580,14 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				sessionAdd(Suuid, onboard)
 				if e := agentAdd(s, MyInfo, onboard, Suuid, tunnel); e != nil {
 					s.Debugf("Agent add failed, closing tunnels - %v", e)
-					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "")
+					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, latM, span, "")
 					return
 				}
 			} else {
 				newOnb := hdr.Hdr.(*nxthdr.NxtHdr_Onboard).Onboard
 				if e := onboardDiff(s, MyInfo, onboard, newOnb); e != nil {
 					s.Debugf("Onboard diff failed, closing tunnels - %v", e)
-					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "")
+					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, latM, span, "")
 					return
 				}
 			}
@@ -1345,17 +1603,17 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			lastFlow = flow
 			if flow.Type == nxthdr.NxtFlow_L3 {
 				s.Debugf("Not expecting anything other than L4 flows at this time")
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "Agent not onboarded")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, latM, span, "Agent not onboarded")
 				return
 			}
 			if first {
 				s.Debugf("We dont expect L4 flows on the first stream")
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "Agent not onboarded")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, latM, span, "Agent not onboarded")
 				return
 			}
 			if onboard == nil {
 				s.Debugf("Agent not onboarded yet")
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "Agent not onboarded")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, latM, span, "Agent not onboarded")
 				return
 			}
 			// Indicate to the destination connector which exact agent/connector is originating this flow,
@@ -1376,31 +1634,43 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				tD := time.Duration(tunnel.Timing().Rtt * uint64(time.Nanosecond))
 				span = traceAgentFlow(s, MyInfo, onboard, flow, tD)
 				fm = metricFlowAdd(s, flow)
+				// Create latency metrics if Tracing is enabled for this flow
+				if flow.TraceRequestId != "" {
+					latM = createLatencyMetrics(s, flow, false, flow.UserCluster, MyInfo.Id, MyInfo.PodType)
+				}
 				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow, span)
 				// L4 routing failures need to terminate the flow
 				if dest == nil {
 					s.Debugf("Agent flow dest fail: %v", flow)
 					streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard,
-						lastFlow, fm, span, "Couldn't get destination pod or open stream to it")
+						lastFlow, fm, latM, span, "Couldn't get destination pod or open stream to it")
 					return
 				}
 				s.Debugf("Agent L4 Lookup: flow=%v bundle=%v stream=%v", flow, bundle, dest)
 				// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
 				// the close is cascaded to the other elements connected to the cluster (pods/agents)
 				dest.CloseCascade(tunnel)
+			} else {
+				if latM.userlm != nil {
+					// When tracing is enabled only the first pkt of the flow has the TraceCtx and
+					// TraceRequestId set. Since, latency calculation has to be done for all the
+					// packets in the flow, set the TraceRequestId to a non-null value if tracing is
+					// enabled for this flow.
+					flow.TraceRequestId = "latency"
+				}
 			}
 			var finishT time.Time
-			if span != nil {
-				finishT = time.Now()
-				tnow := time.Now().UnixNano()
-				// We use the ProcessingDuration field to set the time the packet is sent to next pod
-				// so that, that pod can generate the span.
-				flow.ProcessingDuration = uint64(tnow)
-			}
+			finishT = time.Now()
+			elapsed := time.Since(recTime).Nanoseconds()
+			updateLatencyMetrics(s, flow, tunnel, latM, elapsed, false, &lastCollected, dest.Timing().Rtt)
+
+			// We use the ProcessingDuration field to set the time the packet is sent to next pod
+			// so that, that pod can generate the span.
+			flow.ProcessingDuration = uint64(finishT.UnixNano())
 			err := dest.Write(hdr, agentBuf)
 			if err != nil {
 				s.Debugf("Agent flow write fail: flow=%v, error=%v", flow, err)
-				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, span, "Write to Agent failed")
+				streamFromAgentClose(s, MyInfo, tunnel, dest, first, Suuid, onboard, lastFlow, fm, latM, span, "Write to Agent failed")
 				return
 			}
 			if span != nil {
@@ -1434,7 +1704,8 @@ func bundleAccessAllowed(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, onboard *nx
 	return true
 }
 
-func streamFromPodClose(s *zap.SugaredLogger, tunnel common.Transport, dest common.Transport, MyInfo *shared.Params, flow *nxthdr.NxtFlow, fm *flowMetrics, span *opentracing.Span, r string) {
+func streamFromPodClose(s *zap.SugaredLogger, tunnel common.Transport, dest common.Transport, MyInfo *shared.Params, flow *nxthdr.NxtFlow,
+	fm *flowMetrics, latM *latInfo, span *opentracing.Span, r string) {
 	tunnel.Close()
 	if dest != nil {
 		dest.Close()
@@ -1443,7 +1714,7 @@ func streamFromPodClose(s *zap.SugaredLogger, tunnel common.Transport, dest comm
 		(*span).Finish()
 	}
 	if flow != nil && fm != nil {
-		pendingAdd(flow, fm)
+		pendingAdd(flow, fm, latM)
 	}
 }
 
@@ -1470,7 +1741,7 @@ func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr
 		opentracing.HTTPHeadersCarrier(hhdr),
 	)
 	flow.TraceCtx = hhdr.Get("Uber-Trace-Id")
-	s.Debugf("Trace: Found span context in stream from %s to %s ", flow.Userid, flow.DestAgent)
+	s.Debugf("Trace: Found span context %v in stream from %s to %s ", flow.TraceCtx, flow.Userid, flow.DestAgent)
 	return &span
 }
 
@@ -1490,6 +1761,8 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 	var span *opentracing.Span
 	var fm *flowMetrics
 	var lastFlow *nxthdr.NxtFlow
+	var lastCollected time.Time
+	var latM *latInfo
 	var key flowKey
 
 	s.Debugf("New interpod HTTP stream %v - %v", Suuid, httphdrs)
@@ -1498,9 +1771,10 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 		hdr, podBuf, err := tunnel.Read()
 		if err != nil {
 			s.Debugf("InterPod Error", err)
-			streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, span, "")
+			streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, latM, span, "")
 			return
 		}
+		recTime := time.Now()
 		length := 0
 		for _, b := range podBuf.Slices {
 			length += len(b)
@@ -1518,17 +1792,21 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				span = traceInterpodFlow(s, MyInfo, flow, rtt, sourceCluster)
 				fm = metricFlowAdd(s, flow)
 				key = flowToKey(flow)
+				// If tracing is enabled for this flow, create GW and total roundtrip pkt latency metric
+				if span != nil {
+					latM = createLatencyMetrics(s, flow, true, sourceCluster, MyInfo.Id, MyInfo.PodType)
+				}
 				onboard, dest = localRouteLookup(s, MyInfo, flow)
 				if dest == nil {
 					s.Debugf("Interpod: cant get dest tunnel for ", flow.DestAgent)
-					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, span, "Couldn't get destination to agent")
+					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, latM, span, "Couldn't get destination to agent")
 					return
 				}
 				s.Debugf("Interpod L4 Lookup", flow, onboard, dest)
 				dest = dest.NewStream(nil)
 				if dest == nil {
 					s.Debugf("Interpod: cant open stream on dest tunnel for ", flow.DestAgent)
-					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, span, "Stream open to agent failed")
+					streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, latM, span, "Stream open to agent failed")
 					return
 				}
 				// If the destination (Tx) closes, close the rx also so the entire goroutine exits and
@@ -1536,7 +1814,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				dest.CloseCascade(tunnel)
 			}
 			if !bundleAccessAllowed(s, flow, onboard) {
-				streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, span, "Agent access denied")
+				streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, latM, span, "Agent access denied")
 				return
 			}
 			var finishT int64
@@ -1548,14 +1826,12 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				if finfo != nil {
 					finfo.reqTime = time.Now()
 				}
-				// ProcessingDuration is not required when we send it to Agent/Connector
-				flow.ProcessingDuration = 0
 			}
 			err := dest.Write(hdr, podBuf)
 
 			if err != nil {
 				s.Debugf("Interpod: l4 dest write failed ", flow.DestAgent, err)
-				streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, span, "Write to destination pod failed")
+				streamFromPodClose(s, tunnel, dest, MyInfo, lastFlow, fm, latM, span, "Write to destination pod failed")
 				return
 			}
 			if span != nil {
@@ -1564,6 +1840,8 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				(*span).FinishWithOptions(finishTime)
 				span = nil
 			}
+			elapsed := time.Since(recTime).Nanoseconds()
+			updateLatencyMetrics(s, flow, tunnel, latM, elapsed, true, &lastCollected, dest.Timing().Rtt)
 			if fm != nil {
 				incrMetrics(fm, length)
 			}
@@ -1578,6 +1856,7 @@ func RouterInit(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Context
 	users = make(map[string][]*agentTunnel)
 	pods = make(map[string]common.Transport)
 	metrics = make(map[string]*userMetrics)
+	lMetrics = make(map[string]*latencyMetrics)
 	flows = make(map[flowKey]*flowInfo)
 	pendingFree = make([]*deleteMetrics, 0)
 	localRoutes = make(map[string]*nxthdr.NxtOnboard)
@@ -1794,6 +2073,10 @@ func DumpInfo(s *zap.SugaredLogger) {
 	mLock.RLock()
 	s.Debugf("Total prometheus counters: ", len(metrics))
 	mLock.RUnlock()
+
+	lLock.RLock()
+	s.Debugf("Total prometheus latency counters: ", len(lMetrics))
+	lLock.RUnlock()
 
 	pendingLock.Lock()
 	s.Debugf("Total pending free flows: ", len(pendingFree))
