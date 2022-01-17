@@ -668,7 +668,7 @@ func createConnectorLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, p
 	if finfo != nil {
 		connlm = latencyMetricAdd(s, flow, "from_to_connector", finfo.uamLabels["_osType"], "Latency from/to connector", podType)
 	} else {
-		connlm = latencyMetricAdd(s, flow, "from_to_connector", "unknown", "Latency of user agent device", podType)
+		connlm = latencyMetricAdd(s, flow, "from_to_connector", "unknown", "Latency from/to connector", podType)
 	}
 	return connlm
 }
@@ -680,7 +680,7 @@ func createDeviceLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, podT
 	if finfo != nil {
 		userlm = latencyMetricAdd(s, flow, "from_to_client_device", finfo.uamLabels["_osType"], "Latency from/to user client device", podType)
 	} else {
-		userlm = latencyMetricAdd(s, flow, "from_to_client_device", "unknown", "Latency of user agent device", podType)
+		userlm = latencyMetricAdd(s, flow, "from_to_client_device", "unknown", "Latency from/to user client device", podType)
 	}
 	return userlm
 }
@@ -692,7 +692,7 @@ func createGWToGWLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, sour
 	if finfo != nil {
 		gwlm = latencyMetricAdd(s, flow, sourceCluster+"_to_"+flow.UserCluster, finfo.uamLabels["_osType"], "Latency from/to client GW to connector GW", podType)
 	} else {
-		gwlm = latencyMetricAdd(s, flow, sourceCluster+"_to_"+flow.UserCluster, "unknown", "Latency of Gateway", podType)
+		gwlm = latencyMetricAdd(s, flow, sourceCluster+"_to_"+flow.UserCluster, "unknown", "Latency from/to client GW to connecotr GW", podType)
 	}
 	return gwlm
 }
