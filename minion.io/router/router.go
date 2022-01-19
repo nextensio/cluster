@@ -177,10 +177,13 @@ var pool common.NxtPool
 // collected before we remove the labels/free the counters, we just use a simple
 // pending list for that which is garbage collected every couple of minutes
 func pendingAdd(flow *nxthdr.NxtFlow, fm *flowMetrics, latM *latInfo) {
+	var key flowKey
 	pendingLock.Lock()
 	defer pendingLock.Unlock()
 	// Don't need to hold on to the entire flow header, need just the flow key fields.
-	key := flowToKey(flow)
+	if flow != nil {
+		key = flowToKey(flow)
+	}
 	d := deleteMetrics{
 		fm:    fm,
 		lm:    latM,
@@ -214,21 +217,26 @@ func garbageCollectFlows(s *zap.SugaredLogger) {
 			if dm == nil {
 				break
 			}
-			metricFlowDel(s, dm.flow, dm.fm)
-			if dm.lm.userlm != nil {
-				latencyMetricFlowDel(s, dm.flow, dm.lm.userlm)
+			if dm.flow != nil && dm.fm != nil {
+				metricFlowDel(s, dm.flow, dm.fm)
 			}
-			if dm.lm.gwlm != nil {
-				latencyMetricFlowDel(s, dm.flow, dm.lm.gwlm)
-			}
-			if dm.lm.gwproclm != nil {
-				latencyMetricFlowDel(s, dm.flow, dm.lm.gwproclm)
-			}
-			if dm.lm.connlm != nil {
-				latencyMetricFlowDel(s, dm.flow, dm.lm.connlm)
+			if dm.lm != nil {
+				if dm.lm.userlm != nil {
+					latencyMetricDel(s, dm.lm.userlm)
+				}
+				if dm.lm.gwlm != nil {
+					latencyMetricDel(s, dm.lm.gwlm)
+				}
+				if dm.lm.gwproclm != nil {
+					latencyMetricDel(s, dm.lm.gwproclm)
+				}
+				if dm.lm.connlm != nil {
+					latencyMetricDel(s, dm.lm.connlm)
+				}
 			}
 			dm.fm = nil
 			dm.flow = nil
+			dm.lm = nil
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -504,8 +512,8 @@ func metricFlowAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow) *flowMetrics {
 }
 
 func latencyMetricUserPut(m *latencyMetrics) {
-	mLock.Lock()
-	defer mLock.Unlock()
+	lLock.Lock()
+	defer lLock.Unlock()
 
 	// This metric has already been force cleaned
 	if m.count == 0 {
@@ -567,7 +575,7 @@ func updateLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, tunnel com
 	}
 }
 
-func latencyMetricFlowDel(s *zap.SugaredLogger, flow *flowKey, flm *flowLatencyMetrics) {
+func latencyMetricDel(s *zap.SugaredLogger, flm *flowLatencyMetrics) {
 	flm.lm.latency.Delete(flm.allLabels)
 	latencyMetricUserPut(flm.lm)
 }
@@ -615,12 +623,6 @@ func latencyMetricUserGet(s *zap.SugaredLogger, category string, comment string)
 
 func latencyMetricAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, category string, ostype string, comment string, podType string) *flowLatencyMetrics {
 
-	m := latencyMetricUserGet(s, category, comment)
-	if m == nil {
-		s.Debugf("Cant find prometheus latency vec", flow.AgentUuid)
-		return nil
-	}
-
 	user := strings.Split(flow.AgentUuid, ":")
 	if len(user) != 2 {
 		s.Debugf("Bad userid", flow.AgentUuid)
@@ -637,6 +639,12 @@ func latencyMetricAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, category strin
 		labels["direction"] = "TO_CLOUD"
 	} else {
 		labels["direction"] = "FROM_CLOUD"
+	}
+
+	m := latencyMetricUserGet(s, category, comment)
+	if m == nil {
+		s.Debugf("Cant find prometheus latency vec", flow.AgentUuid)
+		return nil
 	}
 
 	c, e := m.latency.GetMetricWith(labels)
@@ -685,26 +693,26 @@ func createDeviceLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, podT
 	return userlm
 }
 
-func createGWToGWLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, sourceCluster string, podType string) *flowLatencyMetrics {
+func createGWToGWLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, sourceCluster string, destCluster string, podType string) *flowLatencyMetrics {
 	var gwlm *flowLatencyMetrics // GW-GW latency
 
 	finfo := getFlowInfo(flowToKey(flow))
 	if finfo != nil {
-		gwlm = latencyMetricAdd(s, flow, sourceCluster+"_to_"+flow.UserCluster, finfo.uamLabels["_osType"], "Latency from/to client GW to connector GW", podType)
+		gwlm = latencyMetricAdd(s, flow, sourceCluster+"_to_"+destCluster, finfo.uamLabels["_osType"], "Latency from/to client GW to connector GW", podType)
 	} else {
-		gwlm = latencyMetricAdd(s, flow, sourceCluster+"_to_"+flow.UserCluster, "unknown", "Latency from/to client GW to connecotr GW", podType)
+		gwlm = latencyMetricAdd(s, flow, sourceCluster+"_to_"+destCluster, "unknown", "Latency from/to client GW to connecotr GW", podType)
 	}
 	return gwlm
 }
 
-func createLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, frompod bool, sourceCluster string, clusterName string, podType string) *latInfo {
+func createLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, frompod bool, sourceCluster string, destCluster string, clusterName string, podType string) *latInfo {
 	var latM latInfo
 
 	latM.gwproclm = createGWProcLatencyMetrics(s, flow, clusterName, podType)
 	if frompod {
 		// Called from streamFromPod so create GW-GW latency metric.
 		// If ResponseData, create User latency otherwise, create connectror latency
-		latM.gwlm = createGWToGWLatencyMetrics(s, flow, sourceCluster, podType)
+		latM.gwlm = createGWToGWLatencyMetrics(s, flow, sourceCluster, destCluster, podType)
 		if flow.ResponseData {
 			latM.userlm = createDeviceLatencyMetrics(s, flow, podType)
 		} else {
@@ -1309,9 +1317,7 @@ func streamFromAgentClose(s *zap.SugaredLogger, MyInfo *shared.Params, tunnel co
 	if span != nil {
 		(*span).Finish()
 	}
-	if flow != nil && fm != nil {
-		pendingAdd(flow, fm, latM)
-	}
+	pendingAdd(flow, fm, latM)
 }
 
 func onboardDiff(sl *zap.SugaredLogger, MyInfo *shared.Params, old *nxthdr.NxtOnboard, new *nxthdr.NxtOnboard) error {
@@ -1636,7 +1642,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				fm = metricFlowAdd(s, flow)
 				// Create latency metrics if Tracing is enabled for this flow
 				if flow.TraceRequestId != "" {
-					latM = createLatencyMetrics(s, flow, false, flow.UserCluster, MyInfo.Id, MyInfo.PodType)
+					latM = createLatencyMetrics(s, flow, false, flow.UserCluster, "", MyInfo.Id, MyInfo.PodType)
 				}
 				bundle, dest = globalRouteLookup(s, MyInfo, ctx, onboard, flow, span)
 				// L4 routing failures need to terminate the flow
@@ -1713,9 +1719,7 @@ func streamFromPodClose(s *zap.SugaredLogger, tunnel common.Transport, dest comm
 	if span != nil {
 		(*span).Finish()
 	}
-	if flow != nil && fm != nil {
-		pendingAdd(flow, fm, latM)
-	}
+	pendingAdd(flow, fm, latM)
 }
 
 func traceInterpodFlow(s *zap.SugaredLogger, MyInfo *shared.Params, flow *nxthdr.NxtFlow, rtt time.Duration, srcCluster string) *opentracing.Span {
@@ -1794,7 +1798,10 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				key = flowToKey(flow)
 				// If tracing is enabled for this flow, create GW and total roundtrip pkt latency metric
 				if span != nil {
-					latM = createLatencyMetrics(s, flow, true, sourceCluster, MyInfo.Id, MyInfo.PodType)
+					// Get the dest cluster from nextensio header as the flow.UserCluster for the traffic
+					// coming from agent is set to sourceCluster.
+					destCluster := httphdrs.Get("x-nextensio-destcluster")
+					latM = createLatencyMetrics(s, flow, true, sourceCluster, destCluster, MyInfo.Id, MyInfo.PodType)
 				}
 				onboard, dest = localRouteLookup(s, MyInfo, flow)
 				if dest == nil {
