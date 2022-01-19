@@ -537,6 +537,9 @@ func setLatencyMetrics(flm *flowLatencyMetrics, latency float64) {
 
 func updateLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, tunnel common.Transport, latM *latInfo, gwProcTime int64, frompod bool, lastCollected *time.Time, destRTT uint64) {
 
+	if latM == nil {
+		return
+	}
 	// Update the latency only if the elapsed time since lastCollection is greater than 1 sec
 	// Note: If the lastCollection time is NULL, then update the latency as its the first call for that flow
 	if !lastCollected.IsZero() && time.Since(*lastCollected).Seconds() < 1 {
@@ -1657,7 +1660,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 				// the close is cascaded to the other elements connected to the cluster (pods/agents)
 				dest.CloseCascade(tunnel)
 			} else {
-				if latM.userlm != nil {
+				if latM != nil && latM.userlm != nil {
 					// When tracing is enabled only the first pkt of the flow has the TraceCtx and
 					// TraceRequestId set. Since, latency calculation has to be done for all the
 					// packets in the flow, set the TraceRequestId to a non-null value if tracing is
