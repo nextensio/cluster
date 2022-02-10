@@ -535,7 +535,7 @@ func setLatencyMetrics(flm *flowLatencyMetrics, latency float64) {
 	}
 }
 
-func updateLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, tunnel common.Transport, latM *latInfo, gwProcTime int64, frompod bool, lastCollected *time.Time, destRTT uint64) {
+func updateLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, tunnel common.Transport, latM *latInfo, gwProcTime uint64, frompod bool, lastCollected *time.Time, destRTT uint64) {
 
 	if latM == nil {
 		return
@@ -551,9 +551,9 @@ func updateLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, tunnel com
 		// Update the user latency with destRTT only if the packet is frompod and its a repsonseData (Basically, the packet will be
 		// sent to the user from this pod so use destRTT) otherwise, update the User latency with the tunnel.Timing.
 		if frompod && flow.ResponseData {
-			setLatencyMetrics(latM.userlm, float64(destRTT/2)/1000000.0)
+			setLatencyMetrics(latM.userlm, float64((destRTT/2)+gwProcTime)/1000000.0)
 		} else {
-			setLatencyMetrics(latM.userlm, float64(flow.ProcessingDuration+(tunnel.Timing().Rtt/2))/1000000.0)
+			setLatencyMetrics(latM.userlm, float64(flow.ProcessingDuration+gwProcTime+(tunnel.Timing().Rtt/2))/1000000.0)
 		}
 	}
 
@@ -562,19 +562,16 @@ func updateLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, tunnel com
 		// 1. FROMPOD and the packet is going to cloud (flow.ResponseData is false)
 		// 2. Or if its not from FROMPOD.
 		if frompod && !flow.ResponseData {
-			setLatencyMetrics(latM.connlm, float64(destRTT/2)/1000000.0)
+			setLatencyMetrics(latM.connlm, float64((destRTT/2)+gwProcTime)/1000000.0)
 		} else {
-			setLatencyMetrics(latM.connlm, float64(tunnel.Timing().Rtt/2)/1000000.0)
+			setLatencyMetrics(latM.connlm, float64((tunnel.Timing().Rtt/2)+gwProcTime)/1000000.0)
 		}
 	}
 
-	if latM.gwproclm != nil {
-		setLatencyMetrics(latM.gwproclm, float64(gwProcTime)/1000000.0)
-	}
 	if latM.gwlm != nil {
 		tstart := time.Unix(0, (int64)(flow.ProcessingDuration))
 		elapsed := time.Since(tstart).Nanoseconds()
-		setLatencyMetrics(latM.gwlm, float64(elapsed+int64((tunnel.Timing().Rtt/2)))/1000000.0)
+		setLatencyMetrics(latM.gwlm, float64(uint64(elapsed)+gwProcTime+(tunnel.Timing().Rtt/2))/1000000.0)
 	}
 }
 
@@ -660,18 +657,6 @@ func latencyMetricAdd(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, category strin
 	return &flowLatencyMetrics{latency: &c, lm: m, allLabels: labels}
 }
 
-func createGWProcLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, clusterName string, podType string) *flowLatencyMetrics {
-	var gwproclm *flowLatencyMetrics // GW processing latency
-
-	finfo := getFlowInfo(flowToKey(flow))
-	if finfo != nil {
-		gwproclm = latencyMetricAdd(s, flow, clusterName+"_processing_time", finfo.uamLabels["_osType"], "GW processing time", podType)
-	} else {
-		gwproclm = latencyMetricAdd(s, flow, clusterName+"_processing_time", "unknown", "GW processing time", podType)
-	}
-	return gwproclm
-}
-
 func createConnectorLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, podType string) *flowLatencyMetrics {
 	var connlm *flowLatencyMetrics // Connector to GW latency
 	// Latency metric for connector to GW
@@ -711,7 +696,6 @@ func createGWToGWLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, sour
 func createLatencyMetrics(s *zap.SugaredLogger, flow *nxthdr.NxtFlow, frompod bool, sourceCluster string, destCluster string, clusterName string, podType string) *latInfo {
 	var latM latInfo
 
-	latM.gwproclm = createGWProcLatencyMetrics(s, flow, clusterName, podType)
 	if frompod {
 		// Called from streamFromPod so create GW-GW latency metric.
 		// If ResponseData, create User latency otherwise, create connectror latency
@@ -1671,7 +1655,7 @@ func streamFromAgent(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Co
 			var finishT time.Time
 			finishT = time.Now()
 			elapsed := time.Since(recTime).Nanoseconds()
-			updateLatencyMetrics(s, flow, tunnel, latM, elapsed, false, &lastCollected, dest.Timing().Rtt)
+			updateLatencyMetrics(s, flow, tunnel, latM, uint64(elapsed), false, &lastCollected, dest.Timing().Rtt)
 
 			// We use the ProcessingDuration field to set the time the packet is sent to next pod
 			// so that, that pod can generate the span.
@@ -1851,7 +1835,7 @@ func streamFromPod(s *zap.SugaredLogger, MyInfo *shared.Params, ctx context.Cont
 				span = nil
 			}
 			elapsed := time.Since(recTime).Nanoseconds()
-			updateLatencyMetrics(s, flow, tunnel, latM, elapsed, true, &lastCollected, dest.Timing().Rtt)
+			updateLatencyMetrics(s, flow, tunnel, latM, uint64(elapsed), true, &lastCollected, dest.Timing().Rtt)
 			if fm != nil {
 				incrMetrics(fm, length)
 			}
