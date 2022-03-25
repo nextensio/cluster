@@ -1090,7 +1090,7 @@ func podDial(s *zap.SugaredLogger, ctx context.Context, MyInfo *shared.Params,
 
 	lg := log.New(&zap2log{s: s}, "http2", 0)
 	// keepalive 10 secs, clock sync 100msecs.
-	client := nhttp2.NewClient(ctx, lg, pool, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs, &totGoroutines, 10000, 100)
+	client := nhttp2.NewClient(ctx, lg, pool, pubKey, fwd.Dest, fwd.Dest, MyInfo.Iport, hdrs, &totGoroutines, 10000, 100, true)
 	// For pod to pod connectivity, a pod will always dial-out another one,
 	// we dont expect a stream to come in from the other end on a dial-out session,
 	// and hence the reason we use the unusedChan on which no one is listening.
@@ -1979,7 +1979,7 @@ func insideListenerHttp2(s *zap.SugaredLogger, MyInfo *shared.Params, ctx contex
 		case open := <-insideMsg:
 			if open {
 				if server == nil {
-					server = nhttp2.NewListener(ctx, lg, pool, pvtKey, pubKey, MyInfo.Iport, &totGoroutines)
+					server = nhttp2.NewListener(ctx, lg, pool, pvtKey, pubKey, MyInfo.Iport, &totGoroutines, true)
 					go server.Listen(tchan)
 					insideOpen = true
 				}
