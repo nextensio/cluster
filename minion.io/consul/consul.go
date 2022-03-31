@@ -156,6 +156,38 @@ func ConsulMonitor(sugar *zap.SugaredLogger, MyInfo *shared.Params) {
 	}
 }
 
+// Call route-ref API to inform about add/delete of consul service register
+func informRouteRef(sugar *zap.SugaredLogger, ns string, op string, dns *Entry) {
+	url := "http://route-ref." + ns + ".svc.cluster.local:80/event/" + op
+
+	js, e := json.Marshal(dns)
+	if e != nil {
+		sugar.Errorf("Consul: failed to make make json at %s, error %s", url, e)
+		return
+	}
+	r, e := http.NewRequest("PUT", url, bytes.NewReader(js))
+	if e != nil {
+		sugar.Errorf("*** Consul Event:: failed to make http request at %s, error %s", url, e)
+		return
+	}
+	r.Header.Add("Content-Type", "application/json")
+	r.Header.Add("Accept-Charset", "UTF-8")
+	resp, e := myClient.Do(r)
+
+	if e == nil && resp.StatusCode == 200 {
+		sugar.Debugf("*** Consul Event:: Fired event via http PUT at %s", url)
+		sugar.Debugf("*** Consul Event:: Fired event  json %s", js)
+	} else {
+		status := -1
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		sugar.Errorf("*** Consul Event: failed to fire an event via http PUT at %s, error %v, %v", url, e, status)
+		sugar.Errorf("*** Consul Event: failed to fire an event json %s", js)
+		return
+	}
+}
+
 /*
  * Register DNS entry for the service
  */
@@ -225,6 +257,8 @@ func RegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.SugaredL
 			sugar.Errorf("Consul: failed to register via http PUT at %s, error %s, %d", url, e, status)
 			return e
 		}
+		sugar.Debugf("Consul: Send svc add event to route-ref. MyInfo:%+v", MyInfo)
+		informRouteRef(sugar, MyInfo.Namespace, "add", &dns)
 	}
 
 	return nil
@@ -256,6 +290,15 @@ func DeRegisterConsul(MyInfo *shared.Params, service []string, sugar *zap.Sugare
 			// Well, keep going and delete all the services even if this one failed.
 			// If the service is really going away from the pod, the health check will
 			// eventually fail and remove this service in approx 1.5 minutes
+		} else {
+			info := Entry{}
+			info.Name = snm
+			info.Meta.NextensioCluster = MyInfo.Id
+			info.Meta.NextensioPod = MyInfo.Pod
+			info.ID = snm + "-" + MyInfo.Host
+
+			sugar.Debugf("Consul: Send svc del event to route-ref: %v", info)
+			informRouteRef(sugar, MyInfo.Namespace, "del", &info)
 		}
 	}
 
@@ -296,43 +339,46 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 		return fwd, errors.New("not found")
 	}
 	podName := ""
+	cluster := ""
 	for _, t := range resp.Extra {
 		if t, ok := t.(*dns.TXT); ok {
 			reg, _ := regexp.Compile("NextensioPod:(.+)")
+			regCluster, _ := regexp.Compile("NextensioCluster:(.+)")
 			for _, s := range t.Txt {
 				match := reg.FindStringSubmatch(s)
 				if len(match) == 2 {
 					podName = match[1]
 				}
+				match = regCluster.FindStringSubmatch(s)
+				if len(match) == 2 {
+					cluster = match[1]
+					sugar.Debugf("Cluster: %s", cluster)
+				}
 			}
 		}
 	}
-	if podName == "" {
-		return fwd, errors.New("pod not found")
+	if podName == "" || cluster == "" {
+		return fwd, errors.New("pod/cluster not found")
 	}
 
 	// Just always pick the first answer. It will be load balanced (round robin) in case
 	// of multiple answers.
-	if srv, ok := resp.Answer[0].(*dns.SRV); ok {
-		target := srv.Target
-		s := strings.Split(target, ".")
-		fwd.Id = s[2]
-		fwd.Pod = podName
-		if s[2] != MyInfo.Id {
-			fwd.DestType = shared.RemoteDest
-			fwd.Dest = s[2] + RemotePostPrefix
+	fwd.Id = cluster
+	fwd.Pod = podName
+	if cluster != MyInfo.Id {
+		fwd.DestType = shared.RemoteDest
+		fwd.Dest = cluster + RemotePostPrefix
+	} else {
+		if fwd.Pod == MyInfo.Pod {
+			fwd.DestType = shared.SelfDest
+			fwd.Dest = name
 		} else {
-			if fwd.Pod == MyInfo.Pod {
-				fwd.DestType = shared.SelfDest
-				fwd.Dest = name
-			} else {
-				fwd.DestType = shared.LocalDest
-				fwd.Dest = fwd.Pod + "-in." + MyInfo.Namespace + LocalSuffix
-			}
+			fwd.DestType = shared.LocalDest
+			fwd.Dest = fwd.Pod + "-in." + MyInfo.Namespace + LocalSuffix
 		}
-		sugar.Debugf("Consul: destination %s / %s of type %d", fwd.Dest, fwd.Pod, fwd.DestType)
-		return fwd, nil
 	}
+	sugar.Debugf("Consul: destination %s / %s of type %d", fwd.Dest, fwd.Pod, fwd.DestType)
+	return fwd, nil
 
 	return fwd, errors.New("not found")
 }
