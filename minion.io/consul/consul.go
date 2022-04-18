@@ -361,6 +361,7 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 	}
 	podName := ""
 	cluster := ""
+	localDest := false
 	for _, t := range resp.Extra {
 		if t, ok := t.(*dns.TXT); ok {
 			reg, _ := regexp.Compile("NextensioPod:(.+)")
@@ -371,9 +372,15 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 					podName = match[1]
 				}
 				match = regCluster.FindStringSubmatch(s)
-				if len(match) == 2 {
+				// Check the response section to see if there is a local
+				// cluster. If it is, set the localDest flag and set the cluster
+				// field to the local cluster. If not,
+				if len(match) == 2 && !localDest {
 					cluster = match[1]
-					sugar.Debugf("Cluster: %s", cluster)
+					if cluster == MyInfo.Id {
+						localDest = true
+					}
+					sugar.Debugf("Cluster: %s [local:%v]", cluster, localDest)
 				}
 			}
 		}
@@ -386,7 +393,7 @@ func ConsulDnsLookup(MyInfo *shared.Params, name string, sugar *zap.SugaredLogge
 	// of multiple answers.
 	fwd.Id = cluster
 	fwd.Pod = podName
-	if cluster != MyInfo.Id {
+	if !localDest {
 		fwd.DestType = shared.RemoteDest
 		fwd.Dest = cluster + RemotePostPrefix
 	} else {
